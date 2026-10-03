@@ -1,0 +1,345 @@
+import io
+import json
+import os
+import tempfile
+import threading
+import time
+import unittest
+from unittest import mock
+
+from relaylib import commands, config, gitops, ledger, reviewjobs, sessions, state, usage
+from relaylib.errors import RelayError
+from relaylib.ui import snapshot
+from tests import helpers
+
+
+class SnapshotTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.tmp = temp.name
+        _, self.work = helpers.make_repo(self.tmp)
+        helpers.sh(self.work, "git", "switch", "-qc", "feat/demo")
+        self.st = state.new_state("demo", "project", {"provider": "codex", "session": "s1"}, "feat/demo")
+        self.st.update(stage="spec", status="waiting-owner")
+        self.folder = state.feature_dir(self.work, "demo")
+        self.save()
+        patch = mock.patch.dict(os.environ, {"RELAY_HOME": os.path.join(self.tmp, "relayhome"),
+                                            "RELAY_ROOT": self.tmp, "CODEX_HOME": os.path.join(self.tmp, "codex"),
+                                            "HOME": self.tmp})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def save(self):
+        state.write_state(state.state_path(self.work, "demo"), self.st)
+        helpers.sh(self.work, "git", "add", ".")
+        helpers.sh(self.work, "git", "commit", "-qm", "fixture")
+        helpers.sh(self.work, "git", "push", "-qu", "origin", "HEAD")
+
+    def test_rows_use_published_state_and_label_local_changes(self):
+        self.st["status"] = "drafting"
+        state.write_state(state.state_path(self.work, "demo"), self.st)
+        helpers.write(os.path.join(self.folder, "handoff.md"), "Unpushed work")
+        data = snapshot.build()
+        row = data["rows"][0]
+        self.assertEqual(row["status"], "waiting-owner")
+        self.assertIn("go", row["actions"])
+        self.assertIn("local changes not published", row["flags"])
+        self.assertEqual(row["seen"]["status"], "waiting-owner")
+        detail = snapshot.feature(self.work, "demo")
+        self.assertEqual(detail["local_handoff"]["text"], "Unpushed work")
+        self.assertFalse(detail["local_handoff"]["published"])
+
+    def test_github_failures_are_per_feature(self):
+        self.st.update(stage="build", status="ready-to-merge", pr=7)
+        self.save()
+        for error in (FileNotFoundError("gh missing"), RelayError("logged out"), RelayError("offline")):
+            with mock.patch("relaylib.gitops.gh_json", side_effect=error):
+                data = snapshot.build()
+            row = data["rows"][0]
+            self.assertEqual(row["ci"], "unknown")
+            self.assertEqual(row["pr_info"]["state"], "unknown")
+            self.assertNotIn("merge", row["actions"])
+            self.assertIn(str(error), row["action_reasons"]["merge"])
+            self.assertIn("usage", data)
+
+    def test_unreadable_repo_survives_enrichment(self):
+        os.makedirs(os.path.join(self.tmp, "bad"))
+        _, bad = helpers.make_repo(os.path.join(self.tmp, "bad"))
+        real = state.list_features
+        def fail(repo):
+            if os.path.realpath(repo) == os.path.realpath(bad):
+                raise PermissionError("cannot read repo state")
+            return real(repo)
+        with mock.patch("relaylib.status.checkouts", return_value=[self.work, bad]), \
+                mock.patch("relaylib.state.list_features", side_effect=fail):
+            rows = snapshot.build()["rows"]
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(any("cannot read repo state" in " ".join(row["flags"]) for row in rows))
+        self.assertTrue(any(row["feature"] == "demo" for row in rows))
+
+    def test_reviews_and_files_from_branch_not_checked_out(self):
+        for i, flags in enumerate(({}, {"skipped_reviewers": ["out"]}, {"same_provider": True}, {"confirmation": True}), 1):
+            commands.write_md(os.path.join(self.folder, "reviews", f"spec-{i}.codex.md"),
+                              {"at": f"2026-09-2{i}T12:00:00Z", "round": i, "reviewer": "codex",
+                               "model": "test", "effort": "medium", **flags}, helpers.verdict_block("GO"))
+        self.st["owner_actions"] = [{"action": "override go", "relayed_by": "claude session s2"}]
+        self.save()
+        commit = gitops.head_sha(self.work)
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        detail = snapshot.feature(self.work, "demo")
+        self.assertEqual([r["round"] for r in detail["reviews"]], [4, 3, 2, 1])
+        self.assertTrue(detail["reviews"][0]["confirmation"])
+        self.assertTrue(detail["reviews"][1]["same_provider"])
+        self.assertTrue(detail["reviews"][2]["fallback"])
+        self.assertEqual(len(detail["timeline"]), 5)
+        self.assertIn("relayed_by", detail["owner_actions"][0])
+        path = detail["reviews"][0]["path"]
+        self.assertIn("verdict: GO", snapshot.read_file(self.work, "demo", commit, path))
+        for bad in ("README.md", "docs/relay/demo/../other/state.md", "/etc/passwd", "docs/relay/demo2/state.md"):
+            with self.assertRaises(RelayError):
+                snapshot.read_file(self.work, "demo", commit, bad)
+        with self.assertRaises(RelayError):
+            snapshot.read_file(self.work, "demo", "HEAD", path)
+
+    def test_usage_and_ledger_groups(self):
+        now = time.time()
+        usage.append({"provider": "claude", "used_pct": 20, "sampled_at": now, "resets_at": now + 86400})
+        ledger.append({"repo": "project", "model": "model", "provider": "claude", "input": 100,
+                       "cached": 40, "output": 25, "duration_s": 120})
+        result = snapshot.usage()
+        self.assertEqual(result["providers"]["claude"]["weekly"]["used_pct"], 20)
+        for days in ("7", "30"):
+            total = result["ledger"][days]["repos"][0]
+            self.assertEqual((total["runs"], total["cached_share"], total["minutes"]), (1, 40, 2))
+            self.assertEqual(result["ledger"][days]["models"][0]["name"], "claude:model")
+
+    def test_done_feature_remains_readable_after_its_branch_is_deleted(self):
+        self.st.update(stage="done", status="done")
+        self.save()
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        helpers.sh(self.work, "git", "merge", "-q", "--ff-only", "feat/demo")
+        helpers.sh(self.work, "git", "push", "-q", "origin", "develop")
+        helpers.sh(self.work, "git", "push", "-q", "origin", "--delete", "feat/demo")
+        detail = snapshot.feature(self.work, "demo")
+        self.assertEqual(detail["state"]["status"], "done")
+        self.assertEqual(detail["actions"], [])
+
+    def test_merged_feature_skips_github_after_the_first_build(self):
+        gitops._MERGED_PRS.clear()
+        self.addCleanup(gitops._MERGED_PRS.clear)
+        self.st.update(stage="build", status="ready-to-merge", pr=7)
+        self.save()
+        reply = {"state": "MERGED", "number": 7, "baseRefName": "develop", "headRefOid": "a" * 40,
+                 "statusCheckRollup": []}
+        with mock.patch("relaylib.gitops.gh_json", return_value=reply) as gh:
+            first = snapshot.build()
+            asked = gh.call_count
+            second = snapshot.build()
+        self.assertGreater(asked, 0)
+        self.assertEqual(gh.call_count, asked)  # the second build asks GitHub nothing
+        row = second["rows"][0]
+        self.assertEqual(row["stage"], "done")
+        self.assertEqual(row["pr_info"]["state"], "MERGED")
+        self.assertEqual(row["actions"], [])
+        self.assertEqual(first["rows"][0]["pr_info"]["state"], "MERGED")
+        self.assertFalse(any(c.args[1][:1] == ["api"] for c in gh.call_args_list))  # no CI lookups once merged
+
+    def test_linked_worktrees_share_one_fetch_and_its_result(self):
+        linked = os.path.join(self.tmp, "linked")
+        helpers.sh(self.work, "git", "worktree", "add", "-q", "-b", "side", linked)
+        with mock.patch("relaylib.gitops.fetch", side_effect=RelayError("remote hung up")) as fetch:
+            data = snapshot.build()
+        self.assertEqual(fetch.call_count, 1)
+        row = data["rows"][0]
+        self.assertIn("remote hung up", row["flags"])
+        self.assertEqual(row["actions"], [])
+
+    def test_build_reads_each_worktree_list_once(self):
+        with mock.patch.object(gitops, "run", wraps=gitops.run) as spy:
+            snapshot.build()
+        lists = [c for c in spy.call_args_list if c.args[0][:3] == ["git", "worktree", "list"]]
+        self.assertEqual(len(lists), len({os.path.realpath(c.args[1]) for c in lists}))
+
+    def test_request_review_is_offered_for_an_open_ready_build_and_hidden_while_one_runs(self):
+        self.st.update(stage="build", status="ready-to-merge", pr=7)
+        self.save()
+        head = helpers.sh(self.work, "git", "rev-parse", "HEAD").strip()
+        reply = {"state": "OPEN", "number": 7, "baseRefName": "develop", "headRefOid": head, "statusCheckRollup": []}
+        with mock.patch("relaylib.gitops.gh_json", return_value=reply), \
+                mock.patch("relaylib.gitops.ci_for_code", return_value="green"):
+            detail = snapshot.feature(self.work, "demo")
+            self.assertIn("review", detail["actions"])
+            self.assertIn(detail["review_default"]["id"], [c["id"] for c in detail["review_choices"]])
+            self.assertIsNone(detail["review_job"])
+            helpers.write(os.path.join(state.relay_dir(self.work), "config.toml"),
+                          '[review.prefer]\ncodex = ["claude:claude-repo-only"]\n')
+            ids = [c["id"] for c in snapshot.feature(self.work, "demo")["review_choices"]]
+            self.assertIn("claude:claude-repo-only", ids)                   # this repository's own table
+            lock = reviewjobs.JobLock(self.work, "demo")
+            lock.acquire()
+            self.addCleanup(lock.release)
+            lock.write(reviewer="codex:gpt-6-astra", started_at=1.0, pid=os.getpid(), state="running", message="")
+            detail = snapshot.feature(self.work, "demo")
+            self.assertEqual(detail["actions"], [])
+            self.assertEqual(detail["review_job"]["state"], "running")
+        with mock.patch("relaylib.gitops.gh_json", return_value=dict(reply, state="CLOSED")):
+            lock.release()
+            self.assertNotIn("review", snapshot.feature(self.work, "demo")["actions"])
+
+    def hook(self, name, **extra):
+        sessions.capture("codex", io.StringIO(json.dumps(dict({"session_id": "s1", "hook_event_name": name,
+                                                                 "cwd": self.work}, **extra))))
+
+    def test_a_waiting_session_puts_a_drafting_feature_in_the_inbox(self):
+        self.st["status"] = "drafting"
+        self.save()
+        self.hook("Stop")
+        record_path = sessions.record_path("codex", "s1")
+        data = json.load(open(record_path))
+        data["since"] = data["at"] = time.time() - 600            # stopped ten minutes ago
+        json.dump(data, open(record_path, "w"))
+        snap = snapshot.build()
+        row = snap["rows"][0]
+        self.assertEqual(row["health"]["text"], "waiting on you 10m")
+        self.assertTrue(row["waiting_on_owner"])
+        self.assertTrue(row["health_inbox"])
+        detail = snapshot.feature(self.work, "demo")
+        self.assertEqual(detail["health"]["kind"], "attention")
+
+    def test_an_already_waiting_feature_keeps_its_reason_and_buttons(self):
+        self.hook("Stop")                                            # spec / waiting-owner, from setUp
+        record_path = sessions.record_path("codex", "s1")
+        data = json.load(open(record_path))
+        data["since"] = data["at"] = time.time() - 600
+        json.dump(data, open(record_path, "w"))
+        row = snapshot.build()["rows"][0]
+        self.assertTrue(row["waiting_on_owner"])
+        self.assertFalse(row["health_inbox"])
+        self.assertIn("go", row["actions"])
+
+    def test_activity_only_health_hints_and_invalid_settings(self):
+        self.st["status"] = "drafting"
+        self.save()
+        cfg_dir = state.relay_dir(self.work)
+        helpers.write(os.path.join(cfg_dir, "config.toml"), "[ui]\nquiet_minutes = 0\n")
+        snap = snapshot.build()
+        row = snap["rows"][0]
+        self.assertEqual(row["health"]["kind"], "ok")                # just committed: active
+        self.assertFalse(row["health_inbox"])
+        self.assertIn("ignored invalid [ui] quiet_minutes", snap["notes"])
+        self.assertIn("run relay hooks install", snap["session_hints"]["codex"])
+        os.makedirs(os.path.join(os.environ["HOME"], ".codex"), exist_ok=True)
+        from relaylib import hookinstall
+        hookinstall.install_file("codex", hookinstall.path_for("codex"), "s")
+        self.assertIn("trust them with /hooks", snapshot.build()["session_hints"]["codex"])
+        self.hook("UserPromptSubmit")
+        self.assertIsNone(snapshot.build()["session_hints"]["codex"])
+
+    def test_hook_health_survives_activity_failures_and_bad_records(self):
+        from relaylib import health
+        self.st["status"] = "drafting"
+        self.save()
+        os.makedirs(sessions.folder(), exist_ok=True)
+        with open(os.path.join(sessions.folder(), "bad.json"), "w") as f:
+            json.dump({"session_id": "s1", "state": "waiting", "pending": [], "since": 1, "at": 1}, f)   # no provider
+        with open(os.path.join(sessions.folder(), "list.json"), "w") as f:
+            json.dump({"provider": [], "session_id": "s1", "state": "waiting", "event": "Stop", "cwd": None,
+                       "pending": [], "since": 1, "at": 1}, f)
+        self.hook("PermissionRequest", tool_name="Bash", tool_input={"command": "x"})
+        record_path = sessions.record_path("codex", "s1")
+        data = json.load(open(record_path))
+        data["since"] = data["at"] = time.time() - 300
+        json.dump(data, open(record_path, "w"))
+        snap = snapshot.build()                                      # the bad record neither crashes nor counts
+        self.assertEqual(snap["rows"][0]["health"]["text"], "needs permission 5m")
+        with mock.patch.object(health, "branch_checkouts", side_effect=RuntimeError("worktrees vanished")):
+            found, act = snapshot.session_health(self.work, self.st, sessions.read_records(), time.time())
+        self.assertEqual(found["text"], "needs permission 5m")
+        self.assertIsNone(act["last_activity"])
+
+    def test_a_failed_local_scan_keeps_hook_health(self):
+        self.st["status"] = "drafting"
+        self.save()
+        self.hook("PermissionRequest", tool_name="Bash", tool_input={"command": "x"})
+        record_path = sessions.record_path("codex", "s1")
+        data = json.load(open(record_path))
+        data["since"] = data["at"] = time.time() - 300
+        json.dump(data, open(record_path, "w"))
+        with mock.patch.object(snapshot, "_local", side_effect=RelayError("git status failed")):
+            row = snapshot.build()["rows"][0]
+        self.assertEqual(row["health"]["text"], "needs permission 5m")
+        self.assertTrue(row["waiting_on_owner"])
+        self.assertTrue(any("could not read the local checkout" in f for f in row["flags"]))
+
+    def test_one_broken_config_does_not_stop_the_snapshot(self):
+        self.st["status"] = "drafting"
+        self.save()
+        helpers.write(os.path.join(state.relay_dir(self.work), "config.toml"), "[ui\nnot toml")
+        snap = snapshot.build()
+        self.assertEqual(len(snap["rows"]), 1)
+        self.assertEqual(snap["notes"], [])
+
+    def test_a_merged_feature_has_no_health_and_stays_out_of_the_inbox(self):
+        self.st.update(stage="build", status="ready-to-merge", pr=7)   # the branch state still says ready
+        self.save()
+        self.hook("Stop")
+        record_path = sessions.record_path("codex", "s1")
+        data = json.load(open(record_path))
+        data["since"] = data["at"] = time.time() - 600
+        json.dump(data, open(record_path, "w"))
+        reply = {"state": "MERGED", "number": 7, "baseRefName": "develop", "headRefOid": "a" * 40,
+                 "statusCheckRollup": []}
+        with mock.patch("relaylib.gitops.gh_json", return_value=reply):
+            row = snapshot.build()["rows"][0]
+            detail = snapshot.feature(self.work, "demo")
+        self.assertEqual(row["stage"], "done")
+        self.assertIsNone(row["health"])
+        self.assertFalse(row["health_inbox"])
+        self.assertFalse(row["waiting_on_owner"])
+        self.assertIsNone(detail["health"])
+
+    def test_done_and_unheld_features_have_no_health(self):
+        self.st.update(stage="done", status="done", owner={})
+        self.save()
+        row = snapshot.build()["rows"][0]
+        self.assertIsNone(row.get("health"))
+
+
+class CacheTest(unittest.TestCase):
+    def test_loading_success_failure_and_refresh(self):
+        gate, called = threading.Event(), threading.Event()
+        def build():
+            called.set()
+            gate.wait(2)
+            return {"rows": []}
+        cache = snapshot.Cache(builder=build, interval=60)
+        self.addCleanup(cache.close)
+        self.assertTrue(cache.get()["loading"])
+        cache.start()
+        self.assertTrue(called.wait(1))
+        self.assertTrue(cache.get()["loading"])
+        gate.set()
+        self.wait_for(lambda: cache.get()["data"] is not None)
+        self.assertGreaterEqual(cache.get()["age_seconds"], 0)
+        def failed():
+            raise RuntimeError("refresh failed")
+        cache.builder = failed
+        cache.refresh()
+        self.wait_for(lambda: cache.get()["error"])
+        self.assertEqual(cache.get()["data"], {"rows": []})
+        self.assertIn("refresh failed", cache.get()["error"])
+        first = snapshot.Cache(builder=failed)
+        self.addCleanup(first.close)
+        first.start()
+        self.wait_for(lambda: first.get()["error"])
+        self.assertIsNone(first.get()["data"])
+        self.assertFalse(first.get()["loading"])
+
+    def wait_for(self, predicate):
+        until = time.monotonic() + 2
+        while time.monotonic() < until:
+            if predicate():
+                return
+            time.sleep(.005)
+        self.fail("cache did not finish")

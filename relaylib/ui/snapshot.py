@@ -1,0 +1,349 @@
+"""Published feature data and a background cache shared by the UI endpoints."""
+import concurrent.futures
+import contextvars
+import dataclasses
+import datetime as dt
+import os
+import re
+import threading
+import time
+
+from .. import (availability, config, gitops, health, hookinstall, ledger, merged, owneractions, reviewjobs,
+               sessions, state, status, usage as samples, verdict)
+from ..errors import RelayError
+
+WORKERS = 8  # parallel fetches and feature details; gh and git are the wait, not the CPU
+
+
+def _since_ts(owner):
+    try:
+        return dt.datetime.fromisoformat(owner.get("since") or "").timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def session_health(repo, st, records, now):
+    """(health, activity) for a feature a session holds, else (None, None) (session-health R4-R6)."""
+    owner = st.get("owner") or {}
+    if st.get("status") not in state.HOLDING_STATUSES or not owner.get("session") or st.get("stage") == "done":
+        return None, None
+    try:
+        repo_cfg = config.load(repo)
+    except (RelayError, OSError):  # a broken repository config must not hide the session's health
+        repo_cfg = {}
+    grace, quiet, _ = health.ui_settings(repo_cfg)
+    try:
+        checkouts = health.branch_checkouts(repo, st["branch"])
+        act = health.activity(checkouts, st["branch"])
+    except Exception:  # activity never hides what a hook record says (R4)
+        checkouts, act = [], {"last_activity": None, "unpushed": None, "origin": None}
+    record = health.match(records, owner.get("provider"), owner["session"], _since_ts(owner), checkouts)
+    return health.health(record, act, grace, quiet, now), act
+
+
+def allowed_repo(repo):
+    real = os.path.realpath(repo)
+    if real not in {os.path.realpath(p) for p in status.checkouts(status.projects_root())}:
+        raise RelayError("repository is not in relay's projects or worktrees")
+    return real
+
+
+def read_file(repo, slug, ref, path):
+    repo = allowed_repo(repo)
+    prefix = f"{state.RELAY_DIR}/{slug}/"
+    if (not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug) or not re.fullmatch(r"[0-9a-f]{40}", ref)
+            or not path.lower().startswith(prefix) or any(p in (".", "..", "") for p in path.split("/"))):
+        raise RelayError("file must be under this feature's folder at a displayed commit")
+    text = gitops.show(repo, ref, path)
+    if text is None:
+        raise RelayError("file is not present at this revision")
+    return text
+
+
+def _review(repo, ref, path):
+    text = gitops.show(repo, ref, path) or ""
+    result = {"path": path, "stage": os.path.basename(path).split("-")[0], "blocking": [], "notes": []}
+    try:
+        meta = state.parse_state(text, path)
+        result.update(meta)
+        try:
+            result.update(dataclasses.asdict(verdict.parse(text, meta.get("round", 1))))
+        except RelayError as e:
+            result["parse_error"] = str(e)
+        result["fallback"] = bool(meta.get("skipped_reviewers"))
+        result["same_provider"] = bool(meta.get("same_provider"))
+        result["confirmation"] = bool(meta.get("confirmation") or meta.get("confirming"))
+    except RelayError as e:
+        result["parse_error"] = str(e)
+    return result
+
+
+def _local(repo, slug, branch, commit, handoff):
+    changed, local = False, None
+    for checkout in gitops.worktrees(repo):
+        if not os.path.isdir(checkout) or gitops.current_branch(checkout) != branch:
+            continue
+        changed = changed or bool(gitops.git(checkout, "status", "--porcelain").stdout.strip())
+        changed = changed or gitops.git(checkout, "diff", "--quiet", commit, "HEAD", check=False).returncode != 0
+        path = os.path.join(state.feature_dir(checkout, slug), "handoff.md")
+        if os.path.isfile(path):
+            with open(path) as f:
+                text = f.read()
+            if text != handoff:
+                local = {"path": path, "text": text, "published": False}
+    return changed, local
+
+
+def feature(repo, slug, records=None):
+    repo = allowed_repo(repo)
+    archived = False
+    try:
+        seen = owneractions.fingerprint(repo, slug, fetch=False)
+    except RelayError:
+        # Merging deletes the feature branch. Keep its published history readable on the base.
+        seen = None
+        for ref in ("origin/develop", "origin/main"):
+            try:
+                commit = gitops.head_sha(repo, ref)
+                st = owneractions.state_at(repo, slug, commit)
+                if merged.is_done(repo, st):
+                    seen = {"commit": commit, "branch": st["branch"], "stage": st["stage"],
+                            "status": st["status"], "owner": st.get("owner") or {},
+                            "pr": st.get("pr"), "pr_head": None}
+                    archived = True
+                    break
+            except (RelayError, OSError):
+                continue
+        if seen is None:
+            raise
+    commit = seen["commit"]
+    st = owneractions.state_at(repo, slug, commit)
+    files = gitops.ls_files(repo, commit, f"{state.RELAY_DIR}/{slug}")
+    handoff_path = next((p for p in files if p.lower().endswith("/handoff.md")), None)
+    handoff = gitops.show(repo, commit, handoff_path) if handoff_path else None
+    actions, reasons = [] if archived else owneractions.applicable(st), {}
+    info, ci = {"number": st.get("pr"), "state": "none", "url": None}, "none"
+    if st.get("pr") and (archived or merged.is_done(repo, st)):  # merged: nothing on GitHub can change
+        info["state"], ci = "MERGED", "merged"
+        try:
+            info["url"] = f"https://github.com/{owneractions.github_repo(repo)}/pull/{st['pr']}"
+        except RelayError:
+            pass
+    elif st.get("pr"):
+        try:
+            if seen.get("github_error"):
+                raise RelayError(seen["github_error"])
+            info.update(gitops.pr_info(repo, st["pr"]))
+            try:
+                info["url"] = f"https://github.com/{owneractions.github_repo(repo)}/pull/{st['pr']}"
+            except RelayError:
+                pass
+            ci = gitops.ci_for_code(repo, commit, f"{state.RELAY_DIR}/")
+        except (RelayError, OSError) as e:
+            info["state"], ci = "unknown", "unknown"
+            reasons["merge"] = f"GitHub is unknown: {e}"
+    if "merge" in actions:
+        if "merge" not in reasons:
+            try:
+                owneractions.merge_readiness(repo, st, seen)
+            except (RelayError, OSError) as e:
+                reasons["merge"] = str(e)
+        if "merge" in reasons:
+            actions.remove("merge")
+    if info["state"] == "MERGED":
+        actions = []
+    if "review" in actions and info["state"] != "OPEN":
+        actions.remove("review")
+    job = reviewjobs.status(repo, slug)
+    if job and job.get("state") == "running":  # the running review owns the feature until it ends
+        actions = []
+    repo_cfg = config.load(repo)  # the repository's effective table, the one prepare checks against
+    options = reviewjobs.choices(repo_cfg)
+    review_default = dict(zip(("id", "label", "note"), reviewjobs.default(repo_cfg, st, options)))
+    reviews = [_review(repo, commit, p) for p in files if "/reviews/" in p.lower() and p.endswith(".md")]
+    reviews.sort(key=lambda r: (r.get("at", ""), r["path"]), reverse=True)
+    local_error = None
+    try:
+        changed, local = _local(repo, slug, st["branch"], commit, handoff)
+    except (RelayError, OSError) as e:  # a failed local scan must not hide the session's health (R4)
+        changed, local, local_error = False, None, str(e)
+    timeline = [{"stage": stage, "author": st.get("authors", {}).get(stage),
+                 "rounds": st.get("rounds", {}).get(stage, 0), "verdict": st.get("verdicts", {}).get(stage),
+                 "skipped": stage in st.get("skipped", [])} for stage in ("idea", "spec", "plan", "build", "done")]
+    if archived or info["state"] == "MERGED":  # a finished feature has no session to watch
+        found, act = None, None
+    else:
+        found, act = session_health(repo, st, sessions.read_records() if records is None else records,
+                                    time.time())
+    return {"repo_path": repo, "feature": slug, "seen": seen, "state": st, "actions": actions,
+            "action_reasons": reasons, "pr_info": info, "ci": ci, "timeline": timeline, "reviews": reviews,
+            "owner_actions": st.get("owner_actions", []), "owner_session": st.get("owner"),
+            "handoff": {"path": handoff_path, "text": handoff, "published": True} if handoff is not None else None,
+            "local_handoff": local, "local_changes": changed,
+            "review_job": job, "review_choices": options, "review_default": review_default,
+            "health": found, "unpushed": (act or {}).get("unpushed"), "origin_at": (act or {}).get("origin"),
+            "local_error": local_error}
+
+
+def usage():
+    cfg, now = config.load(), time.time()
+    rows = samples.read()
+    providers = {}
+    for provider in config.PROVIDERS:
+        weekly = max((s for s in rows if s["provider"] == provider), key=lambda s: s["sampled_at"], default=None)
+        blocked, why = availability.blocked(provider, cfg["limits"])
+        providers[provider] = {"weekly": weekly, "blocked": blocked, "reason": why,
+                               "budget": samples.budget(provider, cfg, now)}
+    history = ledger.read()
+    totals = {}
+    for days in (7, 30):
+        groups = {"repos": {}, "models": {}}
+        for row in history:
+            try:
+                if samples.timestamp(row["at"]) < now - days * 86400:
+                    continue
+            except (KeyError, ValueError, TypeError):
+                continue
+            for kind, name in (("repos", row.get("repo", "?")),
+                               ("models", f"{row.get('provider', '?')}:{row.get('model', '?')}")):
+                total = groups[kind].setdefault(name, {"name": name, "runs": 0, "input": 0, "cached": 0,
+                                                       "output": 0, "minutes": 0})
+                total["runs"] += 1
+                for key in ("input", "cached", "output"):
+                    total[key] += row.get(key, 0)
+                total["minutes"] += row.get("duration_s", 0) / 60
+        totals[str(days)] = {}
+        for kind, group in groups.items():
+            for total in group.values():
+                total["cached_share"] = total["cached"] / total["input"] * 100 if total["input"] else 0
+            totals[str(days)][kind] = sorted(group.values(), key=lambda r: r["name"])
+    return {"providers": providers, "ledger": totals}
+
+
+def _parallel(fn, items):
+    """fn over items in order, on worker threads that share the caller's read memo."""
+    contexts = [contextvars.copy_context() for _ in items]  # copied here: a worker's own context has no memo
+    with concurrent.futures.ThreadPoolExecutor(WORKERS) as pool:
+        return list(pool.map(lambda pair: pair[0].run(fn, pair[1]), zip(contexts, items)))
+
+
+def _fetch(repo):
+    try:
+        gitops.fetch(repo)
+        return None
+    except (RelayError, OSError) as e:
+        return str(e)
+
+
+def _enrich(row, errors, fetched, records):
+    repo = row.get("checkout")
+    row.update(actions=[], action_reasons={}, health=None, health_inbox=False)
+    if not repo or row["feature"] == "?":
+        return None
+    row["repo_path"] = os.path.realpath(repo)
+    try:
+        detail = feature(repo, row["feature"], records)
+        st, seen = detail["state"], detail["seen"]
+        published = status._remote_row(repo, seen["commit"], row["feature"], st, bool(detail["handoff"]), fetched)
+        published["flags"] = [f.replace(seen["commit"], "origin/" + seen["branch"]) for f in published["flags"]]
+        if gitops.current_branch(repo) == seen["branch"]:
+            published["flags"] = [f for f in published["flags"] if "not checked out" not in f]
+        row.update(published)
+        for key in ("seen", "actions", "action_reasons", "pr_info", "ci", "review_job", "health"):
+            row[key] = detail[key]
+        if (row.get("health") or {}).get("kind") == "attention" and not row["waiting_on_owner"]:
+            row["waiting_on_owner"] = row["health_inbox"] = True  # in the inbox because of its session only
+        if detail["local_changes"]:
+            row["flags"].append("local changes not published")
+        if detail["local_handoff"]:
+            row["flags"].append("local handoff drafted, not pushed yet")
+        if detail["local_error"]:
+            row["flags"].append(f"could not read the local checkout: {detail['local_error']}")
+        if row["repo_path"] in errors:
+            row["flags"].append(errors[row["repo_path"]])
+            row["actions"] = detail["actions"] = []
+        return detail
+    except (RelayError, OSError, ValueError, KeyError) as e:
+        row["flags"].append(str(e))
+        row["actions"] = []
+        row["error"] = str(e)
+        return None
+
+
+def build():
+    samples.record_codex_sample()
+    samples.prune()
+    root = status.projects_root()
+    sessions.prune()
+    records = sessions.read_records()
+    with gitops.read_memo():
+        repos, groups = status.checkouts(root), {}
+        for repo in repos:  # linked worktrees share refs: concurrent fetches of one repository collide
+            try:
+                groups.setdefault(gitops.common_dir(repo), []).append(repo)
+            except RelayError:
+                groups.setdefault(repo, []).append(repo)
+        fetched = {}
+        for members, error in zip(groups.values(), _parallel(lambda members: _fetch(members[0]), list(groups.values()))):
+            fetched.update(dict.fromkeys(members, error))
+        errors = {os.path.realpath(repo): error for repo, error in fetched.items() if error}
+        rows = status.scan(root)
+        details = [d for d in _parallel(lambda row: _enrich(row, errors, fetched, records), rows) if d]
+    seen = {r["provider"] for r in records}
+    hints = {}
+    for provider in hookinstall.EVENTS:
+        if provider in seen:
+            hints[provider] = None
+        elif hookinstall.configured(provider):
+            hints[provider] = ("Hooks are configured but no events have arrived yet."
+                               + (" For Codex, trust them with /hooks." if provider == "codex" else ""))
+        else:
+            hints[provider] = "Session health needs relay's hooks: run relay hooks install in your terminal."
+    notes = set()
+    for repo in {r.get("repo_path") for r in rows if r.get("repo_path")}:
+        try:
+            notes.update(health.ui_settings(config.load(repo))[2])
+        except (RelayError, OSError):
+            continue  # that repository's row already reports its broken config
+    notes = sorted(notes)
+    return {"rows": rows, "features": details, "usage": usage(), "session_hints": hints, "notes": notes}
+
+
+class Cache:
+    def __init__(self, builder=build, interval=30):
+        self.builder, self.interval = builder, interval
+        self._lock, self._wake, self._stop = threading.Lock(), threading.Event(), threading.Event()
+        self._data, self._error, self._at, self._attempted = None, None, None, False
+        self._thread = None
+
+    def get(self):
+        with self._lock:
+            return {"loading": not self._attempted, "data": self._data, "error": self._error,
+                    "age_seconds": time.time() - self._at if self._at is not None else None,
+                    "built_at": self._at}
+
+    def start(self):
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._run, name="relay-snapshot", daemon=True)
+            self._thread.start()
+
+    def refresh(self):
+        self._wake.set()
+
+    def close(self):
+        self._stop.set()
+        self._wake.set()
+        if self._thread:
+            self._thread.join(timeout=1)
+
+    def _run(self):
+        while not self._stop.is_set():
+            self._wake.clear()
+            try:
+                data = self.builder()
+                with self._lock:
+                    self._data, self._error, self._at, self._attempted = data, None, time.time(), True
+            except Exception as e:
+                with self._lock:
+                    self._error, self._attempted = str(e), True
+            self._wake.wait(self.interval)

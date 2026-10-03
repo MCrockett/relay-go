@@ -1,0 +1,21 @@
+# Copy to compose.yaml, set RELAY_PROJECTS, then: docker compose up -d --build
+# The dashboard link: docker compose logs relay. A shell for logins and sessions: docker compose exec relay bash
+services:
+  relay:
+    build:
+      context: .
+      args:
+        UID: ${RELAY_UID:-1000}   # your host user id (id -u), so files in your projects keep your ownership
+        GID: ${RELAY_GID:-1000}   # id -g
+    image: relay
+    init: true
+    command: ["relay", "ui", "--host", "0.0.0.0", "--port", "8765"]
+    ports:
+      - "127.0.0.1:8765:8765"   # the host's loopback only; never publish the dashboard more widely
+    volumes:
+      - ${RELAY_PROJECTS:?set RELAY_PROJECTS to your projects folder}:/projects
+      - relay-home:/home/relay   # Claude, Codex and gh logins, git identity, ~/.relay
+    restart: unless-stopped
+
+volumes:
+  relay-home:

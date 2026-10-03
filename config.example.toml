@@ -1,0 +1,38 @@
+# relay roles and limits. `relay roles` shows them; `relay roles set <role> <provider:model[@effort]>` edits this file.
+# A repo can override any of this in docs/relay/config.toml.
+
+[roles]
+spec   = "claude:claude-opus-5-5"
+plan   = "claude:claude-opus-5-5"
+build  = "codex:gpt-6-astra"
+audit  = "claude:claude-opus-5-5"  # phase 2
+
+[roles.reviewer_models]  # only for `relay review --same-provider`
+claude = "claude-sonnet-5"
+codex  = "gpt-6-astra@high"
+
+[review]  # reviewer effort, unless a preference entry names its own (provider:model@effort)
+effort         = "medium"  # every round
+final_effort   = "high"    # the last round before the stage comes to you (round 4, or an extra round you grant)
+release_effort = "high"    # the build review of a PR to main
+
+[review.prefer]  # who reviews, by the stage author's provider; the first available entry wins
+claude = ["codex:gpt-6-astra", "claude:claude-sonnet-5", "claude:claude-fable-5-1"]
+codex  = ["claude:claude-sonnet-5", "claude:claude-fable-5-1"]
+owner  = ["codex:gpt-6-astra", "claude:claude-sonnet-5"]
+
+[limits]
+max_rounds          = 4   # hard ceiling; the progress rule usually stops sooner
+review_timeout_min  = 20
+handoff_context_pct = 60
+daily_share_pct     = 15  # phase 2 budget
+weekly_caution_pct  = 90  # phase 2 budget
+weekly_stop_pct     = 100 # phase 2 budget
+budget_stale_hours  = 6   # phase 2 budget
+timezone            = "America/Detroit"
+
+[notify]
+enabled = true  # macOS notification when a feature needs you (ready to merge, stopped, error, handoff)
+
+[build]
+require_ci = true  # a repo without CI sets this to false in its docs/relay/config.toml
