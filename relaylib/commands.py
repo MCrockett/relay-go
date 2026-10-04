@@ -79,7 +79,9 @@ def fast_forward(root, branch):
 
 
 def owner_record(me, root):
-    return {"provider": me.provider, "session": me.session, "worktree": root, "since": state.now_iso()}
+    # The checkout's folder name only: state.md is committed, and a full path would publish the owner's home folder.
+    return {"provider": me.provider, "session": me.session, "worktree": os.path.basename(os.path.normpath(root)),
+            "since": state.now_iso()}
 
 
 def record_owner_action(st, action, relayed_by=None, once=False):

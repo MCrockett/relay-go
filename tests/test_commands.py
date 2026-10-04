@@ -1445,3 +1445,10 @@ done
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OwnerRecordTest(unittest.TestCase):
+    def test_state_records_the_checkout_by_folder_name_never_its_full_path(self):
+        from types import SimpleNamespace
+        record = commands.owner_record(SimpleNamespace(provider="claude", session="s"), "/srv/code/proj-wt")
+        self.assertEqual(record["worktree"], "proj-wt")   # state.md is committed, often to public repos

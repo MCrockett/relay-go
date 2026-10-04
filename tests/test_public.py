@@ -6,7 +6,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHIPPED = ("bin/", "relaylib/", "prompts/", "skills/", "tests/", "tools/", "menubar/", ".github/",
            "README.md", "AGENTS.md", "LICENSE", "install.sh", "config.example.toml", "RULES.example.md",
-           "Dockerfile", ".dockerignore", "compose.example.yaml", "docker/")
+           "Dockerfile", ".dockerignore", "compose.example.yaml", "docker/", "docs/relay/")
 # Machine paths (the image's own /home/relay aside), and links to working docs that stay out of a public copy.
 PRIVATE = re.compile(r"/Users/|/home/(?!relay\b)[a-z]|/private/(tmp|var)/|docs/(superpowers|studies)/")
 
