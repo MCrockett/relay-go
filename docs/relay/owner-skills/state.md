@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "docs/owner-skills",
   "extra_rounds": {},
   "feature": "owner-skills",
@@ -12,7 +14,7 @@
     "worktree": "relay-go"
   },
   "owner_actions": [],
-  "pr": null,
+  "pr": 1,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -21,15 +23,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-10-04T09:23:16-04:00",
+  "status": "in-review",
+  "updated": "2026-10-04T09:37:19-04:00",
   "verdicts": {}
 }
 ---
