@@ -17,6 +17,12 @@ class PromptsTest(unittest.TestCase):
         for name in ("spec", "plan", "build", "release"):
             self.assertNotIn("$", prompts.render(name, ctx).split("## Owner rules")[0], name)
 
+    def test_release_review_checks_submission_declarations_build_numbers_and_runbook(self):
+        ctx = {"feature_dir": "d", "pr": 3, "base_ref": "origin/main", "base_sha": "a", "head_sha": "b"}
+        text = prompts.render("release", ctx).split("## Owner rules")[0]
+        for piece in ("privacy manifests", "export compliance", "only go up", "runbook"):
+            self.assertIn(piece, text)
+
 
 class RulesTest(unittest.TestCase):
     def setUp(self):
