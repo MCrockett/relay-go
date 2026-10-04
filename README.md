@@ -87,6 +87,13 @@ Your own files live in `~/.relay/` (`RELAY_HOME` moves it), never in this repo:
 
 A project's own rules live in its `docs/relay/RULES.md`, committed with the project and applied after the global ones. Add one from inside the project with `relay rule "..."`. Rules are the owner's decisions: an agent may add one only with `--relayed`, which records that it is passing on your words. `relay rules` prints the rules in effect for the current project. `RULES.example.md` shows the format.
 
+Your own skills, such as a release runbook for your apps, stay outside this repo: everything in `skills/` is
+installed for every relay user. Keep them in a folder of your own, link them into `~/.claude/skills` (and
+`~/.codex/skills`) the way `install.sh` links relay's, and tie them to the work through rules. A project rule like
+`relay rule "Releases follow the ios-release skill"` reaches the author through `relay rules` and the reviewer
+through every review prompt; the release review checks that a release follows the runbook its rules name. Use
+`relay rule --global` for a skill that applies to every project.
+
 Repo files: `prompts/` (review prompts), `skills/` (agent skills), `config.example.toml`. Run tests: `python3.11 -m unittest discover -s tests -t . -v`.
 
 ## Running in Docker
