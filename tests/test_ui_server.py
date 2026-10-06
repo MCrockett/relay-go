@@ -167,6 +167,43 @@ class ServerTest(unittest.TestCase):
             code, text = self.request("/api/action", "POST", payload)
             self.assertEqual((code, json.loads(text)["error"]), (400, "the PR is not open"))
 
+    def test_roles_endpoints(self):
+        cfg = os.path.join(self.tmp, "config.toml")
+        with open(cfg, "w") as f:
+            f.write('[review.prefer]\nclaude = ["codex:gpt-6-astra"]\n')
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        with mock.patch.dict(os.environ, {"RELAY_CONFIG": cfg, "RELAY_ROOT": root}), \
+                mock.patch.object(self.cache, "refresh") as refresh:
+            seen = snapshot.reviewers()["revision"]
+            body = {"author": "claude", "table": "timed", "entries": ["claude:claude-fable-5-1@high"],
+                    "until": "23:59", "seen": seen}
+            code, text = self.request("/api/roles", "POST", body)
+            self.assertEqual(code, 200, text)
+            result = json.loads(text)
+            self.assertIn("until", result["message"])
+            self.assertEqual(result["reviewers"]["authors"]["claude"]["entries"][0]["id"],
+                             "claude:claude-fable-5-1@high")
+            self.assertGreaterEqual(refresh.call_count, 1)
+            code, text = self.request("/api/roles", "POST", body)                       # seen is now stale
+            self.assertEqual(code, 409, text)
+            fresh = json.loads(text)["fresh"]["revision"]
+            for bad in ({"entries": ["gemini:x"]}, {"entries": []}, {"until": "2020-01-01T00:00Z"},
+                        {"table": "permanent"}, {"entries": "codex:a"}, {"seen": 5}, {"author": "nobody"}):
+                with self.subTest(bad=bad):
+                    code, text = self.request("/api/roles", "POST", {**body, "seen": fresh, **bad})
+                    self.assertEqual(code, 400, text)
+            self.assertEqual(snapshot.reviewers()["revision"], fresh)                    # nothing written
+            self.assertEqual(self.request("/api/roles/end", "POST", {"author": "claude", "seen": seen})[0], 409)
+            self.assertEqual(self.request("/api/roles/end", "POST", {"author": "nobody", "seen": fresh})[0], 400)
+            code, text = self.request("/api/roles/end", "POST", {"author": "claude", "seen": fresh})
+            self.assertEqual(code, 200, text)
+            self.assertEqual(json.loads(text)["reviewers"]["authors"]["claude"]["until"], None)
+            code, text = self.request("/api/roles/end", "POST",
+                                      {"author": "claude", "seen": snapshot.reviewers()["revision"]})
+            self.assertEqual((code, json.loads(text)["message"]), (200, "no temporary table for claude"))
+            self.assertEqual(self.request("/api/roles", "POST", body, token="wrong")[0], 403)
+
     def test_closing_the_server_stops_review_jobs(self):
         runtime = server.Runtime(0, cache=snapshot.Cache(builder=lambda: {"rows": []}))
         runtime.start()

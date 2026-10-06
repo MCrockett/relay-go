@@ -16,7 +16,7 @@ import time
 from urllib.parse import parse_qs, urlencode, urlsplit
 import webbrowser
 
-from .. import config, identity, owneractions, reviewjobs
+from .. import config, identity, owneractions, reviewjobs, reviewtables
 from ..errors import RelayError
 from ..usage import atomic_write
 from . import snapshot
@@ -164,6 +164,20 @@ class Handler(BaseHTTPRequestHandler):
                         self.reply(200, owneractions.merge(repo, body["slug"], body["seen"]))
                     else:
                         self.reply(200, owneractions.run_override(repo, body["slug"], action, body["seen"]))
+                finally:
+                    self.server.cache.refresh()
+            elif path in ("/api/roles", "/api/roles/end"):
+                try:
+                    if not isinstance(body.get("seen"), str):
+                        raise RelayError("seen must be the revision the page loaded")
+                    if path == "/api/roles":
+                        message = reviewtables.save(body.get("author"), body.get("table"), body.get("entries"),
+                                                    body.get("until") or None, "dashboard", body["seen"])
+                    else:
+                        message = reviewtables.end(body.get("author"), "dashboard", body["seen"])
+                    self.reply(200, {"message": message, "reviewers": snapshot.reviewers()})
+                except reviewtables.Stale as e:
+                    self.reply(409, {"error": str(e), "fresh": snapshot.reviewers()})
                 finally:
                     self.server.cache.refresh()
             else:
