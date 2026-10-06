@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "feat/sortable-ledger",
   "extra_rounds": {},
   "feature": "sortable-ledger",
@@ -12,7 +14,7 @@
     "worktree": "relay-go"
   },
   "owner_actions": [],
-  "pr": null,
+  "pr": 2,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -21,15 +23,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-10-06T12:54:00-04:00",
+  "status": "in-review",
+  "updated": "2026-10-06T13:02:49-04:00",
   "verdicts": {}
 }
 ---
