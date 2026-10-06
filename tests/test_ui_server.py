@@ -190,6 +190,8 @@ class ServerTest(unittest.TestCase):
             self.assertIn(piece, page)
         # Focus returns to the same header after every re-render (a click or the periodic refresh).
         self.assertIn("sortKind&&", page)
+        self.assertIn("focus({preventScroll:true})", page)   # a refresh never scrolls the page
+        self.assertIn("ledgerShown", page)                    # unchanged data is not rebuilt on a refresh
 
     @unittest.skipUnless(shutil.which("node"), "needs node")
     def test_sort_rules_run_in_node(self):
