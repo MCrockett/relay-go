@@ -2,6 +2,8 @@ import concurrent.futures
 import http.client
 import json
 import os
+import re
+import shutil
 import socket
 import signal
 import subprocess
@@ -184,8 +186,30 @@ class ServerTest(unittest.TestCase):
 
     def test_reviewer_activity_tables_sort_by_any_column(self):
         page = self.request("/?t=test-token")[1]
-        for piece in ("ledgerSort", "aria-sort", "sortLedger(", "'descending'", "'ascending'"):
+        for piece in ("ledgerSort", "aria-sort", "sortLedger(", "nextSort(", "data-sort-key", "aria-hidden"):
             self.assertIn(piece, page)
+        # Focus returns to the same header after every re-render (a click or the periodic refresh).
+        self.assertIn("sortKind&&", page)
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_sort_rules_run_in_node(self):
+        page = self.request("/?t=test-token")[1]
+        funcs = re.search(r"function sortLedger\(.*?(?=function renderLedger\()", page).group(0)
+        script = funcs + """
+const rows=[{name:'beta',runs:3},{name:'Alpha',runs:12},{name:'gamma',runs:3}];
+const names=(k,d)=>sortLedger(rows,k,d).map(r=>r.name).join(',');
+console.log(JSON.stringify({az:names('name','ascending'), most:names('runs','descending'),
+  least:names('runs','ascending'), untouched:rows.map(r=>r.name).join(','),
+  firstNum:nextSort({key:'name',dir:'ascending'},'runs'), firstName:nextSort({key:'runs',dir:'descending'},'name'),
+  flip:nextSort({key:'runs',dir:'descending'},'runs')}));"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["az"], "Alpha,beta,gamma")            # names A to Z, ignoring case
+        self.assertEqual(out["most"], "Alpha,beta,gamma")          # largest first; ties by name
+        self.assertEqual(out["least"], "beta,gamma,Alpha")
+        self.assertEqual(out["untouched"], "beta,Alpha,gamma")     # the data itself is not reordered
+        self.assertEqual(out["firstNum"], {"key": "runs", "dir": "descending"})
+        self.assertEqual(out["firstName"], {"key": "name", "dir": "ascending"})
+        self.assertEqual(out["flip"], {"key": "runs", "dir": "ascending"})
 
     def test_page_shows_session_health(self):
         page = self.request("/?t=test-token")[1]
