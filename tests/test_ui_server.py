@@ -270,6 +270,46 @@ console.log(JSON.stringify({before:shownEntries(a,999000).map(e=>e.id), after:sh
         out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
         self.assertEqual(out, {"before": ["t"], "after": ["p"], "live": True, "none": False})
 
+    def test_roles_editor_on_the_page(self):
+        page = self.request("/?t=test-token")[1]
+        for piece in ('<dialog id="roles-edit"', 'id="re-list"', '<label for="re-add">', 'list="re-known"',
+                      '<label for="re-until">', 'id="re-save"', "'/api/roles'", "'/api/roles/end'",
+                      "until_iso", "relay checks only its shape", "Changed since you looked",
+                      "rolesReturn", "kind==='roles'"):
+            self.assertIn(piece, page)
+        # Escape on either dialog returns focus too, not only the Cancel buttons (R17).
+        self.assertIn("$('confirm').addEventListener('close'", page)
+        self.assertIn("$('roles-edit').addEventListener('close'", page)
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_editor_list_rules_run_in_node(self):
+        page = self.request("/?t=test-token")[1]
+        funcs = re.search(r"function editList\(.*?(?=function openRolesEditor\()", page, re.S).group(0)
+        script = funcs + """
+const L=[{provider:'codex',model:'a',effort:null},{provider:'claude',model:'b',effort:'max'}];
+const ids=r=>r.list.map(e=>e.provider+':'+e.model+(e.effort?'@'+e.effort:'')).join(',');
+console.log(JSON.stringify({up:ids(editList(L,'up',1)), topUp:ids(editList(L,'up',0)), down:ids(editList(L,'down',0)),
+  remove:ids(editList(L,'remove',0)), effort:ids(editList(L,'effort',0,'high')), clear:ids(editList(L,'effort',1,'')),
+  add:ids(editList(L,'add',0,' claude:c ')), dup:editList(L,'add',0,'codex:a').error, bad:editList(L,'add',0,'gpt').error,
+  untouched:ids({list:L}), efforts:effortChoices(L), plain:effortChoices([L[0]]),
+  focus:focusTargets('claude:new')}));"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["up"], "claude:b@max,codex:a")
+        self.assertEqual(out["topUp"], "codex:a,claude:b@max")
+        self.assertEqual(out["down"], "claude:b@max,codex:a")
+        self.assertEqual(out["remove"], "claude:b@max")
+        self.assertEqual(out["effort"], "codex:a@high,claude:b@max")
+        self.assertEqual(out["clear"], "codex:a,claude:b")
+        self.assertEqual(out["add"], "codex:a,claude:b@max,claude:c")
+        self.assertIn("already", out["dup"])
+        self.assertIn("provider:model", out["bad"])
+        self.assertEqual(out["untouched"], "codex:a,claude:b@max")
+        # The four offered values, plus any other value already in the list (here max), kept in place.
+        self.assertEqual(out["efforts"], ["low", "medium", "high", "xhigh", "max"])
+        self.assertEqual(out["plain"], ["low", "medium", "high", "xhigh"])
+        # After Set temporary saves, that button is gone: focus falls back to Edit temporary, then Edit permanent.
+        self.assertEqual(out["focus"], ["claude:new", "claude:timed", "claude:permanent"])
+
     def test_page_shows_session_health(self):
         page = self.request("/?t=test-token")[1]
         # Options appears only when there is an owner action to pick, never just for health.
