@@ -7,6 +7,7 @@
   "branch": "feat/models-tab",
   "extra_rounds": {},
   "feature": "models-tab",
+  "handed_over_from": "b524d577-2970-473e-89f2-138d123a2555",
   "history": {
     "spec": [
       {
@@ -24,8 +25,8 @@
   },
   "owner": {
     "provider": "claude",
-    "session": "b524d577-2970-473e-89f2-138d123a2555",
-    "since": "2026-10-06T14:54:06-04:00",
+    "session": "d60f1d60-f786-474c-b6c7-b6dde1a615d8",
+    "since": "2026-10-06T15:52:42-04:00",
     "worktree": "relay-go-dev"
   },
   "owner_actions": [
@@ -61,7 +62,7 @@
   "small": false,
   "stage": "plan",
   "status": "drafting",
-  "updated": "2026-10-06T15:01:27-04:00",
+  "updated": "2026-10-06T15:52:42-04:00",
   "verdicts": {
     "spec": "GO"
   }
