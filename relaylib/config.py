@@ -1,7 +1,11 @@
 """Configuration: defaults, the owner's ~/.relay/config.toml, an optional per-repo docs/relay/config.toml, role specs."""
+import contextlib
 import copy
+import fcntl
 import os
 import re
+import tempfile
+import time
 import tomllib
 from dataclasses import dataclass
 
@@ -47,6 +51,10 @@ DEFAULTS = {
 }
 
 
+LOCK_TIMEOUT_S = 1.0
+EFFORT = re.compile(r"[a-z]+")
+
+
 @dataclass(frozen=True)
 class ModelSpec:
     provider: str
@@ -67,6 +75,22 @@ def parse_model_spec(text, provider=None):
     return ModelSpec(provider, model, effort or None)
 
 
+def validate_reviewers(entries):
+    """models-tab D11: the one rule set for every write of a review table. Reading stays lenient."""
+    entries = [e.strip() for e in entries if isinstance(e, str) and e.strip()]
+    if not entries:
+        raise RelayError("give at least one reviewer, e.g. codex:gpt-6-astra@high")
+    seen = set()
+    for e in entries:
+        spec = parse_model_spec(e)
+        if spec.effort is not None and not EFFORT.fullmatch(spec.effort):
+            raise RelayError(f"effort in {e!r} must be one lowercase word, like high")
+        if (spec.provider, spec.model) in seen:
+            raise RelayError(f"{spec.provider}:{spec.model} appears twice; list each reviewer once")
+        seen.add((spec.provider, spec.model))
+    return entries
+
+
 def config_path():
     return os.environ.get("RELAY_CONFIG") or os.path.join(relay_home(), "config.toml")
 
@@ -74,6 +98,41 @@ def config_path():
 def relay_home():
     """Per-machine state: ledger, merged-PR cache. Never committed."""
     return os.environ.get("RELAY_HOME") or os.path.expanduser("~/.relay")
+
+
+def atomic_write(path, text, mode=0o600):
+    folder = os.path.dirname(os.path.abspath(path))
+    os.makedirs(folder, exist_ok=True)
+    fd, temp = tempfile.mkstemp(prefix=".relay-", dir=folder)
+    try:
+        with os.fdopen(fd, "w") as f:
+            os.fchmod(f.fileno(), mode)
+            f.write(text)
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+
+
+@contextlib.contextmanager
+def write_lock(timeout=None):
+    """One lock in relay home for every reviewer-table write (models-tab D7). Not reentrant: take it once."""
+    timeout = LOCK_TIMEOUT_S if timeout is None else timeout
+    os.makedirs(relay_home(), exist_ok=True)
+    with open(os.path.join(relay_home(), "roles.lock"), "a") as f:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RelayError("busy, try again")
+                time.sleep(0.01)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def _merge(base, over):
@@ -124,15 +183,17 @@ def review_preferences(cfg, author):
 
 def set_role(path, key, value):
     """Rewrite one role line in config.toml, leaving every other line as written."""
+    with write_lock():
+        _set_role(path, key, value)
+
+
+def _set_role(path, key, value):
+    """set_role for a caller that already holds write_lock."""
     if key.startswith("review."):  # an ordered preference list: "provider:model[@effort], ..."
         section, name = "review.prefer", key.split(".", 1)[1]
         if name not in PROVIDERS + ("owner",):
             raise RelayError(f"review.{name}: the author must be claude, codex or owner")
-        entries = [e.strip() for e in value.split(",") if e.strip()]
-        if not entries:
-            raise RelayError("give at least one reviewer, e.g. codex:gpt-6-astra@high")
-        for e in entries:
-            parse_model_spec(e)
+        entries = validate_reviewers(value.split(","))
         value = None
         new_line = f"{name} = [" + ", ".join(f'"{e}"' for e in entries) + "]"
     elif key.startswith("reviewer."):
@@ -146,7 +207,7 @@ def set_role(path, key, value):
                          "\"provider:model, ...\" (see relay roles)")
     else:
         raise RelayError(f"unknown role {key!r}; expected {', '.join(ROLE_KEYS)} or reviewer.<provider>")
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    path = os.path.realpath(path)  # a symlinked config (dotfiles) stays a symlink
     lines = []
     if os.path.exists(path):
         with open(path) as f:
@@ -170,5 +231,5 @@ def set_role(path, key, value):
                 break
         else:
             lines.insert(start + 1, new_line)
-    with open(path, "w") as f:
-        f.write("\n".join(lines) + "\n")
+    mode = os.stat(path).st_mode & 0o777 if os.path.exists(path) else 0o644
+    atomic_write(path, "\n".join(lines) + "\n", mode)
