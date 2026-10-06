@@ -7,7 +7,6 @@
   "branch": "feat/models-tab",
   "extra_rounds": {},
   "feature": "models-tab",
-  "handed_over_from": "b524d577-2970-473e-89f2-138d123a2555",
   "history": {
     "spec": [
       {
@@ -62,7 +61,7 @@
   "small": false,
   "stage": "plan",
   "status": "drafting",
-  "updated": "2026-10-06T15:52:42-04:00",
+  "updated": "2026-10-06T15:52:47-04:00",
   "verdicts": {
     "spec": "GO"
   }
