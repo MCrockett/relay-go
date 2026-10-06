@@ -182,6 +182,11 @@ class ServerTest(unittest.TestCase):
             self.assertIn(piece, page)
         self.assertNotIn("prev==='running'", page)
 
+    def test_reviewer_activity_tables_sort_by_any_column(self):
+        page = self.request("/?t=test-token")[1]
+        for piece in ("ledgerSort", "aria-sort", "sortLedger(", "'descending'", "'ascending'"):
+            self.assertIn(piece, page)
+
     def test_page_shows_session_health(self):
         page = self.request("/?t=test-token")[1]
         # Options appears only when there is an owner action to pick, never just for health.
