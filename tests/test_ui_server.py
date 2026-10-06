@@ -88,8 +88,8 @@ class ServerTest(unittest.TestCase):
     def test_page_reads_like_an_inbox(self):
         page = self.request("/?t=test-token")[1]
         self.assertRegex(page, r'<link rel="icon" href="data:image/svg\+xml,')
-        # Usage has its own screen; the summary and usage strip stay in the shared header.
-        for view in ('id="projects-view"', 'id="usage-view"', 'id="tab-projects"', 'id="tab-usage"'):
+        # Models (reviewers and usage) has its own screen; the summary and usage strip stay in the shared header.
+        for view in ('id="projects-view"', 'id="usage-view"', 'id="tab-projects"', 'id="tab-models"'):
             self.assertIn(view, page)
         self.assertLess(page.index('id="usage-strip"'), page.index('id="projects-view"'))
         self.assertLess(page.index('id="projects-view"'), page.index('id="usage"'))
@@ -249,6 +249,26 @@ console.log(JSON.stringify({az:names('name','ascending'), most:names('runs','des
         self.assertEqual(out["firstNum"], {"key": "runs", "dir": "descending"})
         self.assertEqual(out["firstName"], {"key": "name", "dir": "ascending"})
         self.assertEqual(out["flip"], {"key": "runs", "dir": "ascending"})
+
+    def test_models_tab_and_reviewers_panel(self):
+        page = self.request("/?t=test-token")[1]
+        for piece in ('id="tab-models"', ">Models</a>", "#view=models", "view==='usage'", 'id="reviewers"',
+                      'id="reviewer-rows"', 'id="writer-roles"', "informational", "temporary until",
+                      "End now", "Edit permanent", "Set temporary", "Edit temporary", "renderReviewers()",
+                      "overrides your table for that project"):
+            self.assertIn(piece, page)
+        self.assertNotIn(">Usage</a>", page)
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_an_expired_timed_table_stops_showing_without_the_server(self):
+        page = self.request("/?t=test-token")[1]
+        funcs = re.search(r"function liveTimed\(.*?(?=function renderReviewers\()", page, re.S).group(0)
+        script = funcs + """
+const a={until:1000,entries:[{id:'t'}],permanent:[{id:'p'}]};
+console.log(JSON.stringify({before:shownEntries(a,999000).map(e=>e.id), after:shownEntries(a,1000000).map(e=>e.id),
+  live:liveTimed(a,999000), none:liveTimed({until:null},0)}));"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out, {"before": ["t"], "after": ["p"], "live": True, "none": False})
 
     def test_page_shows_session_health(self):
         page = self.request("/?t=test-token")[1]
