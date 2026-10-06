@@ -10,7 +10,7 @@ import time
 from zoneinfo import ZoneInfo
 
 from . import availability
-from .config import relay_home
+from .config import atomic_write, relay_home
 
 WEEK = 7 * 86400
 
@@ -24,19 +24,6 @@ def timestamp(value):
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ValueError("invalid timestamp")
     return float(value)
-
-
-def atomic_write(path, text, mode=0o600):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd, temp = tempfile.mkstemp(prefix=".relay-", dir=os.path.dirname(path))
-    try:
-        with os.fdopen(fd, "w") as f:
-            os.fchmod(f.fileno(), mode)
-            f.write(text)
-        os.replace(temp, path)
-    finally:
-        if os.path.exists(temp):
-            os.unlink(temp)
 
 
 @contextlib.contextmanager

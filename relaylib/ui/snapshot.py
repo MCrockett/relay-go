@@ -7,9 +7,10 @@ import os
 import re
 import threading
 import time
+import tomllib
 
 from .. import (availability, config, gitops, health, hookinstall, ledger, merged, owneractions, reviewjobs,
-               sessions, state, status, usage as samples, verdict)
+               reviewtables, sessions, state, status, usage as samples, verdict)
 from ..errors import RelayError
 
 WORKERS = 8  # parallel fetches and feature details; gh and git are the wait, not the CPU
@@ -220,6 +221,66 @@ def usage():
     return {"providers": providers, "ledger": totals}
 
 
+def _overriding(root, repos=None):
+    """Projects whose own docs/relay/config.toml sets [review.prefer] (models-tab D6)."""
+    out, top = [], os.path.realpath(root)
+    for repo in status.checkouts(root) if repos is None else repos:
+        if os.path.dirname(os.path.realpath(repo)) != top:
+            continue  # worktrees repeat their repository
+        path = os.path.join(state.relay_dir(repo), "config.toml")
+        try:
+            with open(path, "rb") as f:
+                prefer = (tomllib.load(f).get("review") or {}).get("prefer")
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        if isinstance(prefer, dict) and prefer:
+            out.append({"repo": os.path.basename(repo), "path": path, "authors": sorted(prefer)})
+    return out
+
+
+def reviewers(now=None, repos=None):
+    """The owner's review tables with the timed file applied, for the Models tab (models-tab R9)."""
+    now = time.time() if now is None else now
+    revision = reviewtables.revision()  # first: a save that lands while this builds is caught as stale
+    cfg, base = config.load(), config.load(timed=False)
+    tz, limits = base["limits"]["timezone"], cfg["limits"]
+    timed, problems = reviewtables.read(now)
+    changes = reviewtables.latest()
+    authors = {}
+    for author in reviewtables.AUTHORS:
+        t, change = timed.get(author), changes.get(author)
+        authors[author] = {
+            "entries": [reviewjobs.option(s, limits) for s in config.review_preferences(cfg, author)],
+            "permanent": [reviewjobs.option(s, limits) for s in config.review_preferences(base, author)],
+            "until": t["until"] if t else None,
+            "until_label": reviewtables.when(t["until"], tz) if t else None,
+            "until_iso": reviewtables.iso(t["until"], tz) if t else None,
+            "changed": {"label": reviewtables.when(change["at"], tz), "by": change["by"]} if change else None}
+    known = {f"{p['provider']}:{p['model']}" for a in authors.values() for p in a["entries"] + a["permanent"]}
+    for provider, model in base["roles"]["reviewer_models"].items():
+        known.add(f"{provider}:{config.parse_model_spec(model, provider).model}")
+    for row in ledger.read():
+        if row.get("provider") in config.PROVIDERS and row.get("model"):
+            known.add(f"{row['provider']}:{row['model']}")
+    known_list = []
+    for item in sorted(known):
+        option = reviewjobs.option(config.parse_model_spec(item), limits)
+        known_list.append({"id": item, "provider": option["provider"], "available": option["available"],
+                           "reason": option["reason"]})
+    review = base.get("review") or {}
+    return {"authors": authors, "writers": {r: base["roles"][r] for r in config.ROLE_KEYS},
+            "effort": {k: review.get(k) for k in ("effort", "final_effort", "release_effort")},
+            "known": known_list, "overriding": _overriding(status.projects_root(), repos), "problems": problems,
+            "timezone": tz, "revision": revision}
+
+
+def _reviewers_or_error(repos=None):
+    try:
+        return reviewers(repos=repos)
+    except (RelayError, OSError, ValueError, KeyError, TypeError) as e:
+        return {"error": str(e)}
+
+
 def _parallel(fn, items):
     """fn over items in order, on worker threads that share the caller's read memo."""
     contexts = [contextvars.copy_context() for _ in items]  # copied here: a worker's own context has no memo
@@ -306,7 +367,8 @@ def build():
         except (RelayError, OSError):
             continue  # that repository's row already reports its broken config
     notes = sorted(notes)
-    return {"rows": rows, "features": details, "usage": usage(), "session_hints": hints, "notes": notes}
+    return {"rows": rows, "features": details, "usage": usage(), "session_hints": hints, "notes": notes,
+            "reviewers": _reviewers_or_error(repos)}
 
 
 class Cache:

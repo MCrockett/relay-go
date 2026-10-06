@@ -10,7 +10,7 @@ class ConfigTest(unittest.TestCase):
         self.hub = os.path.join(self.tmp, "config.toml")
         with open(self.hub, "w") as f:
             f.write('[roles]\nbuild = "codex:gpt-6-astra"  # builder\n\n[roles.reviewer_models]\nclaude = "claude-sonnet-5"\n\n[limits]\nmax_rounds = 4\n')
-        p = mock.patch.dict(os.environ, {"RELAY_CONFIG": self.hub})
+        p = mock.patch.dict(os.environ, {"RELAY_CONFIG": self.hub, "RELAY_HOME": self.tmp})
         p.start()
         self.addCleanup(p.stop)
 
@@ -109,6 +109,45 @@ class ConfigTest(unittest.TestCase):
         os.environ["RELAY_CONFIG"] = os.path.join(self.tmp, "none.toml")      # built-in defaults only
         self.assertEqual([f"{p.provider}:{p.model}" for p in config.review_preferences(config.load(), "claude")],
                          ["codex:gpt-6-astra", "claude:claude-sonnet-5", "claude:claude-fable-5-1"])
+
+    def test_validate_reviewers_one_rule_set(self):
+        self.assertEqual(config.validate_reviewers([" codex:gpt-6-astra@xhigh", "", "claude:claude-fable-5-1"]),
+                         ["codex:gpt-6-astra@xhigh", "claude:claude-fable-5-1"])
+        for bad, why in ((["gemini:pro"], "provider"), (["codex:"], "empty"), ([], "at least one"),
+                         (["codex:a@High"], "lowercase"), (["codex:a@very high"], "lowercase"),
+                         (["codex:a@low", "codex:a@high"], "twice")):
+            with self.subTest(bad=bad), self.assertRaisesRegex(RelayError, why):
+                config.validate_reviewers(bad)
+
+    def test_set_role_refuses_duplicates_but_load_stays_lenient(self):
+        with open(self.hub, "a") as f:
+            f.write('\n[review.prefer]\nclaude = ["codex:a@High", "codex:a"]\n')
+        self.assertEqual([p.model for p in config.review_preferences(config.load(), "claude")], ["a", "a"])
+        with self.assertRaisesRegex(RelayError, "twice"):
+            config.set_role(self.hub, "review.claude", "codex:a, codex:a@high")
+
+    def test_set_role_is_atomic(self):
+        before = open(self.hub).read()
+        with mock.patch("os.replace", side_effect=OSError("disk full")), self.assertRaises(OSError):
+            config.set_role(self.hub, "build", "claude:claude-sonnet-5")
+        self.assertEqual(open(self.hub).read(), before)
+        self.assertEqual([n for n in os.listdir(self.tmp) if n.startswith(".relay-")], [])
+
+    def test_set_role_keeps_a_symlinked_config(self):
+        link = os.path.join(self.tmp, "linked.toml")
+        os.symlink(self.hub, link)
+        config.set_role(link, "build", "claude:claude-sonnet-5")
+        self.assertTrue(os.path.islink(link))
+        self.assertIn("claude-sonnet-5", open(self.hub).read())
+
+    def test_set_role_waits_for_the_lock_then_refuses(self):
+        import fcntl
+        with mock.patch.object(config, "LOCK_TIMEOUT_S", 0.05), \
+                open(os.path.join(self.tmp, "roles.lock"), "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            with self.assertRaisesRegex(RelayError, "busy, try again"):
+                config.set_role(self.hub, "build", "claude:claude-lock-test")
+        self.assertNotIn("claude-lock-test", open(self.hub).read())
 
 if __name__ == "__main__":
     unittest.main()

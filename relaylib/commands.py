@@ -7,7 +7,7 @@ import re
 import sys
 
 from . import (availability, config, freshness, gitops, identity, ledger, machine, merged, notify, ownership,
-               prompts, runner, state, verdict)
+               prompts, reviewtables, runner, state, verdict)
 from .errors import RelayError
 from .progress import RoundRecord
 
@@ -20,7 +20,8 @@ Run these in your own terminal, or tell the agent which one you choose: it runs 
 
 - `relay override go`: accept the stage as it is.
 - Narrow or split the stage: edit the stage file, then `relay override reset-rounds` and let the author resubmit.
-- Change the reviewer: `relay roles set reviewer.<provider> <model>`, then `relay override extra-round`.
+- Change the reviewer: `relay roles set review.<author> "provider:model, ..."` (add `--until 23:00` for a
+  temporary change), then `relay override extra-round`.
 - `relay override extra-round`: allow exactly one more round.
 """
 
@@ -151,6 +152,29 @@ def check_same_provider(env, args):
         if me.provider not in config.PROVIDERS:
             raise RelayError("--relayed records which agent passed the request on: --by must be claude or codex")
         args.same_relayed_by = f"{me.provider} session {me.session}"
+
+
+def owner_or_relayed(args, what):
+    """None for the owner in their own terminal; '<provider> session <id>' for an agent passing on the owner's
+    words with --relayed. Anything else is refused."""
+    env = dict(os.environ)
+    if not args.relayed:
+        identity.require_owner_terminal(env, what)
+        return None
+    if not identity.in_agent_session(env):
+        raise RelayError("--relayed is for an agent passing on the owner's decision; in your own terminal, "
+                         "run it without --relayed")
+    me = identity.detect(env, args.by)
+    if me.provider not in config.PROVIDERS:
+        raise RelayError("--relayed records which agent passed the decision on: --by must be claude or codex")
+    return f"{me.provider} session {me.session}"
+
+
+def _review_author(key):
+    author = key.split(".", 1)[1] if key.startswith("review.") else ""
+    if author not in reviewtables.AUTHORS:
+        raise RelayError(f"{key}: expected review.claude, review.codex or review.owner")
+    return author
 
 
 def refresh_upstream(c, me):
@@ -722,9 +746,21 @@ def cmd_handoff(args):
 # ---------------------------------------------------------------- roles / rule / cost
 
 def cmd_roles(args):
-    if args.action == "set":
+    if args.action in ("set", "end"):
+        by = owner_or_relayed(args, f"relay roles {args.action}") or "owner"
+        if args.action == "end":
+            if not args.key:
+                raise RelayError("usage: relay roles end review.<author> | all")
+            print("relay: " + reviewtables.end("all" if args.key == "all" else _review_author(args.key), by))
+            return 0
         if not (args.key and args.value):
-            raise RelayError("usage: relay roles set <role> <provider:model[@effort]>")
+            raise RelayError("usage: relay roles set <role> <provider:model[@effort]> [--until HH:MM]")
+        if args.key.startswith("review."):
+            print("relay: " + reviewtables.save(_review_author(args.key), "timed" if args.until else "permanent",
+                                                args.value.split(","), args.until, by))
+            return 0
+        if args.until:
+            raise RelayError("only review tables can be temporary: review.claude, review.codex, review.owner")
         config.set_role(config.config_path(), args.key, args.value)
         print(f"relay: {args.key} = {args.value} in {config.config_path()} (applies to every repo)")
         return 0
@@ -732,10 +768,23 @@ def cmd_roles(args):
     for role in ("spec", "plan", "build", "audit"):
         print(f"{role:8} {cfg['roles'][role]}   (who writes; informational until relay launches writers)")
     print("\nReviewers, first available wins (relay roles set review.<author> \"provider:model, ...\"):")
-    for author in config.PROVIDERS + ("owner",):
-        prefs = config.review_preferences(cfg, author)
-        print(f"  review.{author:6} " + " -> ".join(f"{p.provider}:{p.model}" + (f"@{p.effort}" if p.effort else "")
-                                                   for p in prefs))
+    base, (timed, problems), changes = config.load(timed=False), reviewtables.read(), reviewtables.latest()
+    tz = cfg["limits"]["timezone"]
+
+    def chain(prefs):
+        return " -> ".join(f"{p.provider}:{p.model}" + (f"@{p.effort}" if p.effort else "") for p in prefs)
+
+    for author in reviewtables.AUTHORS:
+        line = f"  review.{author:6} " + chain(config.review_preferences(cfg, author))
+        if author in timed:
+            line += f"   temporary until {reviewtables.when(timed[author]['until'], tz)}"
+            line += f"\n  {'':13} then {chain(config.review_preferences(base, author))}"
+        if author in changes:
+            line += (f"\n  {'':13} last changed {reviewtables.when(changes[author]['at'], tz)} "
+                     f"by {changes[author]['by']}")
+        print(line)
+    for problem in problems:
+        print(f"  note: {problem}")
     review = cfg.get("review") or {}
     print(f"  effort {review.get('effort', 'medium')}; last round before you: {review.get('final_effort', 'high')}; "
           f"release PRs: {review.get('release_effort', 'high')} (an entry's own @effort wins)")
@@ -878,10 +927,16 @@ def build_parser():
     h.add_argument("--feature")
     h.add_argument("--by")
     h.add_argument("--commit", action="store_true")
-    ro = add("roles", cmd_roles, "show roles, or `roles set <role> <provider:model[@effort]>`")
-    ro.add_argument("action", nargs="?", choices=["set"])
+    ro = add("roles", cmd_roles, "show roles, or `roles set <role> <provider:model[@effort]> [--until HH:MM]`, "
+                                 "or `roles end review.<author>|all` (set and end are owner only)")
+    ro.add_argument("action", nargs="?", choices=["set", "end"])
     ro.add_argument("key", nargs="?")
     ro.add_argument("value", nargs="?")
+    ro.add_argument("--until", help="review tables only: HH:MM or an ISO date-time with a zone, at most 7 days "
+                                    "away; the normal table returns by itself after it")
+    ro.add_argument("--relayed", action="store_true",
+                    help="agents only: pass on a change the owner asked for in this conversation (logged as relayed)")
+    ro.add_argument("--by", help="claude or codex, when detection is ambiguous (with --relayed)")
     ru = add("rule", cmd_rule, "add an owner rule for this project, or every project with --global (owner only)")
     ru.add_argument("text")
     ru.add_argument("--global", dest="globally", action="store_true", help="a rule for every project")

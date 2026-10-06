@@ -33,10 +33,15 @@ def choices(cfg):
             if key in seen:
                 continue
             seen.add(key)
-            blocked, why = availability.blocked(spec.provider, cfg["limits"])
-            out.append({"id": key, "provider": spec.provider, "model": spec.model, "effort": spec.effort,
-                        "available": not blocked, "reason": why if blocked else ""})
+            out.append(option(spec, cfg["limits"]))
     return out
+
+
+def option(spec, limits):
+    """One reviewer as the dashboard shows it: id, parts, and whether its provider can review now."""
+    blocked, why = availability.blocked(spec.provider, limits)
+    return {"id": spec_id(spec), "provider": spec.provider, "model": spec.model, "effort": spec.effort,
+            "available": not blocked, "reason": why if blocked else ""}
 
 
 def default(cfg, st, options=None):

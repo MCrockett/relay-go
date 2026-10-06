@@ -88,8 +88,8 @@ class ServerTest(unittest.TestCase):
     def test_page_reads_like_an_inbox(self):
         page = self.request("/?t=test-token")[1]
         self.assertRegex(page, r'<link rel="icon" href="data:image/svg\+xml,')
-        # Usage has its own screen; the summary and usage strip stay in the shared header.
-        for view in ('id="projects-view"', 'id="usage-view"', 'id="tab-projects"', 'id="tab-usage"'):
+        # Models (reviewers and usage) has its own screen; the summary and usage strip stay in the shared header.
+        for view in ('id="projects-view"', 'id="usage-view"', 'id="tab-projects"', 'id="tab-models"'):
             self.assertIn(view, page)
         self.assertLess(page.index('id="usage-strip"'), page.index('id="projects-view"'))
         self.assertLess(page.index('id="projects-view"'), page.index('id="usage"'))
@@ -167,6 +167,43 @@ class ServerTest(unittest.TestCase):
             code, text = self.request("/api/action", "POST", payload)
             self.assertEqual((code, json.loads(text)["error"]), (400, "the PR is not open"))
 
+    def test_roles_endpoints(self):
+        cfg = os.path.join(self.tmp, "config.toml")
+        with open(cfg, "w") as f:
+            f.write('[review.prefer]\nclaude = ["codex:gpt-6-astra"]\n')
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        with mock.patch.dict(os.environ, {"RELAY_CONFIG": cfg, "RELAY_ROOT": root}), \
+                mock.patch.object(self.cache, "refresh") as refresh:
+            seen = snapshot.reviewers()["revision"]
+            body = {"author": "claude", "table": "timed", "entries": ["claude:claude-fable-5-1@high"],
+                    "until": "23:59", "seen": seen}
+            code, text = self.request("/api/roles", "POST", body)
+            self.assertEqual(code, 200, text)
+            result = json.loads(text)
+            self.assertIn("until", result["message"])
+            self.assertEqual(result["reviewers"]["authors"]["claude"]["entries"][0]["id"],
+                             "claude:claude-fable-5-1@high")
+            self.assertGreaterEqual(refresh.call_count, 1)
+            code, text = self.request("/api/roles", "POST", body)                       # seen is now stale
+            self.assertEqual(code, 409, text)
+            fresh = json.loads(text)["fresh"]["revision"]
+            for bad in ({"entries": ["gemini:x"]}, {"entries": []}, {"until": "2020-01-01T00:00Z"},
+                        {"table": "permanent"}, {"entries": "codex:a"}, {"seen": 5}, {"author": "nobody"}):
+                with self.subTest(bad=bad):
+                    code, text = self.request("/api/roles", "POST", {**body, "seen": fresh, **bad})
+                    self.assertEqual(code, 400, text)
+            self.assertEqual(snapshot.reviewers()["revision"], fresh)                    # nothing written
+            self.assertEqual(self.request("/api/roles/end", "POST", {"author": "claude", "seen": seen})[0], 409)
+            self.assertEqual(self.request("/api/roles/end", "POST", {"author": "nobody", "seen": fresh})[0], 400)
+            code, text = self.request("/api/roles/end", "POST", {"author": "claude", "seen": fresh})
+            self.assertEqual(code, 200, text)
+            self.assertEqual(json.loads(text)["reviewers"]["authors"]["claude"]["until"], None)
+            code, text = self.request("/api/roles/end", "POST",
+                                      {"author": "claude", "seen": snapshot.reviewers()["revision"]})
+            self.assertEqual((code, json.loads(text)["message"]), (200, "no temporary table for claude"))
+            self.assertEqual(self.request("/api/roles", "POST", body, token="wrong")[0], 403)
+
     def test_closing_the_server_stops_review_jobs(self):
         runtime = server.Runtime(0, cache=snapshot.Cache(builder=lambda: {"rows": []}))
         runtime.start()
@@ -212,6 +249,73 @@ console.log(JSON.stringify({az:names('name','ascending'), most:names('runs','des
         self.assertEqual(out["firstNum"], {"key": "runs", "dir": "descending"})
         self.assertEqual(out["firstName"], {"key": "name", "dir": "ascending"})
         self.assertEqual(out["flip"], {"key": "runs", "dir": "ascending"})
+
+    def test_models_tab_and_reviewers_panel(self):
+        page = self.request("/?t=test-token")[1]
+        for piece in ('id="tab-models"', ">Models</a>", "#view=models", "view==='usage'", 'id="reviewers"',
+                      'id="reviewer-rows"', 'id="writer-roles"', "informational", "temporary until",
+                      "End now", "Edit permanent", "Set temporary", "Edit temporary", "renderReviewers()",
+                      "overrides your table for that project"):
+            self.assertIn(piece, page)
+        self.assertNotIn(">Usage</a>", page)
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_an_expired_timed_table_stops_showing_without_the_server(self):
+        page = self.request("/?t=test-token")[1]
+        funcs = re.search(r"function liveTimed\(.*?(?=function renderReviewers\()", page, re.S).group(0)
+        script = funcs + """
+const a={until:1000,entries:[{id:'t'}],permanent:[{id:'p'}]};
+console.log(JSON.stringify({before:shownEntries(a,999000).map(e=>e.id), after:shownEntries(a,1000000).map(e=>e.id),
+  live:liveTimed(a,999000), none:liveTimed({until:null},0)}));"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out, {"before": ["t"], "after": ["p"], "live": True, "none": False})
+
+    def test_roles_editor_on_the_page(self):
+        page = self.request("/?t=test-token")[1]
+        for piece in ('<dialog id="roles-edit"', 'id="re-list"', '<label for="re-add">', 'list="re-known"',
+                      '<label for="re-until">', 'id="re-save"', "'/api/roles'", "'/api/roles/end'",
+                      "until_iso", "relay checks only its shape", "Changed since you looked",
+                      "rolesReturn", "kind==='roles'"):
+            self.assertIn(piece, page)
+        # Escape on either dialog returns focus too, not only the Cancel buttons (R17).
+        self.assertIn("$('confirm').addEventListener('close'", page)
+        self.assertIn("$('roles-edit').addEventListener('close'", page)
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_editor_list_rules_run_in_node(self):
+        page = self.request("/?t=test-token")[1]
+        funcs = re.search(r"function editList\(.*?(?=function openRolesEditor\()", page, re.S).group(0)
+        script = funcs + """
+const L=[{provider:'codex',model:'a',effort:null},{provider:'claude',model:'b',effort:'max'}];
+const ids=r=>r.list.map(e=>e.provider+':'+e.model+(e.effort?'@'+e.effort:'')).join(',');
+console.log(JSON.stringify({up:ids(editList(L,'up',1)), topUp:ids(editList(L,'up',0)), down:ids(editList(L,'down',0)),
+  remove:ids(editList(L,'remove',0)), effort:ids(editList(L,'effort',0,'high')), clear:ids(editList(L,'effort',1,'')),
+  add:ids(editList(L,'add',0,' claude:c ')), dup:editList(L,'add',0,'codex:a').error, bad:editList(L,'add',0,'gpt').error,
+  untouched:ids({list:L}), efforts:effortChoices(L), plain:effortChoices([L[0]]),
+  focus:focusTargets('claude:new'),
+  keep:keepFresh({data:{revision:'new'},at:1000},{revision:'old'},2000).revision,
+  caught:keepFresh({data:{revision:'new'},at:1000},{revision:'new',x:1},2000).x,
+  expired:keepFresh({data:{revision:'new'},at:1000},{revision:'old'},47000).revision,
+  none:keepFresh(null,{revision:'old'},0).revision}));"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["up"], "claude:b@max,codex:a")
+        self.assertEqual(out["topUp"], "codex:a,claude:b@max")
+        self.assertEqual(out["down"], "claude:b@max,codex:a")
+        self.assertEqual(out["remove"], "claude:b@max")
+        self.assertEqual(out["effort"], "codex:a@high,claude:b@max")
+        self.assertEqual(out["clear"], "codex:a,claude:b")
+        self.assertEqual(out["add"], "codex:a,claude:b@max,claude:c")
+        self.assertIn("already", out["dup"])
+        self.assertIn("provider:model", out["bad"])
+        self.assertEqual(out["untouched"], "codex:a,claude:b@max")
+        # The four offered values, plus any other value already in the list (here max), kept in place.
+        self.assertEqual(out["efforts"], ["low", "medium", "high", "xhigh", "max"])
+        self.assertEqual(out["plain"], ["low", "medium", "high", "xhigh"])
+        # After Set temporary saves, that button is gone: focus falls back to Edit temporary, then Edit permanent.
+        self.assertEqual(out["focus"], ["claude:new", "claude:timed", "claude:permanent"])
+        # A poll that lands before the snapshot rebuilds keeps the table the save returned (stale snapshot),
+        # takes the snapshot once it shows the same revision, and gives up after 45 seconds.
+        self.assertEqual((out["keep"], out["caught"], out["expired"], out["none"]), ("new", 1, "old", "old"))
 
     def test_page_shows_session_health(self):
         page = self.request("/?t=test-token")[1]

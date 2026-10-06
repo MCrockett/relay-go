@@ -918,6 +918,51 @@ done
         self.assertIn("codex: out of usage until", self.last_out)
         self.assertIn("effort medium; last round before you: high; release PRs: high", self.last_out)
 
+    def owner_env(self):
+        return mock.patch.dict(os.environ, {k: v for k, v in os.environ.items()
+                                            if k not in ("CLAUDECODE", "RELAY_PROVIDER", "RELAY_SESSION")},
+                               clear=True)
+
+    def test_roles_set_and_end_are_owner_only(self):                     # R7, D5, F7
+        for argv in (("roles", "set", "review.claude", "codex:gpt-6-astra"),
+                     ("roles", "set", "build", "claude:claude-sonnet-5"), ("roles", "end", "all")):
+            self.assertEqual(self.relay(*argv), 1)
+            self.assertIn("owner-only", self.last_err)
+        self.assertNotIn("review.prefer", open(self.cfg).read())
+        self.assertEqual(self.relay("roles"), 0, self.last_err)               # showing stays open
+        self.assertEqual(self.relay("roles", "set", "review.claude", "codex:gpt-6-astra", "--relayed"), 0,
+                         self.last_err)
+        self.assertEqual(self.relay("roles"), 0, self.last_err)
+        self.assertRegex(self.last_out, r"last changed \w{3} \d\d:\d\d by claude session s1")
+        with self.owner_env():
+            self.assertEqual(self.relay("roles", "set", "review.codex", "claude:claude-sonnet-5"), 0, self.last_err)
+            self.assertEqual(self.relay("roles", "set", "review.codex", "claude:a", "--relayed"), 1)
+            self.assertIn("own terminal", self.last_err)
+
+    def test_roles_until_shows_temporary_then_permanent_and_ends(self):  # R1, R5, R6
+        with self.owner_env():
+            self.assertEqual(self.relay("roles", "set", "review.claude", "codex:gpt-6-astra"), 0, self.last_err)
+            self.assertEqual(self.relay("roles", "set", "review.claude", "claude:claude-fable-5-1",
+                                        "--until", "23:59"), 0, self.last_err)
+            self.assertEqual(self.relay("roles"), 0, self.last_err)
+            self.assertRegex(self.last_out, r"review\.claude\s+claude:claude-fable-5-1\s+temporary until \w{3} 23:59")
+            self.assertRegex(self.last_out, r"then codex:gpt-6-astra")
+            self.assertEqual(self.relay("roles", "set", "build", "claude:x", "--until", "23:59"), 1)
+            self.assertIn("only review tables", self.last_err)
+            self.assertEqual(self.relay("roles", "set", "review.claude", "codex:a", "--until", "2020-01-01T00:00Z"), 1)
+            self.assertIn("past", self.last_err)
+            self.assertEqual(self.relay("roles", "end", "review.claude"), 0, self.last_err)
+            self.assertIn("back to codex:gpt-6-astra", self.last_out)
+            self.assertEqual(self.relay("roles", "end", "review.claude"), 0, self.last_err)
+            self.assertIn("no temporary table for claude", self.last_out)
+            self.assertEqual(self.relay("roles", "end", "review.nobody"), 1)
+
+    def test_roles_reports_an_ignored_timed_file(self):                  # F3
+        os.makedirs(os.environ["RELAY_HOME"], exist_ok=True)
+        helpers.write(os.path.join(os.environ["RELAY_HOME"], "review-until.json"), "{oops")
+        self.assertEqual(self.relay("roles"), 0, self.last_err)
+        self.assertIn("review-until.json ignored", self.last_out)
+
     def test_a_reviewer_that_times_out_twice_hands_over_with_its_own_retry(self):
         helpers.write(self.cfg, "[limits]\nreview_timeout_min = 0.02\n")
         self.to_spec()

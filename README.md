@@ -72,11 +72,15 @@ At about 60% context, or when switching provider or machine: `relay handoff`, fi
 
 `[review.prefer]` in `~/.relay/config.toml` lists, for each stage author (claude, codex, owner), the reviewers in order of preference. relay uses the first one that is available. A provider is skipped while its weekly limit is used up (read from Codex's own logs) or after a review failed on a usage limit (remembered until the reset); the next entry reviews in the same `relay submit`. Fallback and same-provider reviews are recorded in the review file, the commit and `relay status`. Reviewers run at `effort` (medium) each round, at `final_effort` (high) in the last round before a stage comes to you, and at `release_effort` (high) for a PR to main; an entry like `codex:gpt-6-astra@low` pins its own effort. A same-provider review on purpose (`--same-provider`) is your call: an agent passes it only when you ask, with `--relayed`, and it is recorded as your decision. `relay roles` shows the table and who is out right now; `relay roles set review.claude "codex:gpt-6-astra@high, claude:claude-fable-5-1"` changes it for every repo.
 
+Changing a table is your decision: `relay roles set` and `relay roles end` run in your own terminal, and an agent passes them on only when you ask, with `--relayed` (logged with its session). A list may not name the same model twice, and an effort is one lowercase word (`low`, `high`, `xhigh`). Add `--until 23:00` (or an ISO date-time with a zone, at most 7 days away) to make a change temporary: relay keeps it in `~/.relay/review-until.json` and returns to your normal table by itself when the time passes, even if nothing is running then. A temporary table wins over a project's own `docs/relay/config.toml`, and setting the normal table leaves it in place. `relay roles end review.claude` (or `all`) ends it early. Every change is logged in `~/.relay/roles-log.jsonl`, and `relay roles` shows the latest one per author.
+
 ## Settings
 
     relay roles                              show who does what
     relay roles set build claude:claude-sonnet-5
     relay roles set reviewer.codex gpt-6-astra@medium
+    relay roles set review.claude "claude:claude-fable-5-1, codex:gpt-6-astra" --until 23:00
+    relay roles end review.claude            back to the normal table now (or: all)
     relay rule "Prefer Sonnet for plan reviews under 200 lines"
     relay cost --since 7d                    tokens used by relay-launched reviews
 
@@ -124,7 +128,9 @@ opens the running dashboard. Agent sessions cannot start it.
 
 The inbox lists features waiting on you. Open a feature to see its stage history, reviews, owner decisions,
 session, handoff and CI. Reviews open even when their branch is not checked out. The All features table
-can include completed work. Usage shows Codex and Claude weekly limits, daily carry-forward budgets,
+can include completed work. Models shows the reviewer tables at the top: reorder, add and remove
+reviewers, set their effort, or make a change temporary, each after a confirmation. Writer roles are shown
+for information. Below them are Codex and Claude weekly limits, daily carry-forward budgets,
 and reviewer activity by project and model for seven or thirty days. Daily budgets need a sample from
 before today's midnight in the current week; until then they say "no baseline yet".
 
