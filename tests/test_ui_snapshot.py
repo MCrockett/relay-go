@@ -343,3 +343,51 @@ class CacheTest(unittest.TestCase):
                 return
             time.sleep(.005)
         self.fail("cache did not finish")
+
+
+class ReviewersTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.tmp = temp.name
+        self.cfg = os.path.join(self.tmp, "config.toml")
+        helpers.write(self.cfg, '[review.prefer]\nclaude = ["codex:gpt-6-astra@high"]\n')
+        root = os.path.join(self.tmp, "root")
+        os.makedirs(os.path.join(root, "proj", ".git"))
+        helpers.write(os.path.join(root, "proj", "docs", "relay", "config.toml"), '[review.prefer]\ncodex = ["claude:x"]\n')
+        os.makedirs(os.path.join(root, "plain", ".git"))
+        patch = mock.patch.dict(os.environ, {"RELAY_HOME": os.path.join(self.tmp, "home"), "RELAY_CONFIG": self.cfg,
+                                            "RELAY_ROOT": root, "CODEX_HOME": os.path.join(self.tmp, "codex")})
+        patch.start()
+        self.addCleanup(patch.stop)
+        ledger.append({"at": "2026-10-06T10:00:00-04:00", "provider": "claude", "model": "claude-haiku-4-5",
+                       "repo": "x"})
+
+    def test_reviewers_object(self):
+        from relaylib import reviewtables
+        reviewtables.save("claude", "timed", ["claude:claude-fable-5-1"], "23:59", "owner")
+        r = snapshot.reviewers()
+        claude = r["authors"]["claude"]
+        self.assertEqual([e["id"] for e in claude["entries"]], ["claude:claude-fable-5-1"])
+        self.assertEqual([e["id"] for e in claude["permanent"]], ["codex:gpt-6-astra@high"])
+        self.assertTrue(claude["until"] and claude["until_label"])
+        self.assertRegex(claude["until_iso"], r"T23:59[-+]\d\d:\d\d$")
+        self.assertEqual(claude["changed"]["by"], "owner")
+        self.assertIsNone(r["authors"]["codex"]["until"])
+        self.assertIsNone(r["authors"]["codex"]["changed"])
+        known = [k["id"] for k in r["known"]]
+        self.assertIn("claude:claude-haiku-4-5", known)                 # from the ledger
+        self.assertIn("codex:gpt-6-astra", known)                       # from the config, without effort
+        self.assertEqual([(o["repo"], o["authors"]) for o in r["overriding"]], [("proj", ["codex"])])
+        self.assertEqual(set(r["writers"]), {"spec", "plan", "build", "audit"})
+        self.assertEqual(r["effort"]["effort"], "medium")
+        self.assertEqual(r["revision"], reviewtables.revision())
+        self.assertEqual(r["problems"], [])
+
+    def test_reviewers_with_no_files_still_has_a_revision(self):
+        os.unlink(self.cfg)
+        self.assertTrue(snapshot.reviewers()["revision"])
+
+    def test_a_broken_table_does_not_break_the_snapshot(self):
+        helpers.write(self.cfg, '[review.prefer]\nclaude = ["gemini:x"]\n')
+        self.assertIn("error", snapshot._reviewers_or_error())
