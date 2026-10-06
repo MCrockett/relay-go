@@ -144,7 +144,7 @@ def _merge(base, over):
     return base
 
 
-def load(repo_root=None):
+def load(repo_root=None, timed=True):
     cfg = copy.deepcopy(DEFAULTS)
     paths = [config_path()]
     if repo_root:
@@ -157,6 +157,10 @@ def load(repo_root=None):
                     _merge(cfg, tomllib.load(f))
                 except tomllib.TOMLDecodeError as e:
                     raise RelayError(f"{path}: {e}")
+    if timed:  # a temporary table wins over the owner's and the repo's tables until it ends (models-tab D3)
+        from . import reviewtables  # reviewtables imports config at module level
+        for author, table in reviewtables.read()[0].items():
+            cfg.setdefault("review", {}).setdefault("prefer", {})[author] = list(table["entries"])
     return cfg
 
 
