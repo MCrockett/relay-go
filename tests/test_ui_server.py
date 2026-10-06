@@ -292,7 +292,11 @@ console.log(JSON.stringify({up:ids(editList(L,'up',1)), topUp:ids(editList(L,'up
   remove:ids(editList(L,'remove',0)), effort:ids(editList(L,'effort',0,'high')), clear:ids(editList(L,'effort',1,'')),
   add:ids(editList(L,'add',0,' claude:c ')), dup:editList(L,'add',0,'codex:a').error, bad:editList(L,'add',0,'gpt').error,
   untouched:ids({list:L}), efforts:effortChoices(L), plain:effortChoices([L[0]]),
-  focus:focusTargets('claude:new')}));"""
+  focus:focusTargets('claude:new'),
+  keep:keepFresh({data:{revision:'new'},at:1000},{revision:'old'},2000).revision,
+  caught:keepFresh({data:{revision:'new'},at:1000},{revision:'new',x:1},2000).x,
+  expired:keepFresh({data:{revision:'new'},at:1000},{revision:'old'},47000).revision,
+  none:keepFresh(null,{revision:'old'},0).revision}));"""
         out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
         self.assertEqual(out["up"], "claude:b@max,codex:a")
         self.assertEqual(out["topUp"], "codex:a,claude:b@max")
@@ -309,6 +313,9 @@ console.log(JSON.stringify({up:ids(editList(L,'up',1)), topUp:ids(editList(L,'up
         self.assertEqual(out["plain"], ["low", "medium", "high", "xhigh"])
         # After Set temporary saves, that button is gone: focus falls back to Edit temporary, then Edit permanent.
         self.assertEqual(out["focus"], ["claude:new", "claude:timed", "claude:permanent"])
+        # A poll that lands before the snapshot rebuilds keeps the table the save returned (stale snapshot),
+        # takes the snapshot once it shows the same revision, and gives up after 45 seconds.
+        self.assertEqual((out["keep"], out["caught"], out["expired"], out["none"]), ("new", 1, "old", "old"))
 
     def test_page_shows_session_health(self):
         page = self.request("/?t=test-token")[1]
