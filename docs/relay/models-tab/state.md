@@ -61,7 +61,7 @@
   "small": false,
   "stage": "plan",
   "status": "drafting",
-  "updated": "2026-10-06T15:00:56-04:00",
+  "updated": "2026-10-06T15:01:27-04:00",
   "verdicts": {
     "spec": "GO"
   }
