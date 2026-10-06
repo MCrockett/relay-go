@@ -6,7 +6,19 @@
   "branch": "feat/sortable-ledger",
   "extra_rounds": {},
   "feature": "sortable-ledger",
-  "history": {},
+  "history": {
+    "build": [
+      {
+        "blocking_ids": [
+          "R1-1"
+        ],
+        "head": "ddfd45ffaedeb06eee7c3f721ccf982354da5d8b",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ]
+  },
   "owner": {
     "provider": "claude",
     "session": "b524d577-2970-473e-89f2-138d123a2555",
@@ -18,6 +30,9 @@
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
+  "review_notes": {
+    "build": "same provider as the author"
+  },
   "reviewed": {
     "build": null,
     "plan": null,
@@ -32,9 +47,11 @@
   ],
   "small": true,
   "stage": "build",
-  "status": "in-review",
-  "updated": "2026-10-06T13:02:49-04:00",
-  "verdicts": {}
+  "status": "changes-requested",
+  "updated": "2026-10-06T13:09:11-04:00",
+  "verdicts": {
+    "build": "NO-GO"
+  }
 }
 ---
 
