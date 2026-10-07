@@ -7,7 +7,7 @@ import time
 import unittest
 from unittest import mock
 
-from relaylib import commands, config, gitops, ledger, reviewjobs, sessions, state, usage
+from relaylib import commands, config, gitops, ledger, reviewjobs, sessions, state, usage, writerusage
 from relaylib.errors import RelayError
 from relaylib.ui import snapshot
 from tests import helpers
@@ -26,7 +26,7 @@ class SnapshotTest(unittest.TestCase):
         self.save()
         patch = mock.patch.dict(os.environ, {"RELAY_HOME": os.path.join(self.tmp, "relayhome"),
                                             "RELAY_ROOT": self.tmp, "CODEX_HOME": os.path.join(self.tmp, "codex"),
-                                            "HOME": self.tmp})
+                                            "CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "claude"), "HOME": self.tmp})
         patch.start()
         self.addCleanup(patch.stop)
 
@@ -154,6 +154,23 @@ class SnapshotTest(unittest.TestCase):
         row = data["rows"][0]
         self.assertIn("remote hung up", row["flags"])
         self.assertEqual(row["actions"], [])
+
+    def test_writing_is_the_summary_or_its_error(self):
+        small = {"7": {"features": []}, "30": {"features": []}, "unreadable": [], "notes": []}
+        with mock.patch.object(writerusage, "summary", return_value=small) as summary:
+            data = snapshot.build()
+        self.assertEqual(data["writing"], small)
+        self.assertEqual(os.path.realpath(summary.call_args.args[0][0]), os.path.realpath(self.work))
+        with mock.patch.object(writerusage, "summary", side_effect=OSError("x")):
+            data = snapshot.build()
+        self.assertEqual(data["writing"], {"error": "x"})
+        self.assertEqual(len(data["rows"]), 1)                     # the rest of the snapshot is intact
+
+    def test_writing_notes_a_failed_fetch(self):
+        with mock.patch("relaylib.gitops.fetch", side_effect=RelayError("remote hung up")):
+            data = snapshot.build()
+        self.assertIn(f"fetch failed for {os.path.basename(self.work)}: writing sessions use the last fetched history",
+                      data["writing"]["notes"])
 
     def test_build_reads_each_worktree_list_once(self):
         with mock.patch.object(gitops, "run", wraps=gitops.run) as spy:

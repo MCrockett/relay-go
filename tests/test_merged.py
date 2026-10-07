@@ -66,3 +66,9 @@ class MergedTest(unittest.TestCase):
         self.assertEqual(merged.merged_at(work, {"status": "ready-to-merge", "pr": 7}, branch_head=x), 1791316800.0)
         self.assertIsNone(merged.merged_at(work, {"status": "drafting"}, branch_head="0" * 40))
 
+    def test_merged_without_a_time_is_asked_once(self):
+        helpers.write(self.data, '{"state": "MERGED"}')
+        self.assertIsNone(merged.merged_at(self.tmp, {"status": "ready-to-merge", "pr": 7}))
+        os.remove(self.data)  # gh would now fail loudly; it is not asked
+        with mock.patch.object(merged.gitops, "gh_json", side_effect=AssertionError("asked again")):
+            self.assertIsNone(merged.merged_at(self.tmp, {"status": "ready-to-merge", "pr": 7}))

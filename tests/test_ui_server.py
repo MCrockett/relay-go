@@ -322,11 +322,21 @@ console.log(JSON.stringify({up:ids(editList(L,'up',1)), topUp:ids(editList(L,'up
 
     def test_activity_tables_say_they_count_review_runs_only(self):
         page = self.request("/?t=test-token")[1]
-        for piece in ("<h3>Review runs</h3>", "'Review runs by project'", "'Review runs by model'",
-                      "Writing sessions (spec, plan, build) are not counted here"):
+        for piece in ("<h3>Review runs</h3>", "'Review runs by project'", "'Review runs by model'"):
             self.assertIn(piece, page)
-        for old in ("Reviewer activity", "'By project'", "'By model'"):
+        for old in ("Reviewer activity", "'By project'", "'By model'", "are not counted here"):
             self.assertNotIn(old, page)
+
+    def test_writing_session_tables(self):
+        page = self.request("/?t=test-token")[1]
+        for piece in ('id="writing-tables"', 'id="writing-notes"', "'Writing sessions by feature'",
+                      "'Writing sessions by model'", "'No writing sessions in this period.'", "Unattributed",
+                      "Unreadable", "renderWriting()", "activityTable(", "activityTable('features'",
+                      "activityTable('wmodels'", "writingShown"):
+            self.assertIn(piece, page)
+        # After Review runs, before the reviewer tables, on the same period select.
+        self.assertLess(page.index('id="ledger-tables"'), page.index('id="writing-tables"'))
+        self.assertLess(page.index('id="writing-tables"'), page.index('id="reviewers"'))
 
     def test_page_shows_session_health(self):
         page = self.request("/?t=test-token")[1]
