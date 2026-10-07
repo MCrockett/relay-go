@@ -1,7 +1,8 @@
 ---
 {
   "authors": {
-    "idea": "claude"
+    "idea": "claude",
+    "spec": "claude"
   },
   "branch": "feat/writer-usage",
   "extra_rounds": {},
@@ -28,12 +29,14 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "spec": 1
+  },
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "drafting",
-  "updated": "2026-10-06T23:28:12-04:00",
+  "status": "in-review",
+  "updated": "2026-10-06T23:35:20-04:00",
   "verdicts": {}
 }
 ---
