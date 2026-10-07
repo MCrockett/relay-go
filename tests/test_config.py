@@ -149,5 +149,16 @@ class ConfigTest(unittest.TestCase):
                 config.set_role(self.hub, "build", "claude:claude-lock-test")
         self.assertNotIn("claude-lock-test", open(self.hub).read())
 
+    def test_named_locks_are_separate(self):
+        import fcntl
+        with mock.patch.object(config, "LOCK_TIMEOUT_S", 0.05), \
+                open(os.path.join(self.tmp, "writer-usage.lock"), "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            with config.write_lock():
+                pass
+            with self.assertRaisesRegex(RelayError, "busy, try again"):
+                with config.write_lock(name="writer-usage.lock"):
+                    pass
+
 if __name__ == "__main__":
     unittest.main()

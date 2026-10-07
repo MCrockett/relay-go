@@ -176,6 +176,20 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class CatFilesTest(unittest.TestCase):
+    def test_many_blobs_in_one_call_with_missing_ones(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        _, work = helpers.make_repo(tmp)
+        helpers.write(os.path.join(work, "b.txt"), "two\nlines\n")
+        helpers.sh(work, "git", "add", "b.txt")
+        helpers.sh(work, "git", "commit", "-q", "-m", "b")
+        got = gitops.cat_files(work, ["HEAD:README.md", "HEAD:nope.txt", "HEAD", "HEAD:b.txt"])
+        self.assertEqual(got, {"HEAD:README.md": "hello\n", "HEAD:nope.txt": None, "HEAD": None,
+                               "HEAD:b.txt": "two\nlines\n"})
+        self.assertEqual(gitops.cat_files(work, []), {})
+
+
 class ReadMemoTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

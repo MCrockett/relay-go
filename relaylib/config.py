@@ -115,11 +115,12 @@ def atomic_write(path, text, mode=0o600):
 
 
 @contextlib.contextmanager
-def write_lock(timeout=None):
-    """One lock in relay home for every reviewer-table write (models-tab D7). Not reentrant: take it once."""
+def write_lock(timeout=None, name="roles.lock"):
+    """A named lock in relay home: roles.lock for every reviewer-table write (models-tab D7), writer-usage.lock for
+    the session-log cache. Not reentrant: take it once."""
     timeout = LOCK_TIMEOUT_S if timeout is None else timeout
     os.makedirs(relay_home(), exist_ok=True)
-    with open(os.path.join(relay_home(), "roles.lock"), "a") as f:
+    with open(os.path.join(relay_home(), name), "a") as f:
         deadline = time.monotonic() + timeout
         while True:
             try:

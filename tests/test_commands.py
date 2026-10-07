@@ -1497,3 +1497,37 @@ class OwnerRecordTest(unittest.TestCase):
         from types import SimpleNamespace
         record = commands.owner_record(SimpleNamespace(provider="claude", session="s"), "/srv/code/proj-wt")
         self.assertEqual(record["worktree"], "proj-wt")   # state.md is committed, often to public repos
+
+
+class CostTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        p = mock.patch.dict(os.environ, {"RELAY_HOME": os.path.join(self.tmp, "home"), "RELAY_ROOT": self.tmp,
+                                         "CODEX_HOME": os.path.join(self.tmp, "codex"),
+                                         "CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "claude")})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_cost_lists_writing_sessions_after_review_runs(self):
+        from relaylib import writerusage
+        feature = "relay-go · a-very-long-feature-name-that-is-never-cut · build (claude)"
+        row = lambda model, turns: {"name": f"{feature} · {model}", "feature": feature, "model": model, "sessions": 1,
+                                    "turns": turns, "input": 1000, "cached": 900, "output": 50, "minutes": 2.5,
+                                    "cached_share": 90.0}
+        writing = {"0.5": {"features": [], "models": [],
+                           "feature_models": [row("claude:claude-fable-5-1", 2), row("claude:claude-opus-5-5", 3)],
+                           "unattributed": {"claude": {"turns": 4, "input": 10, "cached": 0, "output": 1, "minutes": 1.0}}},
+                   "unreadable": [{"provider": "claude", "session": "abcdef1234567", "reason": "log not found"}],
+                   "notes": ["usage cache not saved"]}
+        out = io.StringIO()
+        with mock.patch.object(writerusage, "summary", return_value=writing) as summary, redirect_stdout(out):
+            commands.main(["cost", "--since", "12h"])
+        self.assertEqual(summary.call_args.kwargs["periods"], (0.5,))
+        text = out.getvalue()
+        self.assertIn("no reviewer runs", text)
+        self.assertLess(text.index("no reviewer runs"), text.index("WRITING"))
+        for piece in ("claude:claude-fable-5-1", "claude:claude-opus-5-5", "unattributed claude: 4 turns",
+                      "unreadable claude session abcdef12: log not found", "note: usage cache not saved"):
+            self.assertIn(piece, text)
+        self.assertEqual(text.count(feature), 2)                         # the full name, on each model's row

@@ -10,7 +10,7 @@ import time
 import tomllib
 
 from .. import (availability, config, gitops, health, hookinstall, ledger, merged, owneractions, reviewjobs,
-               reviewtables, sessions, state, status, usage as samples, verdict)
+               reviewtables, sessions, state, status, usage as samples, verdict, writerusage)
 from ..errors import RelayError
 
 WORKERS = 8  # parallel fetches and feature details; gh and git are the wait, not the CPU
@@ -281,6 +281,18 @@ def _reviewers_or_error(repos=None):
         return {"error": str(e)}
 
 
+def _writing_or_error(repos, errors):
+    """Writing-session totals (writer-usage R9). A repo whose fetch failed is read from its last fetched refs."""
+    try:
+        writing = writerusage.summary(repos)
+    except (RelayError, OSError, ValueError, KeyError, TypeError) as e:
+        return {"error": str(e)}
+    failed = sorted({os.path.basename(repo) for repo in repos if os.path.realpath(repo) in errors})
+    writing["notes"] = writing["notes"] + [
+        f"fetch failed for {name}: writing sessions use the last fetched history" for name in failed]
+    return writing
+
+
 def _parallel(fn, items):
     """fn over items in order, on worker threads that share the caller's read memo."""
     contexts = [contextvars.copy_context() for _ in items]  # copied here: a worker's own context has no memo
@@ -350,6 +362,7 @@ def build():
         errors = {os.path.realpath(repo): error for repo, error in fetched.items() if error}
         rows = status.scan(root)
         details = [d for d in _parallel(lambda row: _enrich(row, errors, fetched, records), rows) if d]
+        writing = _writing_or_error(repos, errors)
     seen = {r["provider"] for r in records}
     hints = {}
     for provider in hookinstall.EVENTS:
@@ -368,7 +381,7 @@ def build():
             continue  # that repository's row already reports its broken config
     notes = sorted(notes)
     return {"rows": rows, "features": details, "usage": usage(), "session_hints": hints, "notes": notes,
-            "reviewers": _reviewers_or_error(repos)}
+            "reviewers": _reviewers_or_error(repos), "writing": writing}
 
 
 class Cache:

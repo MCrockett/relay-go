@@ -82,7 +82,7 @@ Changing a table is your decision: `relay roles set` and `relay roles end` run i
     relay roles set review.claude "claude:claude-fable-5-1, codex:gpt-6-astra" --until 23:00
     relay roles end review.claude            back to the normal table now (or: all)
     relay rule "Prefer Sonnet for plan reviews under 200 lines"
-    relay cost --since 7d                    tokens used by relay-launched reviews
+    relay cost --since 7d                    tokens used by relay-launched reviews and by writing sessions
 
 Your own files live in `~/.relay/` (`RELAY_HOME` moves it), never in this repo:
 
@@ -129,8 +129,13 @@ opens the running dashboard. Agent sessions cannot start it.
 The inbox lists features waiting on you. Open a feature to see its stage history, reviews, owner decisions,
 session, handoff and CI. Reviews open even when their branch is not checked out. The All features table
 can include completed work. Models shows Codex and Claude weekly limits, daily carry-forward budgets, and the
-review runs relay launched, by project and model, for seven or thirty days (writing sessions are not counted
-there). Daily budgets need a sample from before today's midnight in the current week; until then they say "no
+review runs relay launched, by project and model, for seven or thirty days. Writing sessions shows the Claude Code
+and Codex sessions that held a relay feature, by feature and stage and by model, read from each CLI's own logs on
+this machine (`~/.claude/projects`, `~/.codex/sessions`). relay reads only timestamps, model names and token
+counts, never the conversation, and only for sessions that held a feature. Work a session does outside relay
+while it holds a feature counts toward that feature; work you write by hand is not counted; turns outside any
+hold show as unattributed, and a log relay cannot read shows as unreadable rather than zero. The log formats are
+not published contracts, so a CLI update can change them. Daily budgets need a sample from before today's midnight in the current week; until then they say "no
 baseline yet". Below them are the reviewer tables: reorder, add and remove reviewers, set their effort, or make
 a change temporary, each after a confirmation. Writer roles are shown for information.
 
