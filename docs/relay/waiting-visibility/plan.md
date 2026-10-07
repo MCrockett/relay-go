@@ -86,13 +86,14 @@ Files: `relaylib/sessions.py`, `tests/test_sessions.py`.
 
 Covers: R5 (D5).
 
-Files: `relaylib/machine.py`, `relaylib/commands.py`, `relaylib/state.py`, `tests/test_machine.py`, `tests/test_state.py`, `tests/test_commands.py`.
+Files: create `relaylib/redact.py` and `tests/test_redact.py`; modify `relaylib/machine.py`, `relaylib/commands.py`, `relaylib/state.py`, `tests/test_machine.py`, `tests/test_state.py`, `tests/test_commands.py`.
 
 - [ ] Failing tests:
-  - `machine.apply_error(st, "boom\nsecond line")` sets status review-error and `review_error == "boom"`; a 500-character first line is cut to 200.
+  - `machine.apply_error(st, "boom\nsecond line")` sets status review-error and `review_error == "boom"`; a long first line is cut to 200 characters; `"spawn /Users/someone/.local/bin/codex ENOENT"` is saved as `"spawn codex ENOENT"`.
+  - `redact.public_line` (D5, state.md is published): the first non-empty line; paths cut to their last part (`/Users/<name>/.local/bin/codex` and `~/x/y.md` keep `codex` and `y.md`; `3/4` and `and/or` untouched); the current username (from `getpass.getuser()`, three characters or more, whole word) becomes `<user>`; email addresses become `<email>`; URLs keep only scheme and host (credentials, path and query dropped); token-like strings (24 or more letters, digits, `-` or `_`, with both a letter and a digit) become `<redacted>`; plain words unchanged; at most 200 characters; empty or None gives "".
   - `state.write_state` drops `review_error` when status is not review-error and keeps it when it is.
   - In `test_commands.py`, a review whose fake reviewer fails leaves `review_error` in the published state; a following successful `relay review` removes it.
-- [ ] Implement `apply_error(st, error)`: `st["status"] = "review-error"; st["review_error"] = (error or "").splitlines()[0][:200] if error else ""` (omit the key when empty). Pass `error` at the one call site in `commands.py`. In `write_state`, `if st.get("status") != "review-error": st.pop("review_error", None)` before writing.
+- [ ] Implement `redact.public_line(text, limit=200)` and `apply_error(st, error)`: `st["status"] = "review-error"`, then `st["review_error"] = redact.public_line(error)` only when that is non-empty. Nothing raw is ever saved. Pass `error` at the one call site in `commands.py`. In `write_state`, `if st.get("status") != "review-error": st.pop("review_error", None)` before writing.
 - [ ] Run the three test files, commit `feat: keep why a review failed`.
 
 ### Task 3: What the agent last said
