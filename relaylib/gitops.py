@@ -31,6 +31,10 @@ def read_memo():
         _MEMO.reset(token)
 
 
+def memo_active():
+    return _MEMO.get() is not None
+
+
 def _memo_key(kind, root, args):
     memo = _MEMO.get()
     if memo is None:
@@ -208,6 +212,30 @@ def remote_branches(root):
 def show(root, ref, path):
     p = git(root, "show", f"{ref}:{path}", check=False)
     return p.stdout if p.returncode == 0 else None
+
+
+def cat_files(root, specs):
+    """{"<rev>:<path>": text or None} for many blobs in one git process."""
+    if not specs:
+        return {}
+    p = subprocess.run(["git", "cat-file", "--batch"], cwd=root, input="".join(f"{s}\n" for s in specs).encode(),
+                       capture_output=True)
+    if p.returncode != 0:
+        raise RelayError(f"git cat-file failed: {p.stderr.decode(errors='replace').strip()}")
+    out, data, pos = {}, p.stdout, 0
+    for spec in specs:
+        end = data.index(b"\n", pos)
+        header = data[pos:end].split()
+        pos = end + 1
+        if len(header) == 3 and header[1] == b"blob":
+            size = int(header[2])
+            out[spec] = data[pos:pos + size].decode("utf-8", "replace")
+            pos += size + 1
+        else:
+            out[spec] = None                     # missing, or not a blob
+            if len(header) == 3:
+                pos += int(header[2]) + 1
+    return out
 
 
 def ls_files(root, ref, prefix):
