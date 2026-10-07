@@ -839,14 +839,37 @@ def cmd_rules(args):
 
 
 def cmd_cost(args):
-    groups = ledger.summarize(ledger.read(ledger.parse_since(args.since)))
+    since = ledger.parse_since(args.since)
+    groups = ledger.summarize(ledger.read(since))
     if not groups:
         print(f"relay: no reviewer runs in the last {args.since}")
-        return 0
-    print(f"{'REPO':16} {'ROLE':8} {'MODEL':28} {'RUNS':>4} {'INPUT':>10} {'CACHED':>10} {'OUTPUT':>8} {'MIN':>6}")
-    for (repo, role, model), g in sorted(groups.items()):
-        print(f"{repo:16} {role:8} {model:28} {g['runs']:>4} {g['input']:>10} {g['cached']:>10} "
-              f"{g['output']:>8} {g['seconds'] / 60:>6.1f}")
+    else:
+        print(f"{'REPO':16} {'ROLE':8} {'MODEL':28} {'RUNS':>4} {'INPUT':>10} {'CACHED':>10} {'OUTPUT':>8} {'MIN':>6}")
+        for (repo, role, model), g in sorted(groups.items()):
+            print(f"{repo:16} {role:8} {model:28} {g['runs']:>4} {g['input']:>10} {g['cached']:>10} "
+                  f"{g['output']:>8} {g['seconds'] / 60:>6.1f}")
+    _print_writing(since.total_seconds() / 86400)
+
+
+def _print_writing(days):
+    """Writing sessions for the same period (writer-usage R11), from origin refs as last fetched (no fetch)."""
+    from . import status, writerusage
+    writing = writerusage.summary(status.checkouts(status.projects_root()), periods=(days,))
+    rows = writing[str(days)]
+    width = max([len(r["feature"]) for r in rows["feature_models"]] + [len("FEATURE")])
+    print(f"\nWRITING\n{'FEATURE':{width}} {'MODEL':28} {'SESS':>4} {'TURNS':>5} {'INPUT':>10} {'CACHED':>10} "
+          f"{'OUTPUT':>8} {'MIN':>6}")
+    for r in rows["feature_models"]:                   # feature, stage and model in their own columns
+        print(f"{r['feature']:{width}} {r['model']:28} {r['sessions']:>4} {r['turns']:>5} {r['input']:>10} "
+              f"{r['cached']:>10} {r['output']:>8} {r['minutes']:>6.1f}")
+    if not rows["feature_models"]:
+        print("  no writing sessions in this period")
+    for provider, u in sorted(rows["unattributed"].items()):
+        print(f"  unattributed {provider}: {u['turns']} turns, {u['input']} input, {u['minutes']:.1f} min")
+    for u in writing["unreadable"]:
+        print(f"  unreadable {u['provider']} session {u['session'][:8]}: {u['reason']}")
+    for note in writing["notes"]:
+        print(f"  note: {note}")
 
 
 # ---------------------------------------------------------------- parser
