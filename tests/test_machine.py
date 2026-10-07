@@ -48,6 +48,14 @@ class MachineTest(unittest.TestCase):
         st = fresh(); machine.submit(st, "claude"); machine.submit(st, "claude")
         machine.apply_error(st)
         self.assertEqual((st["status"], st["rounds"]["spec"]), ("review-error", 1))
+        self.assertNotIn("review_error", st)
+
+    def test_error_keeps_its_first_line(self):
+        st = fresh(); machine.submit(st, "claude"); machine.submit(st, "claude")
+        machine.apply_error(st, "boom\nsecond line")
+        self.assertEqual(st["review_error"], "boom")
+        machine.apply_error(st, "x" * 500)
+        self.assertEqual(st["review_error"], "x" * 200)
 
     def test_refresh_clears_downstream(self):
         st = fresh(); machine.submit(st, "claude"); machine.submit(st, "claude")

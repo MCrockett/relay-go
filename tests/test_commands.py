@@ -250,10 +250,12 @@ class CommandsTest(unittest.TestCase):
         os.environ["FAKE_RC"] = "1"
         self.assertEqual(self.relay("submit"), 2)
         self.assertEqual((self.st()["status"], self.st()["rounds"]["spec"]), ("review-error", 1))
+        self.assertTrue(self.st().get("review_error"))         # why it failed, for the owner's inbox
         del os.environ["FAKE_RC"]
         self.enqueue_codex("GO")
         self.assertEqual(self.relay("review"), 0, self.last_err)
         self.assertEqual(self.st()["stage"], "plan")
+        self.assertNotIn("review_error", self.st())
         self.assertTrue(os.path.exists(self.review("spec-1.codex.error.md")))
         self.assertTrue(os.path.exists(self.review("spec-1.codex.md")))
 
