@@ -258,6 +258,9 @@ console.log(JSON.stringify({az:names('name','ascending'), most:names('runs','des
                       "overrides your table for that project"):
             self.assertIn(piece, page)
         self.assertNotIn(">Usage</a>", page)
+        # Usage and review runs come first; the reviewer tables follow them (owner, 2026-10-06).
+        self.assertLess(page.index('id="usage"'), page.index('id="reviewers"'))
+        self.assertLess(page.index('id="ledger-tables"'), page.index('id="reviewers"'))
 
     @unittest.skipUnless(shutil.which("node"), "needs node")
     def test_an_expired_timed_table_stops_showing_without_the_server(self):
