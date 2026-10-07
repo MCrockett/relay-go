@@ -9,8 +9,8 @@ import threading
 import time
 import tomllib
 
-from .. import (availability, config, gitops, health, hookinstall, ledger, merged, owneractions, reviewjobs,
-               reviewtables, sessions, state, status, usage as samples, verdict, writerusage)
+from .. import (agentask, availability, config, gitops, health, hookinstall, ledger, merged, owneractions, reviewjobs,
+               reviewtables, sessions, state, status, usage as samples, verdict, waiting, writerusage)
 from ..errors import RelayError
 
 WORKERS = 8  # parallel fetches and feature details; gh and git are the wait, not the CPU
@@ -145,11 +145,17 @@ def feature(repo, slug, records=None):
     timeline = [{"stage": stage, "author": st.get("authors", {}).get(stage),
                  "rounds": st.get("rounds", {}).get(stage, 0), "verdict": st.get("verdicts", {}).get(stage),
                  "skipped": stage in st.get("skipped", [])} for stage in ("idea", "spec", "plan", "build", "done")]
+    record, agent_text = None, None
     if archived or info["state"] == "MERGED":  # a finished feature has no session to watch
         found, act = None, None
     else:
-        found, act, _ = health.session_health(repo, st, sessions.read_records() if records is None else records,
-                                              time.time())
+        found, act, record = health.session_health(repo, st, sessions.read_records() if records is None else records,
+                                                   time.time())
+    if (found or {}).get("kind") == "attention" and (record or {}).get("state") in ("waiting", "permission"):
+        words = agentask.last_words(record["provider"], record["session_id"])  # read live, never stored (D3)
+        agent_text = {"source": words["source"], "text": agentask.full(words["text"])} if words else None
+    stuck = (waiting.stuck_reason(repo, commit, slug, st.get("stage"))
+             if st.get("status") == "waiting-owner" else None)
     return {"repo_path": repo, "feature": slug, "seen": seen, "state": st, "actions": actions,
             "action_reasons": reasons, "pr_info": info, "ci": ci, "timeline": timeline, "reviews": reviews,
             "owner_actions": st.get("owner_actions", []), "owner_session": st.get("owner"),
@@ -157,7 +163,9 @@ def feature(repo, slug, records=None):
             "local_handoff": local, "local_changes": changed,
             "review_job": job, "review_choices": options, "review_default": review_default,
             "health": found, "unpushed": (act or {}).get("unpushed"), "origin_at": (act or {}).get("origin"),
-            "local_error": local_error}
+            "local_error": local_error, "agent_text": agent_text, "stuck_reason": stuck,
+            "pending_tools": [p.get("tool_name") for p in (record or {}).get("pending") or [] if p.get("tool_name")],
+            "session_record": record}
 
 
 def usage():
@@ -298,8 +306,11 @@ def _enrich(row, errors, fetched, records):
         row.update(published)
         for key in ("seen", "actions", "action_reasons", "pr_info", "ci", "review_job", "health"):
             row[key] = detail[key]
-        if (row.get("health") or {}).get("kind") == "attention" and not row["waiting_on_owner"]:
-            row["waiting_on_owner"] = row["health_inbox"] = True  # in the inbox because of its session only
+        asks = waiting.asks(row, st, detail["health"], detail["session_record"], detail["stuck_reason"])
+        words = detail["agent_text"]
+        row.update(asks=asks, wait_since=waiting.since(asks), waiting_on_owner=bool(asks),
+                   excerpt={"source": words["source"], "text": agentask.excerpt(words["text"])} if words else None,
+                   health_inbox=bool(asks) and all(a["kind"] in ("answer", "approve", "check") for a in asks))
         if detail["local_changes"]:
             row["flags"].append("local changes not published")
         if detail["local_handoff"]:

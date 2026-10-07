@@ -7,7 +7,7 @@ import time
 import unittest
 from unittest import mock
 
-from relaylib import commands, config, gitops, ledger, reviewjobs, sessions, state, usage, writerusage
+from relaylib import commands, config, gitops, ledger, reviewjobs, sessions, state, status, usage, writerusage
 from relaylib.errors import RelayError
 from relaylib.ui import snapshot
 from tests import helpers
@@ -207,6 +207,98 @@ class SnapshotTest(unittest.TestCase):
     def hook(self, name, **extra):
         sessions.capture("codex", io.StringIO(json.dumps(dict({"session_id": "s1", "hook_event_name": name,
                                                                  "cwd": self.work}, **extra))))
+
+    def stopped(self, age_s=600, said=None):
+        """Codex session s1 stopped age_s seconds ago, its rollout ending with `said`."""
+        self.hook("Stop")
+        record_path = sessions.record_path("codex", "s1")
+        data = json.load(open(record_path))
+        data["since"] = data["at"] = time.time() - age_s
+        json.dump(data, open(record_path, "w"))
+        if said is not None:
+            helpers.write(os.path.join(self.tmp, "codex", "sessions", "2026", "10", "07", "rollout-2026-10-07T10-00-00-s1.jsonl"),
+                          json.dumps({"type": "event_msg", "payload": {"type": "task_complete",
+                                                                       "last_agent_message": said}}) + "\n")
+
+    def test_asks_excerpt_and_full_text_live_only_in_memory(self):
+        question = "PURPLE-GIRAFFE should I start the build now? " + "Details follow. " * 30
+        self.st.update(stage="build", status="drafting")
+        self.save()
+        self.stopped(said=question)
+        snap = snapshot.build()
+        row = snap["rows"][0]
+        self.assertEqual(row["asks"], [{"kind": "answer", "text": "Answer the codex session", "since": row["wait_since"]}])
+        self.assertTrue(row["waiting_on_owner"])
+        self.assertEqual(row["excerpt"]["source"], "agent")
+        self.assertTrue(row["excerpt"]["text"].startswith("PURPLE-GIRAFFE should I") and row["excerpt"]["text"].endswith("…"))
+        detail = snapshot.feature(self.work, "demo")
+        self.assertEqual(detail["agent_text"], {"source": "agent", "text": question})
+        with mock.patch("sys.stdout", io.StringIO()):
+            commands.main(["status", "--json"])
+        for dirpath, _, files in os.walk(os.environ["RELAY_HOME"]):
+            for name in files:
+                with open(os.path.join(dirpath, name), "rb") as f:
+                    self.assertNotIn(b"PURPLE-GIRAFFE", f.read(), name)
+
+    def test_a_missing_log_keeps_the_ask_without_words(self):
+        self.st.update(stage="build", status="drafting")
+        self.save()
+        self.stopped()
+        row = snapshot.build()["rows"][0]
+        self.assertEqual([a["kind"] for a in row["asks"]], ["answer"])
+        self.assertIsNone(row["excerpt"])
+        self.assertIsNone(snapshot.feature(self.work, "demo")["agent_text"])
+
+    def test_dashboard_and_status_agree_and_row_order_is_unchanged(self):
+        other = os.path.join(self.tmp, "zeta")
+        os.makedirs(other)
+        _, zeta = helpers.make_repo(other)
+        helpers.sh(zeta, "git", "switch", "-qc", "feat/older")
+        st = state.new_state("older", "zeta", {"provider": "claude", "session": "z1"}, "feat/older")
+        st.update(stage="plan", status="waiting-owner")
+        with mock.patch.object(state, "now_iso", return_value="2026-10-01T09:00:00-04:00"):
+            state.write_state(state.state_path(zeta, "older"), st)      # stopped days ago
+        helpers.sh(zeta, "git", "add", ".")
+        helpers.sh(zeta, "git", "commit", "-qm", "fixture")
+        helpers.sh(zeta, "git", "push", "-qu", "origin", "HEAD")
+        self.st.update(stage="build", status="drafting")
+        self.save()
+        self.stopped(age_s=120)                                    # newer than zeta's wait, but first by repo
+        with mock.patch("relaylib.status.checkouts", return_value=[self.work, zeta]):
+            snap = snapshot.build()
+            scanned = status.scan(self.tmp)
+        waiting_snap = sorted(r["feature"] for r in snap["rows"] if r["waiting_on_owner"])
+        self.assertEqual(waiting_snap, sorted(r["feature"] for r in scanned if r["waiting_on_owner"]))
+        self.assertEqual(waiting_snap, ["demo", "older"])
+        self.assertEqual([r["feature"] for r in snap["rows"]], [r["feature"] for r in scanned])   # R11: same order
+        self.assertEqual([r["feature"] for r in snap["rows"]], ["demo", "older"])                # repo order, not wait
+        self.assertGreater(snap["rows"][0]["wait_since"], snap["rows"][1]["wait_since"])         # demo waited less
+
+    def test_missing_hook_records_keep_state_and_activity_asks(self):
+        os.makedirs(sessions.folder(), exist_ok=True)                 # setUp's feature: spec, waiting-owner
+        helpers.write(sessions.record_path("codex", "s1"), "{not json")
+        old = time.time() - 3 * 86400
+        with mock.patch("relaylib.health.activity", return_value={"last_activity": old, "unpushed": None, "origin": None}):
+            row = snapshot.build()["rows"][0]
+        self.assertEqual([a["kind"] for a in row["asks"]], ["decide", "check"])
+
+    def test_an_unreadable_repo_row_asks_to_be_fixed(self):
+        os.makedirs(os.path.join(self.tmp, "bad"))
+        _, bad = helpers.make_repo(os.path.join(self.tmp, "bad"))
+        real = state.list_features
+        def fail(repo):
+            if os.path.realpath(repo) == os.path.realpath(bad):
+                raise PermissionError("cannot read repo state")
+            return real(repo)
+        with mock.patch("relaylib.status.checkouts", return_value=[self.work, bad]), \
+                mock.patch("relaylib.state.list_features", side_effect=fail):
+            rows = snapshot.build()["rows"]
+        row = next(r for r in rows if r["feature"] == "?")
+        self.assertEqual([a["kind"] for a in row["asks"]], ["error"])
+        self.assertIn("cannot read repo state", row["asks"][0]["text"])
+        self.assertIsNone(row["wait_since"])
+        self.assertIsNone(row["excerpt"])
+        self.assertTrue(row["waiting_on_owner"])
 
     def test_a_waiting_session_puts_a_drafting_feature_in_the_inbox(self):
         self.st["status"] = "drafting"
