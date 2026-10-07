@@ -16,32 +16,6 @@ from ..errors import RelayError
 WORKERS = 8  # parallel fetches and feature details; gh and git are the wait, not the CPU
 
 
-def _since_ts(owner):
-    try:
-        return dt.datetime.fromisoformat(owner.get("since") or "").timestamp()
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def session_health(repo, st, records, now):
-    """(health, activity) for a feature a session holds, else (None, None) (session-health R4-R6)."""
-    owner = st.get("owner") or {}
-    if st.get("status") not in state.HOLDING_STATUSES or not owner.get("session") or st.get("stage") == "done":
-        return None, None
-    try:
-        repo_cfg = config.load(repo)
-    except (RelayError, OSError):  # a broken repository config must not hide the session's health
-        repo_cfg = {}
-    grace, quiet, _ = health.ui_settings(repo_cfg)
-    try:
-        checkouts = health.branch_checkouts(repo, st["branch"])
-        act = health.activity(checkouts, st["branch"])
-    except Exception:  # activity never hides what a hook record says (R4)
-        checkouts, act = [], {"last_activity": None, "unpushed": None, "origin": None}
-    record = health.match(records, owner.get("provider"), owner["session"], _since_ts(owner), checkouts)
-    return health.health(record, act, grace, quiet, now), act
-
-
 def allowed_repo(repo):
     real = os.path.realpath(repo)
     if real not in {os.path.realpath(p) for p in status.checkouts(status.projects_root())}:
@@ -174,8 +148,8 @@ def feature(repo, slug, records=None):
     if archived or info["state"] == "MERGED":  # a finished feature has no session to watch
         found, act = None, None
     else:
-        found, act = session_health(repo, st, sessions.read_records() if records is None else records,
-                                    time.time())
+        found, act, _ = health.session_health(repo, st, sessions.read_records() if records is None else records,
+                                              time.time())
     return {"repo_path": repo, "feature": slug, "seen": seen, "state": st, "actions": actions,
             "action_reasons": reasons, "pr_info": info, "ci": ci, "timeline": timeline, "reviews": reviews,
             "owner_actions": st.get("owner_actions", []), "owner_session": st.get("owner"),

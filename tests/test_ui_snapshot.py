@@ -271,7 +271,7 @@ class SnapshotTest(unittest.TestCase):
         snap = snapshot.build()                                      # the bad record neither crashes nor counts
         self.assertEqual(snap["rows"][0]["health"]["text"], "needs permission 5m")
         with mock.patch.object(health, "branch_checkouts", side_effect=RuntimeError("worktrees vanished")):
-            found, act = snapshot.session_health(self.work, self.st, sessions.read_records(), time.time())
+            found, act, _ = health.session_health(self.work, self.st, sessions.read_records(), time.time())
         self.assertEqual(found["text"], "needs permission 5m")
         self.assertIsNone(act["last_activity"])
 

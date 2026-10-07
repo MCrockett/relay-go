@@ -2,6 +2,7 @@ import os
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from relaylib import config, health
 from tests import helpers
@@ -71,6 +72,22 @@ class MatchTest(unittest.TestCase):
             self.addCleanup(os.unlink, link)
             linked = [rec(sid="via-link", provider="claude", cwd=link, at=2000.0)]
             self.assertEqual(health.match(linked, "claude", "T", 1000.0, [tmp])["session_id"], "via-link")
+
+
+class SessionHealthTest(unittest.TestCase):
+    def test_returns_the_record_it_matched(self):
+        st = {"status": "drafting", "stage": "build", "branch": "feat/x",
+              "owner": {"provider": "claude", "session": "S", "since": "2026-10-07T10:00:00-04:00"}}
+        mine = rec(state="waiting", sid="S", since=100.0, at=100.0)
+        with mock.patch.object(config, "load", return_value={}), \
+                mock.patch.object(health, "branch_checkouts", return_value=[]), \
+                mock.patch.object(health, "activity", return_value={"last_activity": None, "unpushed": None,
+                                                                    "origin": None}):
+            found, act, record = health.session_health("/repo", st, [rec(sid="other"), mine], 1000.0)
+            self.assertIs(record, mine)
+            self.assertEqual(found["text"], "waiting on you 15m")
+            self.assertEqual(health.session_health("/repo", dict(st, status="done"), [mine], 1000.0),
+                             (None, None, None))
 
 
 class ActivityTest(unittest.TestCase):
