@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "fix/activity-labels",
   "extra_rounds": {},
   "feature": "activity-labels",
@@ -12,7 +14,7 @@
     "worktree": "relay-go-dev"
   },
   "owner_actions": [],
-  "pr": null,
+  "pr": 4,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -21,15 +23,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-10-06T23:09:34-04:00",
+  "status": "in-review",
+  "updated": "2026-10-06T23:12:40-04:00",
   "verdicts": {}
 }
 ---
