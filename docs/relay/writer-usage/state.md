@@ -10,6 +10,18 @@
   "extra_rounds": {},
   "feature": "writer-usage",
   "history": {
+    "build": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2"
+        ],
+        "head": "e5544649ee6f9978e95650a5495e927ba261e803",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ],
     "plan": [
       {
         "blocking_ids": [
@@ -113,9 +125,10 @@
   "skipped": [],
   "small": false,
   "stage": "build",
-  "status": "in-review",
-  "updated": "2026-10-07T09:14:04-04:00",
+  "status": "changes-requested",
+  "updated": "2026-10-07T09:16:55-04:00",
   "verdicts": {
+    "build": "NO-GO",
     "plan": "GO",
     "spec": "GO"
   }
