@@ -11,7 +11,7 @@ from .usage import timestamp
 
 FORMAT_LINES = 200
 CACHE, LOCK = "writer-usage.json", "writer-usage.lock"
-VERSION, CHUNK = 1, 1 << 20
+VERSION, CHUNK = 2, 1 << 20   # 2: a context record alone no longer makes a file healthy
 
 
 def claude_projects():
@@ -60,8 +60,10 @@ class FileState:
             if isinstance(entry, dict):
                 (self._claude if self.provider == "claude" else self._codex)(entry)
 
-    def _ok(self):
-        self.had_valid, self.lines_since_record = True, 0
+    def _ok(self, usage=True):
+        """A valid record. Only a usage record makes a file healthy; a context record alone does not (D6)."""
+        self.lines_since_record = 0
+        self.had_valid = self.had_valid or usage
 
     def _claude(self, e):
         """One turn per message id; a message's usage is repeated on each of its records, so the last one wins."""
@@ -94,7 +96,7 @@ class FileState:
             self.candidates += 1
             if isinstance(p.get("model"), str) and p["model"]:
                 self.model = p["model"]
-                self._ok()
+                self._ok(usage=False)
             else:
                 self.bad += 1
             return

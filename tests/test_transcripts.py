@@ -89,6 +89,13 @@ class ParseTest(Homes):
         fs.parse([json.dumps({"type": "turn_context", "payload": {}}), codex_count("2026-10-06T16:00:00Z", 1, 0, 1)])
         self.assertIn("partial", fs.problem())
 
+    def test_codex_contexts_without_usage_are_no_usage_records(self):
+        fs = transcripts.FileState("codex")
+        fs.parse([codex_ctx("gpt-6-astra"), json.dumps({"type": "event_msg", "payload": {"type": "token_count2"}})])
+        self.assertEqual(fs.problem(), "no usage records")
+        fs.parse([codex_count("2026-10-06T16:00:00Z", 1, 0, 1)])
+        self.assertIsNone(fs.problem())
+
     def test_no_records_and_format_change(self):
         fs = transcripts.FileState("claude")
         fs.parse([json.dumps({"type": "user"})] * 3)
@@ -156,8 +163,8 @@ class IncrementalTest(Homes):
         self.assertEqual(oct(os.stat(self.cache).st_mode & 0o777), "0o600")
 
     def test_corrupt_cache_is_rebuilt(self):
-        for text in ("{oops", "[]", json.dumps({"version": 1, "files": {self.path: {"inode": "x"}}, "sessions": {}}),
-                     json.dumps({"version": 1, "files": {self.path: {"inode": 1, "size": 1, "mtime_ns": 1,
+        for text in ("{oops", "[]", json.dumps({"version": 2, "files": {self.path: {"inode": "x"}}, "sessions": {}}),
+                     json.dumps({"version": 2, "files": {self.path: {"inode": 1, "size": 1, "mtime_ns": 1,
                                  "offset": 0, "state": {"provider": "claude", "turns": []}}}, "sessions": {}})):
             with self.subTest(text=text[:20]):
                 helpers.write(self.cache, text)

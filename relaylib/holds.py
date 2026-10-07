@@ -39,32 +39,31 @@ def _load_cache():
 
 
 def _features(repo):
-    """{slug: (ref, state)} with the feature's own origin branch when it exists, else origin/develop, else
-    origin/main."""
+    """{slug: (ref, path)} with the feature's own origin branch when it exists, else origin/develop, else
+    origin/main. path is state.md spelled as that ref tracks it (a repo may use Docs/relay)."""
     found = {}
     for ref in gitops.remote_branches(repo):
         for path in gitops.ls_files(repo, ref, state.RELAY_DIR):
             parts = path.split("/")
             if len(parts) == 4 and parts[3].lower() == "state.md":
-                found.setdefault(parts[2], set()).add(ref)
+                found.setdefault(parts[2], {})[ref] = path
     out = {}
     for slug, refs in found.items():
         first = sorted(refs)[0]
         try:
-            st = state.parse_state(gitops.show(repo, first, f"{state.RELAY_DIR}/{slug}/state.md") or "", slug)
+            st = state.parse_state(gitops.show(repo, first, refs[first]) or "", slug)
         except RelayError:
             continue
         own = f"origin/{st.get('branch')}"
         ref = own if own in refs else next((r for r in BASES if r in refs), None)
         if ref:
-            out[slug] = ref
+            out[slug] = (ref, refs[ref])
     return out
 
 
-def _history(repo, ref, slug, cache):
+def _history(repo, ref, path, cache):
     """[(commit time, sha, subject, state)] oldest first. A commit's history and state never change, so each is
     read from git once and kept in cache (D5)."""
-    path = f"{state.RELAY_DIR}/{slug}/state.md"
     log_key = f"{gitops.head_sha(repo, ref)}:{path}"
     log = cache["logs"].get(log_key)
     if log is None:
@@ -94,8 +93,8 @@ def _is_merged(repo, st, ref):
                for base in BASES if base in gitops.remote_branches(repo))
 
 
-def _feature_windows(repo, name, url, slug, ref, cache, handoffs, flags):
-    rows = _history(repo, ref, slug, cache)
+def _feature_windows(repo, name, url, slug, ref, path, cache, handoffs, flags):
+    rows = _history(repo, ref, path, cache)
     windows, cur = [], None
     for at, _sha, subject, st in rows:
         owner = st.get("owner") if isinstance(st.get("owner"), dict) else {}
@@ -146,8 +145,8 @@ def _windows(checkouts):
                 continue
             seen.add(url)
             name, found, handoffs = gitops.repo_name(repo), [], []
-            for slug, ref in sorted(_features(repo).items()):
-                found += _feature_windows(repo, name, url, slug, ref, cache, handoffs, flags)
+            for slug, (ref, path) in sorted(_features(repo).items()):
+                found += _feature_windows(repo, name, url, slug, ref, path, cache, handoffs, flags)
         except (RelayError, OSError):
             continue                                  # F5: one unreadable repo never hides the others
         for provider, session, at in handoffs:      # a handoff covers every feature the session holds here

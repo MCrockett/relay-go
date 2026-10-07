@@ -187,6 +187,17 @@ class HoldsTest(unittest.TestCase):
         self.assertEqual(len(ws), 1)
         self.assertEqual(ws[0]["end"], T0 + 400)
 
+    def test_capitalized_docs_folder_is_found(self):
+        os.makedirs(os.path.join(self.work, "Docs", "relay"))      # relay_dir keeps this spelling
+        st = self.feature()
+        self.commit(st, "relay: new a", T0)
+        st.update(stage="spec")
+        self.commit(st, "relay: submit idea", T0 + 100)
+        self.assertIn("Docs/relay/a/state.md", helpers.sh(self.work, "git", "ls-files"))
+        (w,) = holds.windows([self.work])["windows"]
+        self.assertEqual((w["slug"], w["start"], w["end"]), ("a", T0, None))
+        self.assertEqual(w["stages"], [[T0, "idea"], [T0 + 100, "spec"]])
+
     def test_owner_written_work_has_windows(self):
         st = self.feature(provider="owner", session="owner@host")
         self.commit(st, "relay: new a", T0)
