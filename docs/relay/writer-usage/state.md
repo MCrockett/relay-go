@@ -8,6 +8,7 @@
   "branch": "feat/writer-usage",
   "extra_rounds": {},
   "feature": "writer-usage",
+  "handed_over_from": "d60f1d60-f786-474c-b6c7-b6dde1a615d8",
   "history": {
     "plan": [
       {
@@ -75,8 +76,8 @@
   },
   "owner": {
     "provider": "claude",
-    "session": "d60f1d60-f786-474c-b6c7-b6dde1a615d8",
-    "since": "2026-10-06T23:28:06-04:00",
+    "session": "958dee3a-031e-4b49-be5f-09efa15292b1",
+    "since": "2026-10-07T08:21:27-04:00",
     "worktree": "relay-go-dev"
   },
   "owner_actions": [
@@ -112,7 +113,7 @@
   "small": false,
   "stage": "build",
   "status": "drafting",
-  "updated": "2026-10-06T23:57:06-04:00",
+  "updated": "2026-10-07T08:21:27-04:00",
   "verdicts": {
     "plan": "GO",
     "spec": "GO"
