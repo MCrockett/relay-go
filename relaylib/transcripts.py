@@ -1,12 +1,17 @@
 """Token usage from the CLIs' own session logs (writer-usage D1, D3, D6). Reads timestamps, models, usage
 numbers, Claude message ids and git branches; never message text."""
+import contextlib
 import glob
 import json
 import os
 
+from . import config
+from .errors import RelayError
 from .usage import timestamp
 
 FORMAT_LINES = 200
+CACHE, LOCK = "writer-usage.json", "writer-usage.lock"
+VERSION, CHUNK = 1, 1 << 20
 
 
 def claude_projects():
@@ -158,3 +163,104 @@ class FileState:
                     and (turn.get("branch") is None or isinstance(turn["branch"], str))):
                 raise ValueError("bad turn")
         return fs
+
+
+def _valid_entry(entry, provider):
+    if not isinstance(entry, dict) or not all(
+            isinstance(entry.get(k), int) and not isinstance(entry.get(k), bool)
+            for k in ("inode", "size", "mtime_ns", "offset")):
+        raise ValueError("bad cache entry")
+    if FileState.from_json(entry["state"]).provider != provider:
+        raise ValueError("bad cache entry")
+    return entry
+
+
+def _usable(entry, provider):
+    try:
+        return _valid_entry(entry, provider) if entry else None
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None                                   # F3: a broken entry is read again from the start
+
+
+def _load_cache():
+    try:
+        with open(os.path.join(config.relay_home(), CACHE)) as f:
+            data = json.load(f)
+        if (data.get("version") == VERSION and isinstance(data.get("files"), dict)
+                and isinstance(data.get("sessions"), dict)):
+            # a malformed session path list is dropped; its files are found again by files_for
+            data["sessions"] = {k: v for k, v in data["sessions"].items()
+                                if isinstance(v, list) and all(isinstance(x, str) for x in v)}
+            return data
+    except (OSError, ValueError, AttributeError):
+        pass
+    return {"version": VERSION, "files": {}, "sessions": {}}
+
+
+def _advance(path, entry, provider):
+    """Parse the bytes after entry's offset in CHUNK-sized reads (F6); a shrunk or replaced file starts over."""
+    st = os.stat(path)
+    entry = _usable(entry, provider)
+    if not entry or entry["inode"] != st.st_ino or st.st_size < entry["offset"]:
+        entry = {"inode": st.st_ino, "size": 0, "mtime_ns": 0, "offset": 0, "state": FileState(provider).to_json()}
+    fs, offset = FileState.from_json(entry["state"]), entry["offset"]
+    if st.st_size > offset:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            carry, left = b"", st.st_size - offset    # read only up to the size seen by stat
+            while left > 0:
+                chunk = f.read(min(CHUNK, left))
+                if not chunk:
+                    break
+                left -= len(chunk)
+                data = carry + chunk
+                end = data.rfind(b"\n") + 1          # a partial last line waits for the next chunk or refresh
+                if end:
+                    fs.parse(data[:end].decode("utf-8", "replace").splitlines())
+                    offset += end
+                carry = data[end:]
+    return {"inode": st.st_ino, "size": st.st_size, "mtime_ns": st.st_mtime_ns, "offset": offset,
+            "state": fs.to_json()}
+
+
+def read_sessions(sessions):
+    """Turns of each (provider, session), every file of a session merged and sorted by time. The cache in relay
+    home makes a refresh read only what was appended. When its lock is busy or relay home is not writable, the
+    work is done in memory and notes says so (D5)."""
+    out = {"turns": {}, "unreadable": {}, "notes": []}
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(config.write_lock(name=LOCK))
+            saving = True
+        except (RelayError, OSError):
+            saving = False
+            out["notes"].append("usage cache not saved")
+        cache = _load_cache()
+        for provider, session in sorted(sessions):
+            key = f"{provider}:{session}"
+            known = sorted(set(cache["sessions"].get(key) or []) | set(files_for(provider, session)))
+            cache["sessions"][key] = known
+            if not known:
+                out["unreadable"][(provider, session)] = "log not found"
+                continue
+            turns, problems = [], []
+            for path in known:
+                try:
+                    cache["files"][path] = _advance(path, cache["files"].get(path), provider)
+                except OSError:
+                    problems.append("log not found")          # gone now: its cached turns stay counted
+                entry = _usable(cache["files"].get(path), provider)
+                if entry:
+                    fs = FileState.from_json(entry["state"])
+                    turns += fs.turns.values()
+                    if fs.problem():
+                        problems.append(fs.problem())
+            out["turns"][(provider, session)] = sorted(turns, key=lambda t: t["at"])
+            if problems:
+                out["unreadable"][(provider, session)] = "; ".join(sorted(set(problems)))
+        if saving:
+            try:
+                config.atomic_write(os.path.join(config.relay_home(), CACHE), json.dumps(cache), 0o600)
+            except OSError:
+                out["notes"].append("usage cache not saved")
+    return out
