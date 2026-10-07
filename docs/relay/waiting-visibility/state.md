@@ -51,7 +51,7 @@
     }
   ],
   "pr": null,
-  "refresh": true,
+  "refresh": false,
   "repo": "relay-go",
   "retried": false,
   "review_notes": {},
@@ -60,7 +60,7 @@
     "plan": null,
     "spec": {
       "inputs": {
-        "spec": "8a25773f13cec0972a03acd07bf96f546814d031fe784a534f7b7b8b177813f2"
+        "spec": "9c9fce6764408b63339de97a3ffa80714f79996abaf667dc53d67caa9c841b2b"
       }
     }
   },
@@ -70,9 +70,9 @@
   },
   "skipped": [],
   "small": false,
-  "stage": "spec",
-  "status": "in-review",
-  "updated": "2026-10-07T17:48:29-04:00",
+  "stage": "plan",
+  "status": "drafting",
+  "updated": "2026-10-07T17:49:22-04:00",
   "verdicts": {
     "spec": "GO"
   }
