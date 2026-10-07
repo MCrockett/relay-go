@@ -2,6 +2,7 @@
 {
   "authors": {
     "idea": "claude",
+    "plan": "claude",
     "spec": "claude"
   },
   "branch": "feat/writer-usage",
@@ -62,13 +63,14 @@
     }
   },
   "rounds": {
+    "plan": 1,
     "spec": 3
   },
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "drafting",
-  "updated": "2026-10-06T23:38:50-04:00",
+  "status": "in-review",
+  "updated": "2026-10-06T23:50:23-04:00",
   "verdicts": {
     "spec": "GO"
   }
