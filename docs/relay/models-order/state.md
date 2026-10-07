@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "fix/models-order",
   "extra_rounds": {},
   "feature": "models-order",
@@ -12,7 +14,7 @@
     "worktree": "relay-go-dev"
   },
   "owner_actions": [],
-  "pr": null,
+  "pr": 5,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -21,15 +23,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-10-06T23:31:56-04:00",
+  "status": "in-review",
+  "updated": "2026-10-06T23:34:20-04:00",
   "verdicts": {}
 }
 ---
