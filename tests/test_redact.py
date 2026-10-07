@@ -5,18 +5,18 @@ from relaylib import redact
 
 
 class PublicLineTest(unittest.TestCase):
-    def clean(self, text, user="mcrockett"):
+    def clean(self, text, user="someone"):
         with mock.patch("getpass.getuser", return_value=user):
             return redact.public_line(text)
 
     def test_paths_keep_only_their_last_part(self):
-        self.assertEqual(self.clean("spawn /Users/mcrockett/.local/bin/codex ENOENT"), "spawn codex ENOENT")
+        self.assertEqual(self.clean("spawn /opt/someone/.local/bin/codex ENOENT"), "spawn codex ENOENT")
         self.assertEqual(self.clean("cannot open ~/StudioProjects/relay-go/x.md: denied"), "cannot open x.md: denied")
         self.assertEqual(self.clean("in /tmp/ and /"), "in tmp and /")
         self.assertEqual(self.clean("ratio 3/4 and and/or"), "ratio 3/4 and and/or")    # not paths
 
     def test_usernames_emails_urls_and_tokens(self):
-        self.assertEqual(self.clean("not logged in as mcrockett (MCrockett@Example.com)"),
+        self.assertEqual(self.clean("not logged in as someone (Someone@Example.com)"),
                          "not logged in as <user> (<email>)")
         self.assertEqual(self.clean("GET https://bob:pw@api.example.com/v1/x?key=abc failed"),
                          "GET https://api.example.com failed")
