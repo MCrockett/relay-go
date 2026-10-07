@@ -131,7 +131,8 @@ session, handoff and CI. Reviews open even when their branch is not checked out.
 can include completed work. Models shows the reviewer tables at the top: reorder, add and remove
 reviewers, set their effort, or make a change temporary, each after a confirmation. Writer roles are shown
 for information. Below them are Codex and Claude weekly limits, daily carry-forward budgets,
-and reviewer activity by project and model for seven or thirty days. Daily budgets need a sample from
+and the review runs relay launched, by project and model, for seven or thirty days (writing sessions are
+not counted there). Daily budgets need a sample from
 before today's midnight in the current week; until then they say "no baseline yet".
 
 The server listens only on `127.0.0.1` unless you pass `--host 0.0.0.0`, which only a container needs (see Running in Docker). A random token protects the page and every API request, and requests
