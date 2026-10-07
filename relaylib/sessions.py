@@ -13,7 +13,8 @@ from .config import relay_home
 
 STATES = ("permission", "waiting", "working", "ended")
 WAITING = {"claude": {"Stop"}, "codex": {"Stop", "Interrupt"}}
-WORKING = {"claude": {"UserPromptSubmit", "SessionStart"}, "codex": {"UserPromptSubmit"}}
+WORKING = {"claude": {"UserPromptSubmit"}, "codex": {"UserPromptSubmit"}}
+NOTICE = {"claude": {"UserPromptSubmit", "SessionStart"}, "codex": {"UserPromptSubmit"}}  # merge notice events
 TOOL_REFRESH_S = 30  # PostToolUse is frequent: one write per 30 seconds is enough
 READ_DEADLINE_S = 0.7  # with the 0.1 s lock wait, the sink stays within 1 second
 READ_CAP = 32_000_000  # far above any real hook input; only a runaway pipe reaches it
@@ -72,6 +73,13 @@ def apply(record, provider, event, now):
         new_state, pending = "waiting", []
     elif name in WORKING[provider]:
         new_state, pending = "working", []
+    elif provider == "claude" and name == "SessionStart":
+        if event.get("source") == "compact":  # compaction happens mid-turn
+            new_state, pending = "working", []
+        elif state in ("waiting", "permission"):
+            new_state = state  # reopening a session is not an answer (waiting-visibility D1)
+        else:
+            new_state, pending = "waiting", []  # a new or reopened session sits at the prompt
     elif name == "SessionEnd":
         new_state, pending = "ended", []
     elif name == "PostToolUse":
@@ -157,7 +165,7 @@ def capture(provider, stream, now=None):
             return 0
         name = event.get("hook_event_name")
         found = []
-        if name in WORKING[provider]:
+        if name in NOTICE[provider]:
             try:
                 from . import notices
                 found = notices.merged_features(event["session_id"], event.get("cwd"))
