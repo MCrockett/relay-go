@@ -364,12 +364,29 @@ class FileState:
 
     @classmethod
     def from_json(cls, d):
-        """Raises KeyError or TypeError for a state that is not one this class wrote (F3)."""
+        """Raises ValueError, KeyError or TypeError for any state this class could not have written (F3)."""
+        if d["provider"] not in ("claude", "codex"):
+            raise ValueError("bad provider")
         fs = cls(d["provider"])
         for k in fs.to_json():
             setattr(fs, k, d[k])
+        counters = (fs.candidates, fs.bad, fs.malformed, fs.lines, fs.lines_since_record, fs.events)
+        if not all(_count(v) for v in counters) or not isinstance(fs.had_valid, bool):
+            raise ValueError("bad counters")
+        if fs.model is not None and not isinstance(fs.model, str):
+            raise ValueError("bad model")
+        if fs.last_total is not None and not (isinstance(fs.last_total, list) and len(fs.last_total) == 3
+                                             and all(_count(v) for v in fs.last_total)):
+            raise ValueError("bad baseline")
         if not isinstance(fs.turns, dict):
-            raise TypeError("turns must be a dict")
+            raise ValueError("bad turns")
+        for key, turn in fs.turns.items():
+            if not (isinstance(key, str) and isinstance(turn, dict)
+                    and isinstance(turn.get("at"), (int, float)) and not isinstance(turn.get("at"), bool)
+                    and isinstance(turn.get("model"), str)
+                    and all(_count(turn.get(k)) for k in ("input", "cached", "output"))
+                    and (turn.get("branch") is None or isinstance(turn["branch"], str))):
+                raise ValueError("bad turn")
         return fs
 ```
 
@@ -430,6 +447,25 @@ class IncrementalTest(unittest.TestCase):
             with self.subTest(text=text[:20]):
                 helpers.write(cache, text)
                 self.assertEqual(len(transcripts.read_sessions({("claude", "S1")})["turns"][("claude", "S1")]), 2)
+
+    def test_complete_but_corrupt_cache_entries_are_rebuilt(self):
+        transcripts.read_sessions({("claude", "S1")})
+        cache_path = os.path.join(os.environ["RELAY_HOME"], "writer-usage.json")
+        good = json.load(open(cache_path))
+        entry = good["files"][self.path]
+        first = next(iter(entry["state"]["turns"]))
+        for name, change in (("turn without at", lambda e: e["state"]["turns"][first].pop("at")),
+                             ("string counter", lambda e: e["state"].__setitem__("lines", "7")),
+                             ("bad baseline", lambda e: e["state"].__setitem__("last_total", [1, "x"])),
+                             ("bad turn tokens", lambda e: e["state"]["turns"][first].__setitem__("input", -1))):
+            with self.subTest(name=name):
+                broken = json.loads(json.dumps(good))
+                change(broken["files"][self.path])
+                broken["sessions"]["claude:S1"] = "not a list"
+                helpers.write(cache_path, json.dumps(broken))
+                got = transcripts.read_sessions({("claude", "S1")})
+                self.assertEqual(len(got["turns"][("claude", "S1")]), 2)
+                self.assertNotIn(("claude", "S1"), got["unreadable"])
 
     def test_large_file_is_read_in_bounded_chunks(self):
         with open(self.path, "a") as f:
@@ -507,6 +543,9 @@ def _load_cache():
             data = json.load(f)
         if (data.get("version") == VERSION and isinstance(data.get("files"), dict)
                 and isinstance(data.get("sessions"), dict)):
+            # a malformed session path list is dropped; its files are found again by files_for
+            data["sessions"] = {k: v for k, v in data["sessions"].items()
+                                if isinstance(v, list) and all(isinstance(x, str) for x in v)}
             return data
     except (OSError, ValueError, AttributeError):
         pass
@@ -643,6 +682,11 @@ def read_sessions(sessions):
         (w,) = holds.windows([self.work])["windows"]
         self.assertEqual(w["end"], T0 + 500)        # found only on origin/develop, so merged; fallback reachable
 
+    def test_merged_branch_left_on_origin_is_found_without_gh(self):
+        # state ready-to-merge, no pr; feat/a merged into develop at T0 + 500 but NOT deleted; fresh RELAY_HOME
+        (w,) = holds.windows([self.work])["windows"]
+        self.assertEqual(w["end"], T0 + 500)
+
     def test_merge_never_extends_an_earlier_end(self):
         # S1's window ended by a handoff at T0 + 300; the PR merged at T0 + 500
         (w,) = [x for x in holds.windows([self.work])["windows"] if x["session"] == "S1"]
@@ -719,7 +763,7 @@ def _history(repo, ref, slug):
     return rows, (log[-1].split("\t", 1)[0] if log else None)
 ```
 
-and `windows(checkouts)`: group checkouts by `gitops.origin_url` (first checkout per URL); for each feature, walk `_history`; open a window when `owner.session` changes to a new non-empty session (`start = _since(owner, commit_time)`), append `[commit_time, stage]` to its `stages` with the real commit time (never moved to `start`: `_stage` in Task 5 uses the first entry's stage for a turn before the first commit, and the D10 tie-break compares real commit times), close it at the next owner change (`end = commit_time`) or when `stage == "done"` or `status == "done"`. Record each `relay: handoff <slug>` commit as `(repo url, session, time)`; after all features of a repo are walked, close every window of that session in that repo that is open at that time (`end = min(end or inf, handoff_time)` for windows with `start < handoff_time`). A feature counts as merged when `merged.is_done(repo, st)` is true, or when its own branch `origin/<branch>` no longer exists and its state is found on origin/develop or origin/main (merging deletes the branch, so this works without a PR number or gh). For a merged feature, `merge = merged.merged_at(repo, st, branch_head=<head of origin/<branch> when it exists, else the last state commit sha>)`; when that is None, `merge = last_commit` and add the flag `f"merge time unknown for {repo_name} {slug}"`. Every window of the feature then ends at `min(its end, merge)` (an open window gets `merge`), so a merge never extends an earlier handoff or owner change. `_history` reads each `(sha, path)` state from the cache before calling `gitops.show`, and the new ones are written with `config.atomic_write(..., 0o600)` at the end of `windows`; a corrupt cache file is ignored and rebuilt. Errors from git for one repo (RelayError, OSError) skip that repo (F5).
+and `windows(checkouts)`: group checkouts by `gitops.origin_url` (first checkout per URL); for each feature, walk `_history`; open a window when `owner.session` changes to a new non-empty session (`start = _since(owner, commit_time)`), append `[commit_time, stage]` to its `stages` with the real commit time (never moved to `start`: `_stage` in Task 5 uses the first entry's stage for a turn before the first commit, and the D10 tie-break compares real commit times), close it at the next owner change (`end = commit_time`) or when `stage == "done"` or `status == "done"`. Record each `relay: handoff <slug>` commit as `(repo url, session, time)`; after all features of a repo are walked, close every window of that session in that repo that is open at that time (`end = min(end or inf, handoff_time)` for windows with `start < handoff_time`). A feature counts as merged when any of these holds: `merged.is_done(repo, st)` is true; its own branch `origin/<branch>` no longer exists and its state is found on origin/develop or origin/main (merging deletes the branch); or `origin/<branch>` still exists and its head is an ancestor of origin/develop or origin/main (`git merge-base --is-ancestor`, a merged branch nobody deleted). The last two need neither a PR number nor gh. For a merged feature, `merge = merged.merged_at(repo, st, branch_head=<head of origin/<branch> when it exists, else the last state commit sha>)`; when that is None, `merge = last_commit` and add the flag `f"merge time unknown for {repo_name} {slug}"`. Every window of the feature then ends at `min(its end, merge)` (an open window gets `merge`), so a merge never extends an earlier handoff or owner change. `_history` reads each `(sha, path)` state from the cache before calling `gitops.show`, and the new ones are written with `config.atomic_write(..., 0o600)` at the end of `windows`; a corrupt cache file is ignored and rebuilt. When that write fails (OSError), the windows computed in memory are still returned and `flags` gets "state history cache not saved"; add a test with `config.atomic_write` patched to raise. Errors from git for one repo (RelayError, OSError) skip that repo (F5).
 
 - [ ] **Step 4: Run the tests.** Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -m "feat: hold windows from each feature's published state history"`
@@ -734,7 +778,7 @@ and `windows(checkouts)`: group checkouts by `gitops.origin_url` (first checkout
 
 **Interfaces:**
 - Consumes: Task 3 `transcripts.read_sessions`; Task 4 `holds.windows`.
-- Produces: `writerusage.attribute(windows, turns_by_session) -> list[dict]` (each turn plus `provider`, `session`, `repo`, `slug`, `stage` or `None` for unattributed, and `minutes`); `writerusage.totals(attributed, since_s, now) -> dict` with `features`, `models` and `feature_models` (one row per feature, stage and model, named `<feature name> · <provider:model>`, for `relay cost`, R11) (rows `{"name", "sessions", "turns", "input", "cached", "output", "cached_share", "minutes"}` sorted by name), `unattributed` (`{provider: {turns, input, cached, output, minutes}}`); `writerusage.summary(checkouts, now=None) -> dict` with `"7"` and `"30"` totals, `unreadable` (list of `{provider, session, reason}`), `notes`.
+- Produces: `writerusage.attribute(windows, turns_by_session) -> list[dict]` (each turn plus `provider`, `session`, `repo`, `slug`, `stage` or `None` for unattributed, and `minutes`); `writerusage.totals(attributed, since_s, now) -> dict` with `features`, `models` and `feature_models` (one row per feature, stage and model, named `<feature name> · <provider:model>` and also carrying `feature` and `model` fields, for `relay cost`, R11) (rows `{"name", "sessions", "turns", "input", "cached", "output", "cached_share", "minutes"}` sorted by name), `unattributed` (`{provider: {turns, input, cached, output, minutes}}`); `writerusage.summary(checkouts, now=None) -> dict` with `"7"` and `"30"` totals, `unreadable` (list of `{provider, session, reason}`), `notes`.
 
 - [ ] **Step 1: Write the failing tests** (pure functions on hand-built windows and turns, plus one `summary` test with patched `holds.windows` and `transcripts.read_sessions`):
 
@@ -840,9 +884,11 @@ def _add(group, t):
 def _rows(groups):
     rows = []
     for name, g in sorted(groups.items()):
-        rows.append({"name": name, "sessions": len(g["sessions"]), "turns": g["turns"], "input": g["input"],
-                     "cached": g["cached"], "output": g["output"], "minutes": g["minutes"],
-                     "cached_share": g["cached"] / g["input"] * 100 if g["input"] else 0})
+        row = {"name": name, "sessions": len(g["sessions"]), "turns": g["turns"], "input": g["input"],
+               "cached": g["cached"], "output": g["output"], "minutes": g["minutes"],
+               "cached_share": g["cached"] / g["input"] * 100 if g["input"] else 0}
+        row.update({k: g[k] for k in ("feature", "model") if k in g})
+        rows.append(row)
     return rows
 
 
@@ -858,7 +904,7 @@ def totals(attributed, since_s, now):
         feature, model = f"{t['repo']} · {t['slug']} · {t['stage']} ({t['provider']})", f"{t['provider']}:{t['model']}"
         _add(features.setdefault(feature, new()), t)
         _add(models.setdefault(model, new()), t)
-        _add(both.setdefault(f"{feature} · {model}", new()), t)
+        _add(both.setdefault(f"{feature} · {model}", {**new(), "feature": feature, "model": model}), t)
     unattributed = {p: {k: v for k, v in g.items() if k != "sessions"} for p, g in loose.items()}
     return {"features": _rows(features), "models": _rows(models), "feature_models": _rows(both),
             "unattributed": unattributed}
@@ -914,7 +960,7 @@ def summary(checkouts, now=None, periods=PERIODS):
 **Interfaces:**
 - Consumes: Task 5 `writerusage.summary(checkouts, periods=...)`; `status.checkouts(status.projects_root())`; `ledger.parse_since`.
 
-- [ ] **Step 1: Write the failing test.** Patch `writerusage.summary` to return two `feature_models` rows (one feature and stage, two models; both names printed), one unattributed provider and one unreadable entry; `relay cost --since 12h` prints the review header (or "no reviewer runs"), then `WRITING`, a row with the feature name and numbers, `unattributed claude`, and `unreadable claude session`. Assert `summary` was called with `periods=(0.5,)` for `12h`.
+- [ ] **Step 1: Write the failing test.** Patch `writerusage.summary` to return two `feature_models` rows (one feature and stage, two models; both names printed), one unattributed provider and one unreadable entry; `relay cost --since 12h` prints the review header (or "no reviewer runs"), then `WRITING`, a row per model with the full feature name and the full model name (a long feature name is never cut), `unattributed claude`, and `unreadable claude session`. Assert `summary` was called with `periods=(0.5,)` for `12h`.
 - [ ] **Step 2: Run it to see it fail.**
 - [ ] **Step 3: Implement.** Compute `days = ledger.parse_since(args.since).total_seconds() / 86400`. Keep the review section; when there are no reviewer runs, print the existing message and continue instead of returning. Then:
 
@@ -922,10 +968,12 @@ def summary(checkouts, now=None, periods=PERIODS):
     from . import status, writerusage
     writing = writerusage.summary(status.checkouts(status.projects_root()), periods=(days,))
     rows = writing[str(days)]
-    print(f"\nWRITING {'FEATURE AND MODEL':64} {'SESS':>4} {'TURNS':>5} {'INPUT':>10} {'CACHED':>10} {'OUTPUT':>8} {'MIN':>6}")
-    for r in rows["feature_models"]:                   # feature, stage and model (R11)
-        print(f"        {r['name'][:64]:64} {r['sessions']:>4} {r['turns']:>5} {r['input']:>10} {r['cached']:>10} "
-              f"{r['output']:>8} {r['minutes']:>6.1f}")
+    width = max([len(r["feature"]) for r in rows["feature_models"]] + [len("FEATURE")])
+    print(f"\nWRITING\n{'FEATURE':{width}} {'MODEL':28} {'SESS':>4} {'TURNS':>5} {'INPUT':>10} {'CACHED':>10} "
+          f"{'OUTPUT':>8} {'MIN':>6}")
+    for r in rows["feature_models"]:                   # feature, stage and model in their own columns (R11)
+        print(f"{r['feature']:{width}} {r['model']:28} {r['sessions']:>4} {r['turns']:>5} {r['input']:>10} "
+              f"{r['cached']:>10} {r['output']:>8} {r['minutes']:>6.1f}")
     for provider, u in sorted(rows["unattributed"].items()):
         print(f"  unattributed {provider}: {u['turns']} turns, {u['input']} input, {u['minutes']:.1f} min")
     for u in writing["unreadable"]:
