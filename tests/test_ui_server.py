@@ -317,6 +317,14 @@ console.log(JSON.stringify({up:ids(editList(L,'up',1)), topUp:ids(editList(L,'up
         # takes the snapshot once it shows the same revision, and gives up after 45 seconds.
         self.assertEqual((out["keep"], out["caught"], out["expired"], out["none"]), ("new", 1, "old", "old"))
 
+    def test_activity_tables_say_they_count_review_runs_only(self):
+        page = self.request("/?t=test-token")[1]
+        for piece in ("<h3>Review runs</h3>", "'Review runs by project'", "'Review runs by model'",
+                      "Writing sessions (spec, plan, build) are not counted here"):
+            self.assertIn(piece, page)
+        for old in ("Reviewer activity", "'By project'", "'By model'"):
+            self.assertNotIn(old, page)
+
     def test_page_shows_session_health(self):
         page = self.request("/?t=test-token")[1]
         # Options appears only when there is an owner action to pick, never just for health.
