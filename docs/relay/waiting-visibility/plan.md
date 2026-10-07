@@ -28,6 +28,8 @@
 - **`session_health` return value:** `health.session_health(repo, st, records, now)` returns `(health, activity, record)`; the record is needed for the ask kind (record state waiting or permission) and for the session id `agentask` reads.
 - **Which asks have buttons (D7):** `ASK_ACTIONS = {decide: [go, extra-round, reset-rounds], review-failed: [go, review], merge: [merge]}`, each filtered by the row's `actions` (which already apply `owneractions.applicable`, merge readiness and running reviews).
 - **`health_inbox`:** kept in rows for compatibility; the page stops using it.
+- **Two orders (R6, R11):** `status.scan` and the snapshot keep today's row order (waiting first, then repo and feature), so the dashboard's features table is unchanged. Only two views sort by wait: `relay status`'s printed and `--json` output (`cmd_status` sorts with `waiting.sort_key` before rendering) and the page's inbox list (sorted in the page by `wait_since`).
+- **Repository-error rows:** `status.scan` builds a row with `feature == "?"` directly when a checkout cannot be read, and `snapshot._enrich` returns early for it. Both paths set `asks = waiting.asks(row, None, None, None, None)` (the error ask, no `since`), `wait_since = None`, `excerpt = None` and `waiting_on_owner = True`.
 
 ## Review Focus
 
@@ -141,6 +143,7 @@ Files: create `relaylib/waiting.py`, `tests/test_waiting.py`.
   - activity-only health "no activity 23h" with no record (F2): "Check the claude session: no activity 23h", since = health `since`.
   - Order: ready-to-merge plus waiting session gives [merge, answer]; waiting-owner plus permission gives [decide, approve].
   - Done feature: no asks.
+  - Error row with `st` None: only the error ask.
   - `since(asks)` is the oldest; None when none has one. `sort_key` puts waiting rows first, oldest wait first, no-since after, then repo and feature.
   - `stuck_reason` in a temp repo: reads the frontmatter `reason` of the highest-numbered `<stage>-stuck*.md` at a ref; None when absent or unparsable.
 - [ ] Implement `asks(row, st, health, record, stuck_reason)` returning `[{"kind", "text", "since"}]`, using `state`'s `updated` (ISO, to a timestamp) for state asks. Flags are read from `row["flags"]` exactly as `status.py` writes them today ("handoff: … `relay take`", "stale …", "fallback GO: …").
@@ -154,12 +157,14 @@ Files: `relaylib/status.py`, `tests/test_status.py`.
 
 - [ ] Failing tests in a temp projects folder with hook records under `RELAY_HOME/sessions` and a fixture Claude transcript:
   - A drafting feature whose owner session record is waiting: row marked `*`, counted in "1 waiting on you", followed by the indented lines "Answer the claude session · waiting 16h" and "Agent: How do you want…".
-  - Two waiting features: the older wait prints first.
+  - Two waiting features: the older wait prints first in the text and `--json` output, while `scan()` itself returns today's order (fixtures where the two orders differ).
+  - An unreadable checkout: its row prints "Fix: <error>" with no age, is counted, and comes after the dated waits.
+  - Hook records folder missing, and a record file with bad JSON (F2): a ready-to-merge feature still shows its merge ask, an idle checkout still shows the check ask from local activity, and no answer or approve ask appears.
   - `--json` rows carry `asks` and `excerpt`, and never the full text (a 300-character answer appears only as its 160-character excerpt).
   - Session health raising for one feature (patched): that row keeps its state asks; the others are unaffected (F5).
   - No new fetch: `gitops.fetch` is called only from `_build_flags`, as today (patched and counted).
   - The existing tests keep passing (`test_rows_and_waiting_first`, `test_a_pushed_handoff_is_waiting_on_the_owner`, render).
-- [ ] Implement: `scan` reads `sessions.read_records()` once; `_row` and `_remote_row` call `health.session_health` (inside try, F5), `waiting.stuck_reason` at their ref, `waiting.asks`, and `agentask.last_words` only for answer or approve; set `asks`, `wait_since`, `excerpt`, and `waiting_on_owner = bool(asks)`. Sort with `waiting.sort_key`. `render` prints the two indented lines under waiting rows. `cmd_status --json` drops nothing new beyond `excerpt` (no full text is ever put in the row).
+- [ ] Implement: `scan` reads `sessions.read_records()` once; the error row it builds gets the error-row fields from the clarification; `_row` and `_remote_row` call `health.session_health` (inside try, F5), `waiting.stuck_reason` at their ref, `waiting.asks`, and `agentask.last_words` only for answer or approve; set `asks`, `wait_since`, `excerpt`, and `waiting_on_owner = bool(asks)`. `scan` keeps its sort; `cmd_status` sorts with `waiting.sort_key` before `render` or `--json`. `render` prints the two indented lines under waiting rows. `cmd_status --json` drops nothing new beyond `excerpt` (no full text is ever put in the row).
 - [ ] Run, commit `feat: show what relay status is waiting on`.
 
 ### Task 7: Snapshot rows and detail
@@ -173,7 +178,10 @@ Files: `relaylib/ui/snapshot.py`, `tests/test_ui_snapshot.py`.
   - For the same fixtures, the rows that `status.scan` marks waiting equal the snapshot rows with asks.
   - After building the snapshot and running `relay status --json`, no file under `RELAY_HOME` contains a distinctive phrase from the fixture transcript.
   - A missing transcript: the answer ask shows, `excerpt` and `agent_text` are None (F1).
-- [ ] Implement in `_enrich`: after the published row and health, call `waiting.stuck_reason(repo, seen["commit"], ...)` and `waiting.asks`, set `waiting_on_owner = bool(asks)`, keep `health_inbox` as today; set `excerpt` from the detail. In `feature()`, compute `agent_text` from `agentask.last_words` for the record when the record state is waiting or permission. Sort rows with `waiting.sort_key`.
+  - Row order is unchanged from today for fixtures where wait order differs (R11).
+  - An unreadable checkout's row has the error ask, `wait_since` None and `excerpt` None, and counts as waiting, as in `relay status`.
+  - Missing hook records (F2): state asks and the activity-only check ask are present; no answer or approve ask.
+- [ ] Implement in `_enrich`: after the published row and health, call `waiting.stuck_reason(repo, seen["commit"], ...)` and `waiting.asks`, set `waiting_on_owner = bool(asks)`, keep `health_inbox` as today; set `excerpt` from the detail; the early return for `feature == "?"` sets the error-row fields first. In `feature()`, compute `agent_text` from `agentask.last_words` for the record when the record state is waiting or permission. Row order stays as `status.scan` returns it.
 - [ ] Run, commit `feat: put the owner's asks in the dashboard snapshot`.
 
 ### Task 8: The page
@@ -186,9 +194,10 @@ Files: `relaylib/ui/page.html`, `tests/test_ui_server.py`.
   - Page strings: `ASK_ACTIONS`, `row.asks`, `row.excerpt`, `wait_since`, "Agent's last message", "Summary while you were away", `agent_text`; no `'Options'` button code (`node('button','Options')` absent).
   - Node test (skipped without Node) of the pure functions `cardButtons(row)` and `askLine(row)`: a ready-to-merge row with a waiting session gives buttons [merge] and the line "Merge PR #6 · Answer the claude session · waiting 2h"; a waiting-owner row gives [go, extra-round, reset-rounds]; a review-error build row gives [go, review]; an answer-only row gives no buttons and no Options; Release never appears.
   - The detail text is set through `textContent` (string check that the agent text node is built with `node(` and never `innerHTML`).
+  - Node test: `inboxOrder(rows)` sorts by `wait_since`, missing last, while the features table code still iterates `data.rows` in order (string check).
   - Update `test_page_shows_session_health` for the removed Options rule.
-- [ ] Implement: card reason shows `askLine(row)`; the excerpt on its own line labeled "Agent:" or "Summary:"; buttons from `cardButtons(row)` through the existing `actions(row, only)` confirmation path; remove the Options branch; inbox list sorted by `wait_since` (oldest first, missing last); the counts use `row.waiting_on_owner`, which is now `bool(asks)`. Detail: under the Session line, the labeled full text from `d.agent_text` and, for approve, the pending tool names.
-- [ ] Check in a browser against a throwaway server with fixture data: the card text, excerpt, buttons per kind, the confirmation dialog from a card button, and the detail text.
+- [ ] Implement: card reason shows `askLine(row)`; the excerpt on its own line labeled "Agent:" or "Summary:"; buttons from `cardButtons(row)` through the existing `actions(row, only)` confirmation path; remove the Options branch; inbox list sorted with `inboxOrder` (oldest `wait_since` first, missing last); the features table keeps `data.rows` order; the counts use `row.waiting_on_owner`, which is now `bool(asks)`. Detail: under the Session line, the labeled full text from `d.agent_text` and, for approve, the pending tool names.
+- [ ] Check in a browser against a throwaway server with fixture data: the card text, excerpt, buttons per kind, the confirmation dialog from a card button, and the detail text. Then change the feature's state on origin (a new state commit) without refreshing the page, confirm a card action, and check the existing "changed since you looked" conflict message appears (F6).
 - [ ] Run, commit `feat: show the owner's asks and real buttons on inbox cards`.
 
 ### Task 9: Docs and the full check
