@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/waiting-visibility",
   "extra_rounds": {},
   "feature": "waiting-visibility",
@@ -29,9 +31,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-10-07T12:11:24-04:00",
+  "updated": "2026-10-07T12:11:34-04:00",
   "verdicts": {}
 }
 ---
