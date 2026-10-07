@@ -1,7 +1,7 @@
-import io, json, os, shutil, tempfile, unittest
+import io, json, os, shutil, tempfile, time, unittest
 from contextlib import redirect_stdout
 from unittest import mock
-from relaylib import commands, freshness, state, status
+from relaylib import commands, freshness, gitops, sessions, state, status
 from tests import helpers
 
 
@@ -15,6 +15,7 @@ class StatusTest(unittest.TestCase):
         helpers.write(self.gh_json, '{"state": "OPEN", "baseRefName": "develop"}')
         p = mock.patch.dict(os.environ, {
             "RELAY_ROOT": self.projects, "RELAY_HOME": os.path.join(self.tmp, "home"),
+            "CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "claude"), "CODEX_HOME": os.path.join(self.tmp, "codex"),
             "RELAY_GH_BIN": helpers.fake_bin(self.tmp, "gh", helpers.FAKE_GH), "FAKE_GH_JSON": self.gh_json})
         p.start()
         self.addCleanup(p.stop)
@@ -100,6 +101,97 @@ class StatusTest(unittest.TestCase):
         self.assertIn("* ", text)
         self.assertIn("1 waiting on you", text)
 
+
+    def session(self, sid, state_="waiting", age_s=16 * 3600, said=None, provider="claude", pending=()):
+        """A hook record for session sid, and a Claude transcript ending with `said`."""
+        os.makedirs(sessions.folder(), exist_ok=True)
+        at = time.time() - age_s
+        with open(sessions.record_path(provider, sid), "w") as f:
+            json.dump({"provider": provider, "session_id": sid, "cwd": None, "state": state_, "since": at, "at": at,
+                       "event": "Stop", "pending": [{"tool_use_id": None, "tool_name": t, "input_sha1": "x"}
+                                                     for t in pending]}, f)
+        if said:
+            helpers.write(os.path.join(self.tmp, "claude", "projects", "-w", sid + ".jsonl"), json.dumps(
+                {"type": "assistant", "message": {"content": [{"type": "text", "text": said}]}}) + "\n")
+
+    def held(self, name, slug, sid, **over):
+        return self.repo(name, {slug: dict({"stage": "build", "status": "drafting",
+                                            "owner": {"provider": "claude", "session": sid}}, **over)}, commit=True)
+
+    def test_a_waiting_session_is_waiting_on_the_owner_with_its_words(self):
+        question = "How do you want to treat the pi window: clarification, or exploratory? " + "More. " * 50
+        self.held("bottomsup", "nba", "S1")
+        self.session("S1", said=question)
+        fetches = []
+        with mock.patch.object(gitops, "fetch", side_effect=lambda repo: fetches.append(repo)):
+            rows = status.scan(self.projects)
+            text = self.run_cmd("status")
+            data = json.loads(self.run_cmd("status", "--json"))
+        self.assertEqual(fetches, [])                                  # R7: no new fetch
+        self.assertEqual([a["kind"] for a in rows[0]["asks"]], ["answer"])
+        self.assertTrue(rows[0]["waiting_on_owner"])
+        self.assertIn("1 waiting on you", text)
+        self.assertIn("\n    Answer the claude session · waiting 16h\n", text)
+        self.assertIn("\n    Agent: How do you want to treat the pi window", text)
+        self.assertEqual(data[0]["excerpt"]["source"], "agent")
+        self.assertEqual(len(data[0]["excerpt"]["text"]), 161)          # the excerpt only, never the full text
+        self.assertNotIn(question.strip(), json.dumps(data))
+
+    def test_waits_print_oldest_first_but_scan_keeps_its_order(self):
+        self.held("alpha", "newer", "S1")
+        self.held("beta", "older", "S2")
+        self.session("S1", age_s=600)
+        self.session("S2", age_s=7200)
+        self.assertEqual([r["feature"] for r in status.scan(self.projects)], ["newer", "older"])
+        text = self.run_cmd("status")
+        self.assertLess(text.index("older"), text.index("newer"))
+        self.assertEqual([r["feature"] for r in json.loads(self.run_cmd("status", "--json"))], ["older", "newer"])
+
+    def test_an_unreadable_checkout_asks_to_be_fixed_after_dated_waits(self):
+        self.held("alpha", "one", "S1")
+        self.session("S1", age_s=600)
+        broken = self.repo("broken", {})
+        helpers.write(os.path.join(broken, "docs/relay/bad/state.md"), "garbage")
+        rows = status.scan(self.projects)
+        text = self.run_cmd("status")
+        bad = next(r for r in rows if r["feature"] == "?")
+        self.assertEqual([a["kind"] for a in bad["asks"]], ["error"])
+        self.assertTrue(bad["asks"][0]["text"].startswith("Fix: ") and "missing frontmatter" in bad["asks"][0]["text"])
+        self.assertIsNone(bad["asks"][0]["since"])
+        self.assertIsNone(bad["wait_since"])
+        self.assertIn("2 waiting on you", text)
+        self.assertLess(text.index("one"), text.index("    Fix: "))
+        self.assertNotIn("Fix: ", text.split("    Fix: ")[1].split("\n")[0])   # no age on the error line
+
+    def test_session_health_failing_for_one_row_keeps_its_state_asks(self):
+        self.held("alpha", "one", "S1", status="waiting-owner")
+        self.held("beta", "two", "S2")
+        self.session("S1")
+        self.session("S2")
+        real = status.health.session_health
+        with mock.patch.object(status.health, "session_health", side_effect=lambda repo, st, *a: (
+                (_ for _ in ()).throw(RuntimeError("boom")) if st["owner"]["session"] == "S1" else real(repo, st, *a))):
+            rows = {r["feature"]: r for r in status.scan(self.projects)}
+        self.assertEqual([a["kind"] for a in rows["one"]["asks"]], ["decide"])
+        self.assertEqual([a["kind"] for a in rows["two"]["asks"]], ["answer"])
+
+    def test_missing_or_bad_hook_records_keep_state_and_activity_asks(self):
+        self.held("alpha", "one", "S1", status="waiting-owner")
+        self.held("beta", "two", "S2")
+        os.makedirs(sessions.folder(), exist_ok=True)
+        helpers.write(sessions.record_path("claude", "S2"), "{not json")
+        old = time.time() - 3 * 86400                                   # the checkout went quiet days ago
+        for root in (os.path.join(self.projects, "alpha"), os.path.join(self.projects, "beta")):
+            helpers.sh(root, "git", "switch", "-q", "-c", "feat/" + ("one" if root.endswith("alpha") else "two"))
+            for dirpath, _, files in os.walk(root):
+                for name in files:
+                    os.utime(os.path.join(dirpath, name), (old, old))
+        with mock.patch.object(status.health, "activity", return_value={"last_activity": old, "unpushed": None,
+                                                                        "origin": None}):
+            rows = {r["feature"]: r for r in status.scan(self.projects)}
+        self.assertEqual([a["kind"] for a in rows["one"]["asks"]], ["decide", "check"])
+        self.assertEqual([a["kind"] for a in rows["two"]["asks"]], ["check"])
+        self.assertIn("no activity 3d", rows["two"]["asks"][0]["text"])
 
     def test_same_repo_name_different_origins_are_separate_rows(self):
         a = self.repo("api-a", {"one": {"repo": "api", "status": "in-review"}})
