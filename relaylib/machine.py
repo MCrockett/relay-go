@@ -1,6 +1,7 @@
 """Stage/status transitions (spec section 2). Pure functions over the state dict."""
 from dataclasses import asdict
 
+from . import redact
 from .errors import RelayError
 from .progress import RoundRecord, decide
 
@@ -62,9 +63,9 @@ def apply_nogo(st, record, max_rounds):
 
 def apply_error(st, error=None):
     st["status"] = "review-error"
-    first = (error or "").strip().splitlines()
-    if first:  # why it failed, for the owner's inbox (waiting-visibility D5); state.write_state drops it later
-        st["review_error"] = first[0][:200]
+    reason = redact.public_line(error)  # state.md is published: no personal or machine-specific detail
+    if reason:  # why it failed, for the owner's inbox (waiting-visibility D5); state.write_state drops it later
+        st["review_error"] = reason
 
 
 def mark_for_refresh(st, stage):
