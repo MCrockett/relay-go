@@ -13,20 +13,27 @@ def _repo_name(checkout):
         return os.path.basename(checkout)
 
 
-def label(cwd, checkouts):
-    """The repository (and worktree folder when it differs) holding cwd, else the folder itself (D3)."""
+def place(cwd, checkouts):
+    """(project, checkout): the repository holding cwd and the checkout folder when it differs from the
+    repository's name (a worktree), else the folder itself and None (D3, where-i-left-off D3)."""
     if not cwd:
-        return "Unknown folder"
+        return "Unknown folder", None
     real = os.path.realpath(cwd)
     inside = [c for c in (os.path.realpath(c) for c in checkouts) if real == c or real.startswith(c + os.sep)]
     if inside:
         checkout = max(inside, key=len)  # nested checkouts: the closest one
         name, folder = _repo_name(checkout), os.path.basename(checkout)
-        return name if name == folder else f"{name} ({folder})"
+        return name, (None if name == folder else folder)
     home = os.path.realpath(os.path.expanduser("~"))
     if real == home or real.startswith(home + os.sep):
-        return "~" + real[len(home):]
-    return real
+        return "~" + real[len(home):], None
+    return real, None
+
+
+def label(cwd, checkouts):
+    """The repository (and worktree folder when it differs) holding cwd, else the folder itself (D3)."""
+    name, checkout = place(cwd, checkouts)
+    return name if checkout is None else f"{name} ({checkout})"
 
 
 def _tools(record):

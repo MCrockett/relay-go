@@ -46,6 +46,7 @@ Reviews continue while they make progress, up to 4 rounds. "Partly fixed" counts
 
 - A macOS notification when a feature needs you: ready to merge, a review stopped, a review failed, or a handoff was pushed. Turn it off with `[notify] enabled = false` in `~/.relay/config.toml`.
 - `relay status`: the `*` rows are your inbox. Below the features, "Other sessions waiting on you" lists Claude and Codex sessions on this machine that are waiting on you for work outside any open feature (for example after its PR merged), with how long each has waited and the start of its last message.
+- `relay left`: where you left off, for coming back after a break, a closed project or a restart. Per project (a repository and its worktrees count as one), your newest 3 sessions on this machine in any state (waiting on you, needs approval, was working, ended), how long ago each was last active, the feature it holds, the start of its last message, and the command to resume it from its own folder, such as `cd ~/app && claude --resume <id>`. `relay left --all` shows every session. It reads only this machine: no fetch, no GitHub.
 - One open PR per repo: `relay new` refuses while another feature's PR is unmerged, unless you ask the agent for a stack (`--stack`, recorded as your decision).
 
 ## Owner decisions
@@ -144,9 +145,15 @@ hooks say it is waiting on you or for a tool approval (past `[ui] health_grace_m
 `[ui] other_sessions_hours` (default 24, up to 168), and, unless it waits for an approval, it has said something.
 A session already shown under one of its features is not listed again. These cards only show what is waiting:
 you answer in the session's terminal. Clicking one shows the full last message and how to resume the session if
-its terminal is gone (`claude --resume <id>` or `codex resume <id>`). Both settings are read from
+its terminal is gone (such as `cd ~/app && claude --resume <id>`, or `codex resume <id>`). Both settings are read from
 `~/.relay/config.toml` only, since many sessions are outside any repository. Nothing about these sessions is
 stored or published.
+
+Below the inbox, "Where you left off" shows the same as `relay left`: per project, your newest 3 sessions in any
+state, with the feature each holds. Clicking one shows its full last message and the resume command; the cards
+have no buttons. Only sessions you started yourself are shown, not automated runs such as relay's own reviews
+(`claude -p`, `codex exec`), and only sessions that said something or wait for a tool approval. relay's hooks keep
+session records for 7 days, so older sessions and ones started before the hooks were installed are not shown.
 
 Open a feature to see its stage history, reviews, owner decisions,
 session, handoff and CI. Reviews open even when their branch is not checked out. The All features table

@@ -1,4 +1,5 @@
 import json, os, unittest
+from unittest import mock
 from relaylib import agentask
 from tests.test_transcripts import Homes
 
@@ -97,6 +98,72 @@ class TextLimitsTest(unittest.TestCase):
     def test_full_is_capped(self):
         self.assertEqual(agentask.full("a\nb"), "a\nb")
         self.assertEqual(len(agentask.full("y" * 5000)), 4000)
+
+
+def started(entrypoint):
+    return json.dumps({"type": "user", "entrypoint": entrypoint, "message": {"role": "user", "content": "go"}})
+
+
+def meta(originator="codex-tui", source="cli"):
+    return json.dumps({"type": "session_meta", "payload": {"id": "C1", "originator": originator, "source": source}})
+
+
+class InteractiveTest(LastWordsTest):
+    def test_claude_entrypoints(self):
+        for entry, want in (("cli", True), ("claude-vscode", True), ("sdk-cli", False), ("sdk-ts", False)):
+            self.claude_log([json.dumps({"type": "summary"}), started(entry), said("hi")], session=entry)
+            self.assertEqual(agentask.interactive("claude", entry), want, entry)
+
+    def test_codex_origins(self):
+        for sid, line, want in (("C1", meta(), True), ("C2", meta("codex_exec", "exec"), False),
+                                ("C3", meta("other", "exec"), False), ("C4", reply("no meta first"), False)):
+            self.codex_log([line, reply("hi")], session=sid)
+            self.assertEqual(agentask.interactive("codex", sid), want, sid)
+
+    def test_missing_empty_and_markerless_transcripts(self):
+        self.assertFalse(agentask.interactive("claude", "nope"))
+        self.assertFalse(agentask.interactive("codex", "nope"))
+        self.claude_log([], session="empty", tail="")
+        self.assertFalse(agentask.interactive("claude", "empty"))
+        self.claude_log([said("no marker")], session="bare")
+        self.assertFalse(agentask.interactive("claude", "bare"))
+        self.claude_log([started("cli")], session="bare")
+        self.assertTrue(agentask.interactive("claude", "bare"))  # not cached while inconclusive
+
+    def test_unreadable_transcript_is_retried(self):
+        self.claude_log([started("cli")])
+        real = open
+
+        def blocked(path, *a, **k):
+            if str(path).endswith("S1.jsonl"):
+                raise PermissionError(path)
+            return real(path, *a, **k)
+        with mock.patch("builtins.open", blocked):
+            self.assertFalse(agentask.interactive("claude", "S1"))
+        self.assertTrue(agentask.interactive("claude", "S1"))
+
+    def test_incomplete_marker_line_is_retried(self):
+        line = started("cli")
+        path = self.claude_log([line[:20]], tail="")
+        self.assertFalse(agentask.interactive("claude", "S1"))
+        with open(path, "w") as f:
+            f.write(line + "\n")
+        self.assertTrue(agentask.interactive("claude", "S1"))
+        first = meta()
+        path = self.codex_log([])
+        with open(path, "w") as f:
+            f.write(first[:30])
+        self.assertFalse(agentask.interactive("codex", "C1"))
+        with open(path, "w") as f:
+            f.write(first + "\n")
+        self.assertTrue(agentask.interactive("codex", "C1"))
+
+    def test_a_conclusive_answer_is_cached(self):
+        path = self.claude_log([started("sdk-cli")])
+        self.assertFalse(agentask.interactive("claude", "S1"))
+        with open(path, "w") as f:
+            f.write(started("cli") + "\n")
+        self.assertFalse(agentask.interactive("claude", "S1"))
 
 
 if __name__ == "__main__":

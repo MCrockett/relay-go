@@ -245,6 +245,31 @@ def scan_with_claims(root_dir):
     return ordered, set().union(*claims.values())
 
 
+def mark_wins(new, old):
+    """Which of two features naming one session marks it: the not-done one, then the newest (where-i-left-off D6)."""
+    return old is None or (not new["done"], new["updated"]) > (not old["done"], old["updated"])
+
+
+def local_marks(root_dir):
+    """{session id: {slug, done}} from the feature states in the checkouts' working trees: no fetch, no network
+    (where-i-left-off D6). Done is the state's own word; a PR merged on GitHub but not yet recorded is not done."""
+    found = {}
+    for checkout in checkouts(root_dir):
+        try:
+            features = state.list_features(checkout)
+        except (RelayError, OSError):
+            continue
+        for slug, st in features:
+            sid = (st.get("owner") or {}).get("session")
+            if not sid:
+                continue
+            new = {"slug": slug, "done": "done" in (st.get("stage"), st.get("status")),
+                   "updated": str(st.get("updated") or "")}
+            if mark_wins(new, found.get(sid)):
+                found[sid] = new
+    return {sid: {"slug": m["slug"], "done": m["done"]} for sid, m in found.items()}
+
+
 def _other_lines(others, now):
     lines = ["", "Other sessions waiting on you"]
     for e in others:

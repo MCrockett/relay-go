@@ -9,7 +9,7 @@ import threading
 import time
 import tomllib
 
-from .. import (agentask, availability, config, gitops, health, hookinstall, ledger, merged, othersessions,
+from .. import (agentask, availability, config, gitops, health, hookinstall, ledger, leftoff, merged, othersessions,
                owneractions, reviewjobs, reviewtables, sessions, state, status, usage as samples, verdict, waiting, writerusage)
 from ..errors import RelayError
 
@@ -171,20 +171,29 @@ def feature(repo, slug, records=None):
             "session_record": record}
 
 
-RESUME = {"claude": "claude --resume {}", "codex": "codex resume {}"}
+def _listed(data, provider, session_id):
+    """(label, entry) for a session the snapshot listed as waiting or left off, else (None, None)."""
+    for e in (data or {}).get("other_sessions") or []:
+        if e["provider"] == provider and e["session_id"] == session_id:
+            return e["label"], e
+    for p in (data or {}).get("left_off") or []:
+        for e in p["sessions"]:
+            if e["provider"] == provider and e["session_id"] == session_id:
+                return p["project"], e
+    return None, None
 
 
 def other_session(data, provider, session_id):
-    """One listed other session with its full last message, read live (other-sessions D6, D7), or None when the
-    snapshot did not list it."""
-    entry = next((e for e in (data or {}).get("other_sessions") or []
-                  if e["provider"] == provider and e["session_id"] == session_id), None)
+    """One session the snapshot listed (other_sessions or left_off) with its full last message, read live
+    (other-sessions D6, D7; where-i-left-off D10), or None when the snapshot did not list it."""
+    label, entry = _listed(data, provider, session_id)
     if entry is None:
         return None
     words = agentask.last_words(provider, session_id)
-    return {"provider": provider, "session_id": session_id, "label": entry["label"], "state": entry["state"],
+    return {"provider": provider, "session_id": session_id, "label": label, "state": entry["state"],
             "pending_tools": entry["pending_tools"], "text": agentask.full(words["text"]) if words else None,
-            "source": words["source"] if words else None, "resume": RESUME[provider].format(session_id)}
+            "source": words["source"] if words else None,
+            "resume": leftoff.resume_line(provider, session_id, entry.get("folder"))}
 
 
 def usage():
@@ -348,12 +357,28 @@ def _enrich(row, errors, fetched, records):
         return None
 
 
+def _left_marks(details):
+    """{session id: {slug, done}} from the feature details: the owner session and the record health matched
+    (where-i-left-off D6, dashboard rule); done when the stage is done or the PR merged."""
+    found = {}
+    for d in details:
+        done = d["state"].get("stage") == "done" or (d.get("pr_info") or {}).get("state") == "MERGED"
+        new = {"slug": d["feature"], "done": done, "updated": str(d["state"].get("updated") or "")}
+        for sid in {(d.get("owner_session") or {}).get("session"), (d.get("session_record") or {}).get("session_id")}:
+            if sid and status.mark_wins(new, found.get(sid)):
+                found[sid] = new
+    return {sid: {"slug": m["slug"], "done": m["done"]} for sid, m in found.items()}
+
+
 def build():
     samples.record_codex_sample()
     samples.prune()
     root = status.projects_root()
     sessions.prune()
-    records = sessions.read_records()
+    try:
+        records = sessions.read_records()
+    except Exception:  # where-i-left-off F4: no records
+        records = []
     with gitops.read_memo():
         repos, groups = status.checkouts(root), {}
         for repo in repos:  # linked worktrees share refs: concurrent fetches of one repository collide
@@ -365,9 +390,21 @@ def build():
         for members, error in zip(groups.values(), _parallel(lambda members: _fetch(members[0]), list(groups.values()))):
             fetched.update(dict.fromkeys(members, error))
         errors = {os.path.realpath(repo): error for repo, error in fetched.items() if error}
-        rows, claimed = status.scan_with_claims(root)  # kept for rows whose details fail to load (D2)
-        details = [d for d in _parallel(lambda row: _enrich(row, errors, fetched, records), rows) if d]
+        try:
+            rows, claimed = status.scan_with_claims(root)  # kept for rows whose details fail to load (D2)
+            details = [d for d in _parallel(lambda row: _enrich(row, errors, fetched, records), rows) if d]
+            scan_note = None
+        except Exception as e:  # where-i-left-off F5: the rest of the dashboard is still built
+            rows, claimed, details, scan_note = [], set(), [], f"Features could not be read: {e}"
         writing = _writing_or_error(repos, errors)
+        try:
+            marks = _left_marks(details)
+        except Exception:  # where-i-left-off F5: sessions without feature marks
+            marks = {}
+        try:
+            left = leftoff.projects(records, marks, root)
+        except Exception:  # F4
+            left = []
     seen = {r["provider"] for r in records}
     hints = {}
     for provider in hookinstall.EVENTS:
@@ -391,11 +428,13 @@ def build():
     try:
         global_cfg = config.load()
         notes.update(health.ui_settings(global_cfg)[2])
-        others = othersessions.listed(records, claimed, root, global_cfg, time.time())
+        others = [] if scan_note else othersessions.listed(records, claimed, root, global_cfg, time.time())
     except Exception:  # F1, F5: the features are shown whatever happens here
         others = []
+    if scan_note:
+        notes.add(scan_note)
     notes = sorted(notes)
-    return {"rows": rows, "features": details, "other_sessions": others, "usage": usage(), "session_hints": hints, "notes": notes,
+    return {"rows": rows, "features": details, "other_sessions": others, "left_off": left, "usage": usage(), "session_hints": hints, "notes": notes,
             "reviewers": _reviewers_or_error(repos), "writing": writing}
 
 
