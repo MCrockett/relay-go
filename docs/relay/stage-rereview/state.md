@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/stage-rereview",
   "extra_rounds": {},
   "feature": "stage-rereview",
@@ -29,9 +31,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-10-07T20:54:23-04:00",
+  "updated": "2026-10-07T20:54:27-04:00",
   "verdicts": {}
 }
 ---
