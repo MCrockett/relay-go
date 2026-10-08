@@ -304,7 +304,8 @@ def _enrich(row, errors, fetched, records):
         if gitops.current_branch(repo) == seen["branch"]:
             published["flags"] = [f for f in published["flags"] if "not checked out" not in f]
         row.update(published)
-        for key in ("seen", "actions", "action_reasons", "pr_info", "ci", "review_job", "health"):
+        for key in ("seen", "actions", "action_reasons", "pr_info", "ci", "review_job", "health", "review_choices",
+                    "review_default"):  # the card's Request review opens the same dialog as the details
             row[key] = detail[key]
         asks = waiting.asks(row, st, detail["health"], detail["session_record"], detail["stuck_reason"])
         words = detail["agent_text"]

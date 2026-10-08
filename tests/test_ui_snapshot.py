@@ -240,6 +240,18 @@ class SnapshotTest(unittest.TestCase):
                 with open(os.path.join(dirpath, name), "rb") as f:
                     self.assertNotIn(b"PURPLE-GIRAFFE", f.read(), name)
 
+    def test_a_review_error_card_can_open_the_review_dialog(self):
+        self.st.update(stage="build", status="review-error", pr=7)
+        self.save()
+        cfg = os.path.join(os.environ["RELAY_HOME"], "config.toml")
+        helpers.write(cfg, '[review]\ncodex = ["claude:claude-opus-5-5"]\n')
+        row = snapshot.build()["rows"][0]
+        detail = snapshot.feature(self.work, "demo")
+        self.assertEqual([a["kind"] for a in row["asks"]][:1], ["review-failed"])
+        self.assertTrue(row["review_choices"])                       # actions() disables the button without them
+        self.assertEqual((row["review_choices"], row["review_default"]),
+                         (detail["review_choices"], detail["review_default"]))
+
     def test_a_missing_log_keeps_the_ask_without_words(self):
         self.st.update(stage="build", status="drafting")
         self.save()
