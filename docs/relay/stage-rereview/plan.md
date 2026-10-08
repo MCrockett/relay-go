@@ -25,7 +25,7 @@
   - Refused before any review starts, changing nothing: a stage value other than spec, plan or build (the CLI's `choices` and `prepare` both check); a failed fetch (`relay override` already refuses offline); no reviewers configured (`prepare` already raises "no reviewers configured").
   - R10's real check is recorded in `docs/relay/stage-rereview/acceptance.md` with its trigger ("after this PR is merged and relay-go is updated") and status, per owner rule 2026-10-01, not as a build gate.
 - **Which plan GO counts for D4:** read before `mark_for_refresh`, which clears it. `chain = [stage] + (["plan"] if stage == "spec" and st["verdicts"].get("plan") == "GO" else [])`.
-- **Validating the request:** `owneractions._validate(repo, slug, action, seen)` is called with `review-spec` or `review-plan`, so the fingerprint check and `applicable` decide D2's state rules; the PR checks stay build-only.
+- **Validating the request:** `owneractions._validate(repo, slug, action, seen)` is called with `review-spec` or `review-plan`, so the fingerprint check and `applicable` decide D2's state rules. The open-PR requirement stays build-only, but the merged guard applies to every stage: a state can still say build / ready-to-merge after its PR merged, so when the state has a PR, `prepare` refuses spec and plan requests when `merged.is_done(repo, st)` ("the feature is merged; nothing to re-review"). A feature without a PR is never treated as merged.
 - **Effort:** as the build owner review: the entry's own `@effort`, else `config.review_effort(cfg, True, False)`.
 - **Default per stage:** `reviewjobs.default(cfg, st, options, stage="build")` uses `authors[stage]`; the pending fallback confirmation applies to build only.
 
@@ -66,8 +66,11 @@ Files: `relaylib/reviewjobs.py`, `tests/test_commands.py` (owner-requested revie
   - One timeout then a verdict succeeds; two timeouts fail and publish nothing (F1).
   - The branch moved during the review: nothing published (F2).
   - Refusals with nothing changed: stage not approved, skipped (small feature), current stage, in-review, done, a running job (`Busy`), an unknown stage value, no reviewers configured.
+  - A merged feature whose state still says build / ready-to-merge with its branch still on origin (fake gh reports MERGED): a spec request is refused before any reviewer call (the reviewer log is unchanged) and nothing is published. A feature without a PR at build drafting is accepted.
+  - A spec re-review NO-GO that the existing stop rules turn into a stop (spec history set up so the new round stalls): spec waiting-owner and the stuck file written, plan not reviewed.
+  - F5: the holding session has a local, uncommitted state edit; the job reviews and publishes the published state; the session's next `relay` command (`relay status` in its checkout, then `relay submit` refusing or syncing as today) sees the published result after `Ctx.sync` fast-forwards.
   - Default reviewer follows the stage's author.
-- [ ] Implement: `prepare(..., stage="build")` validates `stage in ("spec", "plan", "build")`, calls `_validate` with `review` or `review-<stage>`, keeps the PR checks for build only, uses `default(..., stage=stage)`; `Job` gains `stage`; `_run` for spec or plan records the owner decision, computes `chain`, and for each stage runs `mark_for_refresh`, sets `confirming`, calls `review_current(..., candidates=[spec], discard_errors=True, announce=False)`, and stops unless that stage now has a GO. Then the existing lease publish and a message per D5.
+- [ ] Implement: `prepare(..., stage="build")` validates `stage in ("spec", "plan", "build")`, calls `_validate` with `review` or `review-<stage>`, keeps the open-PR check for build only, refuses a merged feature for spec and plan, uses `default(..., stage=stage)`; `Job` gains `stage`; `_run` for spec or plan records the owner decision, computes `chain`, and for each stage runs `mark_for_refresh`, sets `confirming`, calls `review_current(..., candidates=[spec], discard_errors=True, announce=False)`, and stops unless that stage now has a GO. Then the existing lease publish and a message per D5.
 - [ ] Run, commit `feat: re-review an approved spec or plan on the owner's request`.
 
 ### Task 3: The terminal command
@@ -109,7 +112,7 @@ Files: `README.md`, `docs/relay/stage-rereview/acceptance.md`.
 
 - [ ] README: under owner decisions, `relay override review --stage spec|plan` and the details buttons; one sentence that relay never suggests it.
 - [ ] `acceptance.md`: "Re-review nba-experiments' spec and plan with Codex. Trigger: after this PR is merged and relay-go is updated. Status: pending."
-- [ ] Full suite green; push; PR; CI green; `relay submit`.
+- [ ] Full suite green; push; PR whose description ends with a "Deferred acceptance" note naming the nba-experiments check, its trigger and status pending (as in `acceptance.md`); CI green; `relay submit`.
 
 ## Requirement coverage
 
