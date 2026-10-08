@@ -310,3 +310,92 @@ class MergeNoticeTest(unittest.TestCase):
         self.merged(26)
         os.rename(os.path.join(self.repo, "docs"), os.path.join(self.repo, "Docs"))
         self.assertIn("PR #26 (docker)", self.hook())
+
+
+T1, T2 = "Thu Oct  8 15:13:49 2026", "Fri Oct  9 09:00:00 2026"
+
+
+def table(*rows):
+    """ps lines: (pid, ppid, started, args)."""
+    return [f"{pid:>6} {ppid:>6} {started} {args}" for pid, ppid, started, args in rows]
+
+
+class ProcessTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.mkdtemp()
+        p = mock.patch.dict(os.environ, {"RELAY_HOME": tmp})
+        p.start()
+        self.addCleanup(p.stop)
+        self.me = os.getpid()
+
+    def chain(self, agent="/Users/o/.local/bin/claude --resume x", started=T1):
+        return table((1, 0, T1, "/sbin/launchd"), (50, 1, T1, "ghostty"), (60, 50, started, agent),
+                     (70, 60, T1, "/bin/sh -c relay hook claude"), (self.me, 70, T1, "python3.11 relay hook claude"))
+
+    def test_the_walk_finds_the_agent_through_a_shell(self):
+        self.assertEqual(sessions.find_process("claude", self.chain(), self.me), {"pid": 60, "started": T1})
+        npm = self.chain("node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js")
+        self.assertEqual(sessions.find_process("claude", npm, self.me), {"pid": 60, "started": T1})
+        self.assertIsNone(sessions.find_process("codex", self.chain(), self.me))     # a Claude ancestor
+        codex = self.chain("node /opt/node_modules/@openai/codex/bin/codex.js")
+        self.assertEqual(sessions.find_process("codex", codex, self.me)["pid"], 60)
+        self.assertIsNone(sessions.find_process("claude", self.chain("vim"), self.me))
+        self.assertIsNone(sessions.find_process("claude", None, self.me))
+        self.assertIsNone(sessions.find_process("claude", ["garbage"], self.me))
+
+    def test_the_walk_stops_at_pid_1_and_after_20_steps(self):
+        top = [(1, 0, T1, "claude"), (100, 1, T1, "sh"), (self.me, 100, T1, "python3.11")]
+        self.assertIsNone(sessions.find_process("claude", table(*top), self.me))      # pid 1 is never the agent
+
+        def depth(n):
+            rows = [(1, 0, T1, "launchd"), (200, 1, T1, "claude")]
+            rows += [(300 + i, 301 + i if i < n - 1 else 200, T1, "sh") for i in range(n)]
+            return table(*rows, (self.me, 300, T1, "python3.11"))
+        self.assertIsNone(sessions.find_process("claude", depth(25), self.me))
+        self.assertEqual(sessions.find_process("claude", depth(5), self.me)["pid"], 200)
+
+    def test_ps_failures_give_none(self):
+        for effect in (subprocess.TimeoutExpired("ps", 0.3), FileNotFoundError("ps")):
+            with mock.patch("subprocess.run", side_effect=effect):
+                self.assertIsNone(sessions._ps("pid=", 0.3))
+        for rc, out in ((1, "  1 x\n"), (0, "\n  \n")):
+            with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], rc, out, "")):
+                self.assertIsNone(sessions._ps("pid=", 0.3))
+
+    def capture(self, name, lines, **extra):
+        self.clock = getattr(self, "clock", 1000.0) + 60  # past the PostToolUse refresh interval
+        with mock.patch.object(sessions, "_ps", return_value=lines):
+            sessions.capture("claude", io.StringIO(json.dumps(ev(name, **extra))), now=self.clock)
+        with open(sessions.record_path("claude", "s1")) as f:
+            return json.load(f)
+
+    def test_capture_records_keeps_drops_and_retries(self):
+        self.assertEqual(self.capture("UserPromptSubmit", self.chain())["process"], {"pid": 60, "started": T1})
+        with mock.patch.object(sessions, "_ps", side_effect=AssertionError("no walk")):
+            sessions.capture("claude", io.StringIO(json.dumps(ev("PostToolUse", tool_name="Bash"))))
+        with open(sessions.record_path("claude", "s1")) as f:
+            self.assertEqual(json.load(f)["process"], {"pid": 60, "started": T1})    # kept without a walk
+        resumed = self.capture("UserPromptSubmit", None)              # resumed elsewhere, discovery failed
+        self.assertNotIn("process", resumed)
+        again = self.capture("PostToolUse", self.chain(started=T2), tool_name="Edit")
+        self.assertEqual(again["process"], {"pid": 60, "started": T2})  # the next tool event walks again
+        self.assertNotIn("process", self.capture("SessionStart", self.chain("vim"), source="resume"))
+
+    def test_record_shape(self):
+        base = {"provider": "claude", "session_id": "s", "cwd": None, "state": "working", "since": 1.0, "at": 1.0,
+                "event": "Stop", "pending": []}
+        self.assertTrue(sessions._valid(base))
+        self.assertTrue(sessions._valid(dict(base, process={"pid": 5, "started": T1})))
+        for bad in ({"pid": 0, "started": T1}, {"pid": "5", "started": T1}, {"pid": 5, "started": ""},
+                    {"pid": True, "started": T1}, {"pid": 5}, None):
+            self.assertFalse(sessions._valid(dict(base, process=bad)), bad)
+
+    def test_alive(self):
+        records = [{"session_id": "a", "process": {"pid": 60, "started": T1}},
+                   {"session_id": "reused", "process": {"pid": 61, "started": T1}},
+                   {"session_id": "gone", "process": {"pid": 62, "started": T1}}, {"session_id": "none"}]
+        with mock.patch.object(sessions, "_ps", return_value=[f"{60:>6} {T1}", f"{61:>6} {T2}"]):
+            self.assertEqual(sessions.alive(records), {"a"})
+        for out in (None, ["not ps output"]):
+            with mock.patch.object(sessions, "_ps", return_value=out):
+                self.assertIsNone(sessions.alive(records))
