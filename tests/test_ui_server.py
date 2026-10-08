@@ -124,6 +124,29 @@ class ServerTest(unittest.TestCase):
         with mock.patch("relaylib.ui.snapshot.read_file", side_effect=RelayError("outside feature")):
             self.assertEqual(self.request("/api/file?repo=/fixture&slug=demo&ref=x&path=README.md")[0], 400)
 
+    def test_session_endpoint_answers_only_for_listed_sessions(self):
+        entry = {"provider": "claude", "session_id": "S1", "label": "proteindiary", "folder": "/opt/pd",
+                 "state": "waiting", "since": 1.0, "pending_tools": [], "excerpt": None}
+        data = {"rows": [], "features": [], "usage": {"providers": {}}, "other_sessions": [entry]}
+        words = {"source": "agent", "text": "I still need the publisher JSON key path."}
+        with mock.patch.object(self.cache, "get", return_value={"data": data}), \
+                mock.patch("relaylib.agentask.last_words", return_value=words) as read:
+            code, text = self.request("/api/session?provider=claude&session=S1")
+            self.assertEqual(code, 200)
+            self.assertEqual(json.loads(text), {"provider": "claude", "session_id": "S1", "label": "proteindiary",
+                                                "state": "waiting", "pending_tools": [], "source": "agent",
+                                                "text": words["text"], "resume": "claude --resume S1"})
+            read.reset_mock()
+            self.assertEqual(self.request("/api/session?provider=claude&session=S2")[0], 404)
+            self.assertEqual(self.request("/api/session?provider=codex&session=S1")[0], 404)
+            read.assert_not_called()                                   # never reads a transcript it did not list
+            self.assertEqual(self.request("/api/session?provider=claude")[0], 400)
+            self.assertEqual(self.request("/api/session?provider=claude&session=S1", token=None)[0], 403)
+        with mock.patch.object(self.cache, "get", return_value={"data": data}), \
+                mock.patch("relaylib.agentask.last_words", return_value=None):
+            gone = json.loads(self.request("/api/session?provider=claude&session=S1")[1])
+            self.assertEqual((gone["text"], gone["source"]), (None, None))
+
     def test_action_conflicts_errors_and_success(self):
         payload = {"action": "go", "repo": "/fixture", "slug": "demo", "seen": {"commit": "a" * 40}}
         with mock.patch("relaylib.ui.snapshot.allowed_repo", return_value="/fixture"), \

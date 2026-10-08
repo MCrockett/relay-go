@@ -122,6 +122,16 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/file":
                 self.reply(200, snapshot.read_file(one("repo"), one("slug"), one("ref"), one("path")),
                            "text/plain; charset=utf-8")
+            elif url.path == "/api/session":
+                if not one("provider") or not one("session"):
+                    self.reply(400, {"error": "provider and session are required"})
+                    return
+                cached = self.server.cache.get()
+                if cached.get("data") is None:
+                    self.reply(503, {"error": cached.get("error") or "snapshot is loading"})
+                    return
+                found = snapshot.other_session(cached["data"], one("provider"), one("session"))
+                self.reply(200 if found else 404, found or {"error": "this session is no longer waiting"})
             elif url.path in ("/api/feature", "/api/usage"):
                 cached = self.server.cache.get()
                 if cached.get("data") is None:

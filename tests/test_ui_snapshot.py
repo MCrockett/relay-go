@@ -1,3 +1,4 @@
+import glob
 import io
 import json
 import os
@@ -219,6 +220,54 @@ class SnapshotTest(unittest.TestCase):
             helpers.write(os.path.join(self.tmp, "codex", "sessions", "2026", "10", "07", "rollout-2026-10-07T10-00-00-s1.jsonl"),
                           json.dumps({"type": "event_msg", "payload": {"type": "task_complete",
                                                                        "last_agent_message": said}}) + "\n")
+
+    def other(self, sid, age_s=2 * 3600, said="Which key should I use?", cwd=None):
+        """A waiting codex session sid outside any feature, its rollout ending with `said`."""
+        os.makedirs(sessions.folder(), exist_ok=True)
+        at = time.time() - age_s
+        json.dump({"provider": "codex", "session_id": sid, "cwd": cwd, "state": "waiting", "since": at, "at": at,
+                   "event": "Stop", "pending": []}, open(sessions.record_path("codex", sid), "w"))
+        helpers.write(os.path.join(self.tmp, "codex", "sessions", "2026", "10", "08", f"rollout-2026-10-08T10-00-00-{sid}.jsonl"),
+                      json.dumps({"type": "event_msg", "payload": {"type": "task_complete",
+                                                                   "last_agent_message": said}}) + "\n")
+
+    def test_other_sessions_in_the_snapshot(self):
+        self.assertEqual(snapshot.build()["other_sessions"], [])
+        self.st.update(stage="build", status="drafting")
+        self.save()
+        self.stopped(said="the feature's own question")
+        self.other("o1", cwd=os.path.realpath(self.work))
+        rows_before = snapshot.build()["rows"]
+        data = snapshot.build()
+        self.assertEqual([(e["session_id"], e["label"]) for e in data["other_sessions"]], [("o1", "work")])
+        self.assertEqual(data["other_sessions"][0]["excerpt"], {"source": "agent", "text": "Which key should I use?"})
+        self.assertEqual([r["feature"] for r in data["rows"]], [r["feature"] for r in rows_before])
+        helpers.write(os.path.join(os.environ["RELAY_HOME"], "config.toml"), "[ui]\nother_sessions_hours = 500\n")
+        self.assertIn("ignored invalid [ui] other_sessions_hours", snapshot.build()["notes"])
+
+    def test_other_sessions_use_the_global_settings(self):
+        pd = os.path.join(self.tmp, "proteindiary")  # a repository with no feature, and its own [ui] values
+        os.makedirs(pd)
+        helpers.sh(pd, "git", "init", "-q", "-b", "develop")
+        helpers.write(os.path.join(state.relay_dir(pd), "config.toml"),
+                      "[ui]\nhealth_grace_minutes = 60\nother_sessions_hours = 1\n")
+        self.other("near", age_s=600, cwd=os.path.realpath(pd))
+        self.other("far", age_s=5 * 3600, cwd=os.path.realpath(pd))
+        self.assertEqual([e["session_id"] for e in snapshot.build()["other_sessions"]], ["far", "near"])
+
+    def test_one_other_session_with_its_full_message(self):
+        self.other("o1", said="Long question. " * 400)
+        data = snapshot.build()
+        one = snapshot.other_session(data, "codex", "o1")
+        self.assertEqual((one["label"], one["state"], one["pending_tools"], one["resume"], one["source"]),
+                         ("Unknown folder", "waiting", [], "codex resume o1", "agent"))
+        self.assertEqual(len(one["text"]), 4000)
+        self.assertIsNone(snapshot.other_session(data, "codex", "s1"))
+        self.assertIsNone(snapshot.other_session(data, "claude", "o1"))
+        for path in glob.glob(os.path.join(self.tmp, "codex", "sessions", "*", "*", "*", "*o1.jsonl")):
+            os.remove(path)
+        gone = snapshot.other_session(data, "codex", "o1")
+        self.assertEqual((gone["text"], gone["source"]), (None, None))
 
     def test_asks_excerpt_and_full_text_live_only_in_memory(self):
         question = "PURPLE-GIRAFFE should I start the build now? " + "Details follow. " * 30
