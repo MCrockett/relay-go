@@ -1000,6 +1000,9 @@ def build_parser():
         s = add("status", status.cmd_status, "every feature across your projects, and what waits on you")
         s.add_argument("--json", action="store_true")
         s.add_argument("--all", action="store_true", help="include done features")
+        from . import leftoff
+        lo = add("left", leftoff.cmd_left, "where you left off: your newest sessions per project and how to resume them")
+        lo.add_argument("--all", action="store_true", help="every session, not just the newest 3 per project")
     return p
 
 

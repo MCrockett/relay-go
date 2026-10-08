@@ -5,7 +5,9 @@ from relaylib import commands, freshness, gitops, sessions, state, status
 from tests import helpers
 
 
-class StatusTest(unittest.TestCase):
+class StatusFixture(unittest.TestCase):
+    """Temp projects root, homes and a fake gh; helpers for repos, features and session records."""
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
@@ -42,6 +44,24 @@ class StatusTest(unittest.TestCase):
             commands.main(list(argv))
         return out.getvalue()
 
+    def session(self, sid, state_="waiting", age_s=16 * 3600, said=None, provider="claude", pending=(), cwd=None):
+        """A hook record for session sid, and a Claude transcript ending with `said`."""
+        os.makedirs(sessions.folder(), exist_ok=True)
+        at = time.time() - age_s
+        with open(sessions.record_path(provider, sid), "w") as f:
+            json.dump({"provider": provider, "session_id": sid, "cwd": cwd, "state": state_, "since": at, "at": at,
+                       "event": "Stop", "pending": [{"tool_use_id": None, "tool_name": t, "input_sha1": "x"}
+                                                     for t in pending]}, f)
+        if said:
+            helpers.write(os.path.join(self.tmp, "claude", "projects", "-w", sid + ".jsonl"), json.dumps(
+                {"type": "assistant", "message": {"content": [{"type": "text", "text": said}]}}) + "\n")
+
+    def held(self, name, slug, sid, **over):
+        return self.repo(name, {slug: dict({"stage": "build", "status": "drafting",
+                                            "owner": {"provider": "claude", "session": sid}}, **over)}, commit=True)
+
+
+class StatusTest(StatusFixture):
     def test_rows_and_waiting_first(self):
         self.repo("alpha", {"one": {"stage": "spec", "status": "in-review", "rounds": {"spec": 1}}})
         self.repo("beta", {"two": {"stage": "plan", "status": "waiting-owner"}})
@@ -101,22 +121,6 @@ class StatusTest(unittest.TestCase):
         self.assertIn("* ", text)
         self.assertIn("1 waiting on you", text)
 
-
-    def session(self, sid, state_="waiting", age_s=16 * 3600, said=None, provider="claude", pending=(), cwd=None):
-        """A hook record for session sid, and a Claude transcript ending with `said`."""
-        os.makedirs(sessions.folder(), exist_ok=True)
-        at = time.time() - age_s
-        with open(sessions.record_path(provider, sid), "w") as f:
-            json.dump({"provider": provider, "session_id": sid, "cwd": cwd, "state": state_, "since": at, "at": at,
-                       "event": "Stop", "pending": [{"tool_use_id": None, "tool_name": t, "input_sha1": "x"}
-                                                     for t in pending]}, f)
-        if said:
-            helpers.write(os.path.join(self.tmp, "claude", "projects", "-w", sid + ".jsonl"), json.dumps(
-                {"type": "assistant", "message": {"content": [{"type": "text", "text": said}]}}) + "\n")
-
-    def held(self, name, slug, sid, **over):
-        return self.repo(name, {slug: dict({"stage": "build", "status": "drafting",
-                                            "owner": {"provider": "claude", "session": sid}}, **over)}, commit=True)
 
     def test_a_waiting_session_is_waiting_on_the_owner_with_its_words(self):
         question = "How do you want to treat the pi window: clarification, or exploratory? " + "More. " * 50
