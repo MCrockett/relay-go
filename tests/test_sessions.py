@@ -328,7 +328,7 @@ class ProcessTest(unittest.TestCase):
         self.addCleanup(p.stop)
         self.me = os.getpid()
 
-    def chain(self, agent="/Users/o/.local/bin/claude --resume x", started=T1):
+    def chain(self, agent="/opt/agent/bin/claude --resume x", started=T1):
         return table((1, 0, T1, "/sbin/launchd"), (50, 1, T1, "ghostty"), (60, 50, started, agent),
                      (70, 60, T1, "/bin/sh -c relay hook claude"), (self.me, 70, T1, "python3.11 relay hook claude"))
 
