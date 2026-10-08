@@ -176,6 +176,24 @@ class ReviewActionTest(unittest.TestCase):
         self.assertNotIn("review", owneractions.applicable(self.st(stage="spec", status="waiting-owner")))
         self.assertNotIn("review", owneractions.applicable(self.st(status="changes-requested")))
 
+    def test_approved_earlier_stages_can_be_re_reviewed(self):
+        go = {"spec": "GO", "plan": "GO"}
+        at_build = owneractions.applicable(self.st(status="drafting", pr=None, verdicts=go))
+        self.assertEqual([a for a in at_build if a.startswith("review-")], ["review-spec", "review-plan"])
+        at_plan = owneractions.applicable(self.st(stage="plan", status="changes-requested", pr=None, verdicts={"spec": "GO"}))
+        self.assertEqual([a for a in at_plan if a.startswith("review-")], ["review-spec"])
+        ready = owneractions.applicable(self.st(verdicts=dict(go, build="GO")))
+        self.assertEqual(ready[-4:], ["review-spec", "review-plan", "review", "merge"])
+        for over in ({"verdicts": {"spec": "GO"}},                                   # plan not approved
+                     {"verdicts": go, "skipped": ["plan"]},
+                     {"verdicts": go, "status": "in-review"},
+                     {"verdicts": go, "stage": "done", "status": "done"}):
+            found = owneractions.applicable(self.st(**dict({"status": "drafting"}, **over)))
+            self.assertNotIn("review-plan", found, over)
+        self.assertNotIn("review-spec", owneractions.applicable(self.st(stage="spec", status="drafting", verdicts=go)))
+        self.assertNotIn("review-spec", owneractions.applicable(self.st(status="in-review", verdicts=go)))
+        self.assertNotIn("review-spec", owneractions.applicable(self.st(stage="done", status="done", verdicts=go)))
+
     def test_a_changed_pr_head_is_a_conflict(self):
         seen = {"commit": "c" * 40, "stage": "build", "status": "ready-to-merge", "owner": {}, "pr_head": "a" * 40}
         with mock.patch.object(owneractions, "state_at", return_value=self.st()):

@@ -32,5 +32,12 @@ class ChoicesTest(unittest.TestCase):
         self.assertEqual(reviewjobs.default(CFG, st),
                          ("codex:gpt-6-astra", "default", "the pending reviewer codex:gpt-5 is no longer configured"))
 
+    def test_the_default_follows_the_stage_author(self, _):
+        st = {"authors": {"spec": "claude", "build": "codex"}, "confirm_with": "claude:claude-sonnet-5"}
+        self.assertEqual(reviewjobs.default(CFG, st, stage="spec"), ("codex:gpt-6-astra", "default", ""))
+        self.assertEqual(reviewjobs.default(CFG, st)[0], "claude:claude-sonnet-5")       # build: the confirmation
+        self.assertEqual(reviewjobs.default(CFG, {"authors": {"plan": "codex"}}, stage="plan")[0],
+                         "claude:claude-sonnet-5@high")
+
     def test_no_default_when_the_author_has_no_preferences(self, _):
         self.assertEqual(reviewjobs.default(CFG, {"authors": {"build": "owner"}}), (None, "", ""))
