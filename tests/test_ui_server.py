@@ -312,7 +312,7 @@ console.log(JSON.stringify({
         out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
         self.assertEqual(out["waitingLine"], "Waiting on you · 2h")
         self.assertEqual(out["approveLine"], "Waiting for approval: Bash · 5m")
-        self.assertEqual(out["order"], ["S1", "nba", "C1"])                     # one list, oldest wait first
+        self.assertEqual(out["order"], ["C1", "nba", "S1"])                     # one list, newest wait first
         self.assertEqual(out["counts"], [1, 1, 3, 0])
         self.assertEqual(out["noText"], {"title": "Claude session · proteindiary", "tools": "",
                                          "text": "No last message to show.", "resume": "Resume with: claude --resume S1"})
@@ -369,6 +369,62 @@ console.log(JSON.stringify({lines,empty,heading:group.children[0].textContent,mo
         self.assertEqual(out["buttons"], 0)                                     # left-off cards act on nothing
         self.assertEqual(out["cardKids"], ["t", "reason"])
         self.assertEqual(out["after404"], [["notice", "This session is no longer listed.", False], ["load"]])
+
+    def test_page_shows_running_now_and_sorting(self):
+        page = self.request("/?t=test-token")[1]
+        for piece in ("<h2>Running now</h2>", "'Nothing running.'", ">By project<", ">Most recent<",
+                      "'Showing the newest 3 per project: run relay left --all for every session.'",
+                      "data.running", "renderRunning();", "Stopped"):
+            self.assertIn(piece, page)
+        order = [page.index(f'id="{x}"') for x in ("running", "inbox", "left-off", "features")]
+        self.assertEqual(order, sorted(order))
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_running_and_sort_rules_run_in_node(self):
+        page = self.request("/?t=test-token")[1]
+        funcs = (re.search(r"function ageText\(.*?(?=function cardFlags\()", page, re.S).group(0)
+                 + re.search(r"const LEFT_STATE.*?(?=function renderRows\()", page, re.S).group(0))
+        script = """
+const made=[];
+class El{constructor(tag){this.tag=tag;this.children=[];this.className='';this.textContent='';}
+  append(...xs){this.children.push(...xs);} replaceChildren(...xs){this.children=xs;} querySelectorAll(){return [];}}
+const document={createElement:t=>{const e=new El(t);made.push(e);return e;}};
+const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined&&text!==null)n.textContent=text;if(cls)n.className=cls;return n;};
+let calls=[];const notice=(t,err)=>calls.push(['notice',t,!!err]),load=async()=>calls.push(['load']);
+let fail=null;const api=async()=>{if(fail)throw fail;return {};};const list=new El('div');const $=()=>list;
+let store={},broken=false;
+globalThis.localStorage={getItem:k=>{if(broken)throw new Error('denied');return store[k]??null;},
+  setItem:(k,v)=>{if(broken)throw new Error('denied');store[k]=v;}};
+let data={running:[],left_off:[]};
+""" + funcs + """
+(async()=>{
+const now=1000000,t=Date.now()/1000;
+const run={provider:'codex',session_id:'R1',project:'relay-go',since:now-1500,at:now-10,checkout:'relay-go-dev',
+  feature:{slug:'x',done:false},excerpt:null,state:'working',pending_tools:[]};
+renderRunning();const none=list.children.map(c=>c.textContent);
+data={running:[run],left_off:[]};renderRunning();const card=list.children[0];
+fail=Object.assign(new Error('gone'),{status:404});await card.onclick();
+const s=(id,at,extra)=>Object.assign({provider:'claude',session_id:id,state:'ended',at:t-at,since:t-at,pending_tools:[],
+  checkout:null,feature:null,excerpt:null},extra);
+data={left_off:[{project:'a',last_active:t-60,more:1,sessions:[s('a1',60),s('a2',5000)]},
+                {project:'b',last_active:t-600,more:0,sessions:[s('b1',600,{state:'working',shown_state:'stopped'})]}]};
+const before=leftSort();setLeftSort('recent');renderLeftOff();
+const recent=list.children[0].children.map(c=>[c.children[0].children[0].textContent,c.children[1].children[0].textContent]);
+const note=list.children[1].textContent;
+broken=true;const fallback=leftSort();setLeftSort('project');
+console.log(JSON.stringify({line:runLine(run,now),none,buttons:made.filter(x=>x.tag==='button').length,
+  kids:card.children.map(c=>c.className),after404:calls,before,recent,note,fallback}));
+})();"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["line"], "Running 25m · relay-go-dev · feature x")
+        self.assertEqual(out["none"], ["Nothing running."])
+        self.assertEqual(out["buttons"], 0)                                     # running cards act on nothing
+        self.assertEqual(out["kids"], ["t", "reason"])
+        self.assertEqual(out["after404"], [["notice", "This session is no longer listed.", False], ["load"]])
+        self.assertEqual(out["before"], "project")
+        self.assertEqual(out["recent"], [["a", "Ended · 1m ago"], ["b", "Stopped · 10m ago"], ["a", "Ended · 1h ago"]])
+        self.assertEqual(out["note"], "Showing the newest 3 per project: run relay left --all for every session.")
+        self.assertEqual(out["fallback"], "project")                             # storage blocked: the default
 
     def test_reviewer_activity_tables_sort_by_any_column(self):
         page = self.request("/?t=test-token")[1]
@@ -550,7 +606,7 @@ console.log(JSON.stringify({merge:cardButtons(merge),decide:cardButtons(decide),
         self.assertEqual(out["answer"], [])                                   # the answer is in the session; no Release
         self.assertEqual(out["line"], "Merge PR #6 · Answer the claude session · waiting 2h")
         self.assertEqual(out["broken"], "Fix: cannot read")
-        self.assertEqual(out["order"], ["decide", "merge", "answer", "error"])
+        self.assertEqual(out["order"], ["answer", "merge", "decide", "error"])  # newest wait first, undated last
         self.assertEqual(out["labels"], ["Summary", "Agent"])
         self.assertEqual(out["ages"], ["59s", "1m", "2h", "2d"])
         # Warnings stay on the card (owner, 2026-10-07); only notes the asks already say are left out.

@@ -325,10 +325,9 @@ def other_sessions(root, claimed, now=None):
 def cmd_status(args):
     root = projects_root()
     rows, claimed = scan_with_claims(root)
-    rows = sorted(rows, key=waiting.sort_key)  # oldest wait first (D6)
     if not args.all:
         rows = [r for r in rows if r["stage"] != "done"]
-    if args.json:  # unchanged: feature rows only (other-sessions D5)
-        print(json.dumps(rows, indent=2))
+    if args.json:  # unchanged: feature rows only, oldest wait first (other-sessions D5, running-now D8)
+        print(json.dumps(sorted(rows, key=waiting.oldest_first_key), indent=2))
     else:
-        print(render(rows, other_sessions(root, claimed)))
+        print(render(sorted(rows, key=waiting.sort_key), other_sessions(root, claimed)))  # newest wait first

@@ -166,12 +166,12 @@ class StatusTest(StatusFixture):
             before = json.loads(self.run_cmd("status", "--json"))
             text = self.run_cmd("status")
             everything = self.run_cmd("status", "--all")
-        self.assertIn("\nOther sessions waiting on you\n* proteindiary · claude · waiting 2h\n"
-                      "    Agent: I still need the publisher JSON key path.\n* ~/x · codex · needs approval: Bash · 5m\n",
+        self.assertIn("\nOther sessions waiting on you\n* ~/x · codex · needs approval: Bash · 5m\n"
+                      "* proteindiary · claude · waiting 2h\n    Agent: I still need the publisher JSON key path.\n",
                       text)
         self.assertLess(text.index("nba"), text.index("Other sessions"))
         self.assertIn("3 waiting on you (*)", text)
-        self.assertIn("Other sessions waiting on you\n* proteindiary", everything)
+        self.assertIn("Other sessions waiting on you\n* ~/x", everything)
         self.assertEqual([r["feature"] for r in before], ["nba"])                 # --json: feature rows only
         self.assertNotIn("P1", json.dumps(before))
 
@@ -201,14 +201,14 @@ class StatusTest(StatusFixture):
         self.assertIn("· waiting 10m", text)
         self.assertIn("· waiting 5h", text)
 
-    def test_waits_print_oldest_first_but_scan_keeps_its_order(self):
+    def test_waits_print_newest_first_and_json_keeps_oldest_first(self):
         self.held("alpha", "newer", "S1")
         self.held("beta", "older", "S2")
         self.session("S1", age_s=600)
         self.session("S2", age_s=7200)
         self.assertEqual([r["feature"] for r in status.scan(self.projects)], ["newer", "older"])
         text = self.run_cmd("status")
-        self.assertLess(text.index("older"), text.index("newer"))
+        self.assertLess(text.index("newer"), text.index("older"))  # newest wait first (running-now D8)
         self.assertEqual([r["feature"] for r in json.loads(self.run_cmd("status", "--json"))], ["older", "newer"])
 
     def test_an_unreadable_checkout_asks_to_be_fixed_after_dated_waits(self):

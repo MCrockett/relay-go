@@ -62,7 +62,13 @@ def since(found):
 
 
 def sort_key(row):
-    """Waiting first, oldest wait first, waits without a time after, then repo and feature."""
+    """Waiting first, newest wait first (running-now D8), waits without a time after, then repo and feature."""
+    at = row.get("wait_since")
+    return (not row.get("waiting_on_owner"), at is None, -(at or 0), row.get("repo") or "", row.get("feature") or "")
+
+
+def oldest_first_key(row):
+    """The order `relay status --json` has always used: waiting first, oldest wait first (running-now D8)."""
     at = row.get("wait_since")
     return (not row.get("waiting_on_owner"), at is None, at or 0, row.get("repo") or "", row.get("feature") or "")
 

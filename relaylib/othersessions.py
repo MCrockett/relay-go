@@ -45,7 +45,7 @@ def _tools(record):
 
 
 def listed(records, claimed, root, cfg, now):
-    """D4 entries for the records D1 lists, oldest wait first. cfg is the global configuration (D1)."""
+    """D4 entries for the records D1 lists, newest wait first (running-now D8). cfg is the global configuration (D1)."""
     from . import status  # status imports this module
     grace = health.ui_value(cfg, "health_grace_minutes") * 60
     window = health.ui_value(cfg, "other_sessions_hours") * 3600
@@ -71,4 +71,4 @@ def listed(records, claimed, root, cfg, now):
                                     if words else None)})
         except Exception:  # F5: one session never hides the others
             continue
-    return sorted(out, key=lambda e: (e["since"], e["session_id"]))
+    return sorted(out, key=lambda e: (-e["since"], e["session_id"]))

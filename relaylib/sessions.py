@@ -5,7 +5,9 @@ import hashlib
 import io
 import json
 import os
+import re
 import select
+import subprocess
 import tempfile
 import time
 
@@ -18,6 +20,10 @@ NOTICE = {"claude": {"UserPromptSubmit", "SessionStart"}, "codex": {"UserPromptS
 TOOL_REFRESH_S = 30  # PostToolUse is frequent: one write per 30 seconds is enough
 READ_DEADLINE_S = 0.7  # with the 0.1 s lock wait, the sink stays within 1 second
 READ_CAP = 32_000_000  # far above any real hook input; only a runaway pipe reaches it
+WALK_TIMEOUT_S, ALIVE_TIMEOUT_S, WALK_STEPS = 0.3, 1.0, 20  # running-now D1, D2
+WALK_EVENTS = {"SessionStart", "UserPromptSubmit"}  # a resumed session may be a new process
+LSTART = r"\w{3} \w{3} [ \d]\d \d\d:\d\d:\d\d \d{4}"
+AGENT_NODE = {"claude": "claude-code", "codex": "@openai/codex"}
 
 
 def folder():
@@ -36,6 +42,65 @@ def _number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _valid_process(process):
+    return (isinstance(process, dict) and set(process) == {"pid", "started"} and isinstance(process["pid"], int)
+            and not isinstance(process["pid"], bool) and process["pid"] > 0
+            and isinstance(process["started"], str) and bool(process["started"]))
+
+
+def _ps(columns, timeout):
+    """`ps -A -o <columns>` lines, or None when ps is missing, fails, times out or prints nothing."""
+    try:
+        p = subprocess.run(["ps", "-A", "-o", columns], capture_output=True, text=True, timeout=timeout,
+                           env=dict(os.environ, LC_ALL="C"))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = [l for l in p.stdout.splitlines() if l.strip()] if p.returncode == 0 else []
+    return lines or None
+
+
+def _is_agent(provider, args):
+    words = args.split()
+    if not words:
+        return False
+    name = os.path.basename(words[0])
+    return name == provider or (name == "node" and any(AGENT_NODE[provider] in w for w in words[1:]))
+
+
+def find_process(provider, lines, start_pid):
+    """{pid, started} of the first ancestor of start_pid that is the agent, or None (running-now D1)."""
+    table = {}
+    for line in lines or []:
+        m = re.match(rf"\s*(\d+)\s+(\d+)\s+({LSTART})\s+(.*)$", line)
+        if m:
+            table[int(m.group(1))] = (int(m.group(2)), m.group(3), m.group(4))
+    pid = start_pid
+    for _ in range(WALK_STEPS):
+        if pid not in table or pid <= 1:
+            return None
+        ppid, started, args = table[pid]
+        if pid != start_pid and _is_agent(provider, args):
+            return {"pid": pid, "started": started}
+        pid = ppid
+    return None
+
+
+def alive(records):
+    """Session ids whose recorded process still runs, or None when that cannot be checked (running-now D2)."""
+    lines = _ps("pid=,lstart=", ALIVE_TIMEOUT_S)
+    if lines is None:
+        return None
+    running = {}
+    for line in lines:
+        m = re.match(rf"\s*(\d+)\s+({LSTART})\s*$", line)
+        if m:
+            running[int(m.group(1))] = m.group(2)
+    if not running:
+        return None  # nothing parseable: unknown, not "everything is dead"
+    return {r["session_id"] for r in records
+            if r.get("process") and running.get(r["process"]["pid"]) == r["process"]["started"]}
+
+
 def _valid(record):
     """The full R1 record shape; anything else is treated as absent and replaced."""
     if not (isinstance(record, dict) and isinstance(record.get("provider"), str) and record["provider"] in WAITING
@@ -43,6 +108,8 @@ def _valid(record):
             and record.get("state") in STATES and _number(record.get("since")) and _number(record.get("at"))
             and isinstance(record.get("event"), str) and isinstance(record.get("pending"), list)
             and (record.get("cwd") is None or isinstance(record.get("cwd"), str))):
+        return False
+    if "process" in record and not _valid_process(record["process"]):
         return False
     return all(isinstance(p, dict) and set(p) == {"tool_use_id", "tool_name", "input_sha1"}
                and (p["tool_use_id"] is None or isinstance(p["tool_use_id"], str))
@@ -104,9 +171,12 @@ def apply(record, provider, event, now):
     else:
         return None
     resolved = os.path.realpath(cwd) if cwd else (old or {}).get("cwd")
-    return {"provider": provider, "session_id": sid, "cwd": resolved, "state": new_state,
-            "since": old["since"] if old and state == new_state else now, "at": now, "event": name,
-            "pending": pending}
+    out = {"provider": provider, "session_id": sid, "cwd": resolved, "state": new_state,
+           "since": old["since"] if old and state == new_state else now, "at": now, "event": name,
+           "pending": pending}
+    if old and "process" in old:
+        out["process"] = old["process"]
+    return out
 
 
 def _lock(path, wait_s):
@@ -154,6 +224,20 @@ def _read(stream):
     return b"".join(chunks).decode("utf-8", "replace")
 
 
+def _walk(provider, event):
+    """The agent process when this event calls for a walk (running-now D1): a dict when found, None when walked and
+    not found, False when no walk was needed."""
+    name = event.get("hook_event_name")
+    try:
+        with open(record_path(provider, event["session_id"])) as f:
+            has = isinstance(json.load(f).get("process"), dict)
+    except (OSError, ValueError, AttributeError):
+        has = False
+    if name not in WALK_EVENTS and has:
+        return False
+    return find_process(provider, _ps("pid=,ppid=,lstart=,args=", WALK_TIMEOUT_S), os.getpid())
+
+
 def capture(provider, stream, now=None):
     """`relay hook <provider>`: invalid input, a busy lock or a storage failure must never disturb the agent."""
     try:
@@ -172,6 +256,7 @@ def capture(provider, stream, now=None):
             except Exception:
                 found = []  # a notice is a courtesy; the record still gets written
         os.makedirs(folder(), mode=0o700, exist_ok=True)
+        walked = _walk(provider, event)  # before the lock: ps must not hold up other sessions' hooks
         lock = _lock(os.path.join(folder(), ".lock"), 0.1)
         if lock is None:
             return 0
@@ -184,6 +269,10 @@ def capture(provider, stream, now=None):
             except (OSError, ValueError):
                 old = None
             new = apply(old, provider, event, time.time() if now is None else now)
+            if new is not None and walked is not False:
+                new.pop("process", None)  # walked and found nothing: the old process may be gone (D1)
+                if walked:
+                    new["process"] = walked
             if new is not None:
                 told = old.get("notified") if isinstance(old, dict) and old.get("session_id") == new["session_id"] else None
                 told = [k for k in told if isinstance(k, str)] if isinstance(told, list) else []

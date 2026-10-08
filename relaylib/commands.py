@@ -1003,6 +1003,7 @@ def build_parser():
         from . import leftoff
         lo = add("left", leftoff.cmd_left, "where you left off: your newest sessions per project and how to resume them")
         lo.add_argument("--all", action="store_true", help="every session, not just the newest 3 per project")
+        lo.add_argument("--recent", action="store_true", help="one list, newest first across projects")
     return p
 
 
