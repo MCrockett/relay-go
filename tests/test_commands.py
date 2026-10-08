@@ -496,6 +496,14 @@ class CommandsTest(unittest.TestCase):
         self.assertEqual(st["owner_actions"][-1]["relayed_by"], "claude session s1")
         self.assertIn("relayed by claude session s1", helpers.sh(self.work, "git", "log", "-1", "--format=%s"))
 
+    def test_an_override_decides_on_the_published_state(self):
+        self.stall_spec()
+        helpers.sh(self.work, "git", "reset", "-q", "--hard", "HEAD~1")    # a checkout behind origin
+        self.assertNotEqual(self.st()["status"], "waiting-owner")
+        self.assertEqual(self.relay("override", "extra-round", "--relayed"), 0, self.last_err)
+        self.assertEqual((self.st()["status"], self.st()["extra_rounds"]["spec"]), ("changes-requested", 1))
+        self.assertEqual(self.head(), helpers.sh(self.work, "git", "rev-parse", "origin/feat/demo").strip())
+
     def test_refusal_in_session_points_at_relayed(self):
         self.stall_spec()
         self.assertEqual(self.relay("override", "go"), 1)
@@ -1358,6 +1366,21 @@ done
         st = self.published("demo")
         self.assertEqual((st["stage"], st["status"]), ("spec", "waiting-owner"))
         self.assertIn("spec-stuck.md", [p.rsplit("/", 1)[-1] for p in self.origin_files()])
+
+    def test_a_re_review_past_the_old_ceiling_goes_back_to_the_author(self):
+        self.to_build()                                                    # spec took 1 round
+        helpers.write(self.cfg, "[limits]\nmax_rounds = 2\n")
+        self.enqueue_codex("NO-GO", ["spec.md:1 - unclear"])
+        self.enqueue_codex("NO-GO", ["id: R2-1 spec.md:1 - still unclear"], [("R2-1", "partial")])
+        self.assertIn("spec NO-GO from codex:gpt-6-astra; back to the author", self.rerequest("spec")["message"])
+        st = self.published("demo")
+        self.assertEqual((st["status"], st["rounds"]["spec"], st["round_base"]["spec"]), ("changes-requested", 2, 1))
+        helpers.sh(self.work, "git", "pull", "-q", "--ff-only")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)          # round 3: the new cycle's second
+        self.assertEqual(self.st()["status"], "waiting-owner")                # ceiling 3: one base round + 2
+        self.assertIn("round 3 of 3", self.last_out + self.last_err)
+        self.assertEqual(self.relay("override", "reset-rounds", "--relayed"), 0, self.last_err)
+        self.assertNotIn("spec", self.st().get("round_base", {}))
 
     def test_a_plan_re_review_alone(self):
         self.to_build()

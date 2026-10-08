@@ -31,6 +31,16 @@ def history(st, stage):
     return [RoundRecord(**r) for r in st["history"].get(stage, [])]
 
 
+def ceiling(st, stage, max_rounds):
+    """The last round allowed: an owner-requested review starts a new cycle after the rounds before it."""
+    return st.get("round_base", {}).get(stage, 0) + max_rounds + st["extra_rounds"].get(stage, 0)
+
+
+def start_cycle(st, stage):
+    """An owner-requested independent review: earlier rounds no longer count toward the stop rules."""
+    st.setdefault("round_base", {})[stage] = st["rounds"].get(stage, 0)
+
+
 def known_ids(st, stage):
     ids = set()
     for r in st["history"].get(stage, []):
@@ -56,7 +66,9 @@ def apply_nogo(st, record, max_rounds):
     st["history"].setdefault(stage, []).append(asdict(record))
     st["verdicts"][stage] = "NO-GO"
     st["refresh"] = False
-    action, reason = decide(history(st, stage), max_rounds, st["extra_rounds"].get(stage, 0))
+    base = st.get("round_base", {}).get(stage, 0)
+    cycle = [r for r in history(st, stage) if r.round > base]  # progress is judged within the current cycle
+    action, reason = decide(cycle, ceiling(st, stage, max_rounds))
     st["status"] = "changes-requested" if action == "continue" else "waiting-owner"
     return action, reason
 

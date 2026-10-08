@@ -411,7 +411,7 @@ def review_current(c, args, candidates=None, discard_errors=False, announce=True
     timeout = float(c.cfg["limits"]["review_timeout_min"]) * 60
     # Walk the preference table: the first reviewer that is not out of usage reviews. A usage limit hit
     # mid-review is remembered until the reset and the next entry takes over in the same submit.
-    ceiling = int(c.cfg["limits"]["max_rounds"]) + st["extra_rounds"].get(stage, 0)
+    ceiling = machine.ceiling(st, stage, int(c.cfg["limits"]["max_rounds"]))
     effort = config.review_effort(c.cfg, record_round >= ceiling, name == "release")
     skipped, res, v, reviewer = [], None, None, "none"
     for cand in candidates:
@@ -587,6 +587,7 @@ def apply_override(root, slug, st, action, relayed_by=None):
         st["status"] = "changes-requested"
     elif action == "reset-rounds":
         st["rounds"][stage], st["history"][stage], st["extra_rounds"][stage] = 0, [], 0
+        st.get("round_base", {}).pop(stage, None)
         st["status"] = "changes-requested"
     record_owner_action(st, f"override {action} ({stage})", relayed_by)
     note = f" (relayed by {relayed_by})" if relayed_by else ""
@@ -611,6 +612,8 @@ def cmd_override(args):
         identity.require_owner_terminal(env, f"relay override {args.action}")
     c = Ctx(args)
     gitops.fetch(c.root)  # an owner decision nobody else can see is not a decision; refuse offline
+    if args.action != "review":  # decide on the published state: a review job or the dashboard may have moved it
+        c.sync()
     if args.action == "review":
         from . import owneractions, reviewjobs
         stage = stage or "build"
