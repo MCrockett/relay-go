@@ -9,8 +9,8 @@ import threading
 import time
 import tomllib
 
-from .. import (agentask, availability, config, gitops, health, hookinstall, ledger, merged, owneractions, reviewjobs,
-               reviewtables, sessions, state, status, usage as samples, verdict, waiting, writerusage)
+from .. import (agentask, availability, config, gitops, health, hookinstall, ledger, merged, othersessions,
+               owneractions, reviewjobs, reviewtables, sessions, state, status, usage as samples, verdict, waiting, writerusage)
 from ..errors import RelayError
 
 WORKERS = 8  # parallel fetches and feature details; gh and git are the wait, not the CPU
@@ -169,6 +169,22 @@ def feature(repo, slug, records=None):
             "local_error": local_error, "agent_text": agent_text, "stuck_reason": stuck,
             "pending_tools": [p.get("tool_name") for p in (record or {}).get("pending") or [] if p.get("tool_name")],
             "session_record": record}
+
+
+RESUME = {"claude": "claude --resume {}", "codex": "codex resume {}"}
+
+
+def other_session(data, provider, session_id):
+    """One listed other session with its full last message, read live (other-sessions D6, D7), or None when the
+    snapshot did not list it."""
+    entry = next((e for e in (data or {}).get("other_sessions") or []
+                  if e["provider"] == provider and e["session_id"] == session_id), None)
+    if entry is None:
+        return None
+    words = agentask.last_words(provider, session_id)
+    return {"provider": provider, "session_id": session_id, "label": entry["label"], "state": entry["state"],
+            "pending_tools": entry["pending_tools"], "text": agentask.full(words["text"]) if words else None,
+            "source": words["source"] if words else None, "resume": RESUME[provider].format(session_id)}
 
 
 def usage():
@@ -349,7 +365,7 @@ def build():
         for members, error in zip(groups.values(), _parallel(lambda members: _fetch(members[0]), list(groups.values()))):
             fetched.update(dict.fromkeys(members, error))
         errors = {os.path.realpath(repo): error for repo, error in fetched.items() if error}
-        rows = status.scan(root)
+        rows, claimed = status.scan_with_claims(root)  # kept for rows whose details fail to load (D2)
         details = [d for d in _parallel(lambda row: _enrich(row, errors, fetched, records), rows) if d]
         writing = _writing_or_error(repos, errors)
     seen = {r["provider"] for r in records}
@@ -368,8 +384,18 @@ def build():
             notes.update(health.ui_settings(config.load(repo))[2])
         except (RelayError, OSError):
             continue  # that repository's row already reports its broken config
+    for d in details:  # the sessions the listed, not-done features account for (other-sessions D2)
+        if d["state"].get("stage") != "done" and d["pr_info"].get("state") != "MERGED":
+            claimed.update(x for x in ((d.get("owner_session") or {}).get("session"),
+                                       (d.get("session_record") or {}).get("session_id")) if x)
+    try:
+        global_cfg = config.load()
+        notes.update(health.ui_settings(global_cfg)[2])
+        others = othersessions.listed(records, claimed, root, global_cfg, time.time())
+    except Exception:  # F1, F5: the features are shown whatever happens here
+        others = []
     notes = sorted(notes)
-    return {"rows": rows, "features": details, "usage": usage(), "session_hints": hints, "notes": notes,
+    return {"rows": rows, "features": details, "other_sessions": others, "usage": usage(), "session_hints": hints, "notes": notes,
             "reviewers": _reviewers_or_error(repos), "writing": writing}
 
 

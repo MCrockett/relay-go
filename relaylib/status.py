@@ -5,7 +5,8 @@ import json
 import os
 import time
 
-from . import agentask, availability, config, freshness, gitops, health, merged, ownership, sessions, state, waiting
+from . import (agentask, availability, config, freshness, gitops, health, merged, othersessions, ownership, sessions,
+               state, waiting)
 from .errors import RelayError
 
 COLUMNS = ("repo", "feature", "stage", "status", "round", "owner", "verdict")
@@ -163,8 +164,9 @@ def _remote_row(checkout, ref, slug, st, has_handoff, fetched):
     }
 
 
-def with_asks(row, st, ref, records, now):
-    """Adds asks, wait_since and excerpt (waiting-visibility R6); waiting_on_owner becomes "has an ask"."""
+def with_asks(row, st, ref, records, now, claims=None):
+    """Adds asks, wait_since and excerpt (waiting-visibility R6); waiting_on_owner becomes "has an ask".
+    claims, when given, collects the sessions this feature accounts for (other-sessions D2)."""
     found = record = None
     if st is not None and row["feature"] != "?" and row["stage"] != "done":
         try:
@@ -180,11 +182,19 @@ def with_asks(row, st, ref, records, now):
         if words:
             excerpt = {"source": words["source"], "text": agentask.excerpt(words["text"])}
     row.update(asks=asks, wait_since=waiting.since(asks), excerpt=excerpt, waiting_on_owner=bool(asks))
+    if claims is not None and st is not None and row["stage"] != "done":
+        owner = (st.get("owner") or {}).get("session")
+        claims.update(x for x in (owner, (record or {}).get("session_id")) if x)
     return row
 
 
 def scan(root_dir):
-    rows, fetched, now = {}, {}, time.time()
+    return scan_with_claims(root_dir)[0]
+
+
+def scan_with_claims(root_dir):
+    """(rows, claimed): claimed holds the session ids the listed, not-done features account for (D2)."""
+    rows, fetched, now, claims = {}, {}, time.time(), {}
     try:
         records = sessions.read_records()
     except Exception:  # F2: no hook records, no session asks from them
@@ -208,10 +218,11 @@ def scan(root_dir):
                     and gitops.git(checkout, "rev-parse", "--verify", "-q", f"origin/{st['branch']}",
                                    check=False).returncode == 0):
                 continue  # inherited copy on a stacked branch: the remote pass checks the feature's own branch
-            row = with_asks(_row(checkout, slug, st, fetched), st, "HEAD", records, now)
+            mine = set()
+            row = with_asks(_row(checkout, slug, st, fetched), st, "HEAD", records, now, mine)
             key = (gitops.origin_url(checkout), slug)
             if key not in rows or row["updated"] > rows[key]["updated"]:
-                rows[key] = row
+                rows[key], claims[key] = row, mine
     local, origins = set(rows), set()
     for checkout in checkouts(root_dir):  # then features that live only on origin branches
         url = gitops.origin_url(checkout)
@@ -226,15 +237,35 @@ def scan(root_dir):
             key = (url, slug)
             if key in local:  # a checked-out copy is at least as current as the last fetch
                 continue
-            row = with_asks(_remote_row(checkout, ref, slug, st, has_handoff, fetched), st, ref, records, now)
+            mine = set()
+            row = with_asks(_remote_row(checkout, ref, slug, st, has_handoff, fetched), st, ref, records, now, mine)
             if key not in rows or row["updated"] > rows[key]["updated"]:
-                rows[key] = row
-    return sorted(rows.values(), key=lambda r: (not r["waiting_on_owner"], r["repo"] or "", r["feature"]))
+                rows[key], claims[key] = row, mine
+    ordered = sorted(rows.values(), key=lambda r: (not r["waiting_on_owner"], r["repo"] or "", r["feature"]))
+    return ordered, set().union(*claims.values())
 
 
-def render(rows):
+def _other_lines(others, now):
+    lines = ["", "Other sessions waiting on you"]
+    for e in others:
+        held = health.age(now - e["since"])
+        what = (f"needs approval: {', '.join(e['pending_tools']) or 'a tool'} · {held}" if e["state"] == "permission"
+                else f"waiting {held}")
+        lines.append(f"* {e['label']} · {e['provider']} · {what}")
+        if e.get("excerpt"):
+            label = "Summary" if e["excerpt"]["source"] == "summary" else "Agent"
+            lines.append(f"    {label}: {e['excerpt']['text']}")
+    return lines
+
+
+def render(rows, others=()):
+    now = time.time()
     if not rows:
-        return "No relay features. Start one with `relay new <slug>` inside a repo."
+        if not others:
+            return "No relay features. Start one with `relay new <slug>` inside a repo."
+        lines = ["No relay features. Start one with `relay new <slug>` inside a repo."] + _other_lines(others, now)
+        lines.append(f"\n{len(others)} waiting on you (*)")
+        return "\n".join(lines)
     heads = [c.upper() for c in COLUMNS] + ["FLAGS"]
     table = [[str(r[c] if r[c] is not None else "") for c in COLUMNS] + ["; ".join(r["flags"])] for r in rows]
     widths = [max(len(cell) for cell in col) for col in zip(heads, *table)]
@@ -243,7 +274,6 @@ def render(rows):
         return "  ".join(cell.ljust(w) for cell, w in zip(cells, widths)).rstrip()
 
     lines = ["  " + fmt(heads)]
-    now = time.time()
     for r, t in zip(rows, table):
         lines.append(("* " if r["waiting_on_owner"] else "  ") + fmt(t))
         if r.get("asks"):
@@ -252,12 +282,28 @@ def render(rows):
             if r.get("excerpt"):
                 label = "Summary" if r["excerpt"]["source"] == "summary" else "Agent"
                 lines.append(f"    {label}: {r['excerpt']['text']}")
-    lines.append(f"\n{sum(r['waiting_on_owner'] for r in rows)} waiting on you (*)")
+    if others:
+        lines += _other_lines(others, now)
+    lines.append(f"\n{sum(r['waiting_on_owner'] for r in rows) + len(others)} waiting on you (*)")
     return "\n".join(lines)
 
 
+def other_sessions(root, claimed, now=None):
+    """The other sessions waiting on the owner (other-sessions D1), or [] when they cannot be read (F1, F5)."""
+    try:
+        return othersessions.listed(sessions.read_records(), claimed, root, config.load(),
+                                    time.time() if now is None else now)
+    except Exception:
+        return []
+
+
 def cmd_status(args):
-    rows = sorted(scan(projects_root()), key=waiting.sort_key)  # oldest wait first (D6)
+    root = projects_root()
+    rows, claimed = scan_with_claims(root)
+    rows = sorted(rows, key=waiting.sort_key)  # oldest wait first (D6)
     if not args.all:
         rows = [r for r in rows if r["stage"] != "done"]
-    print(json.dumps(rows, indent=2) if args.json else render(rows))
+    if args.json:  # unchanged: feature rows only (other-sessions D5)
+        print(json.dumps(rows, indent=2))
+    else:
+        print(render(rows, other_sessions(root, claimed)))

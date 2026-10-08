@@ -102,12 +102,12 @@ class StatusTest(unittest.TestCase):
         self.assertIn("1 waiting on you", text)
 
 
-    def session(self, sid, state_="waiting", age_s=16 * 3600, said=None, provider="claude", pending=()):
+    def session(self, sid, state_="waiting", age_s=16 * 3600, said=None, provider="claude", pending=(), cwd=None):
         """A hook record for session sid, and a Claude transcript ending with `said`."""
         os.makedirs(sessions.folder(), exist_ok=True)
         at = time.time() - age_s
         with open(sessions.record_path(provider, sid), "w") as f:
-            json.dump({"provider": provider, "session_id": sid, "cwd": None, "state": state_, "since": at, "at": at,
+            json.dump({"provider": provider, "session_id": sid, "cwd": cwd, "state": state_, "since": at, "at": at,
                        "event": "Stop", "pending": [{"tool_use_id": None, "tool_name": t, "input_sha1": "x"}
                                                      for t in pending]}, f)
         if said:
@@ -136,6 +136,66 @@ class StatusTest(unittest.TestCase):
         self.assertEqual(data[0]["excerpt"]["source"], "agent")
         self.assertEqual(len(data[0]["excerpt"]["text"]), 161)          # the excerpt only, never the full text
         self.assertNotIn(question.strip(), json.dumps(data))
+
+    def test_scan_with_claims_names_the_sessions_features_account_for(self):
+        alpha = self.held("alpha", "drafting", "S1")
+        helpers.sh(alpha, "git", "switch", "-q", "-c", "feat/drafting")          # health matches checkouts on the branch
+        self.held("beta", "merging", "S2", status="ready-to-merge", pr=5)          # health does not watch it
+        self.session("S3", said="hi")
+        rec = json.load(open(sessions.record_path("claude", "S3")))
+        rec["cwd"] = os.path.realpath(os.path.join(self.projects, "alpha"))
+        json.dump(rec, open(sessions.record_path("claude", "S3"), "w"))       # matched to alpha by its folder
+        self.repo("gamma", {"shipped": {"stage": "done", "status": "done",
+                                        "owner": {"provider": "claude", "session": "S4"}}})
+        rows, claimed = status.scan_with_claims(self.projects)
+        self.assertEqual(claimed, {"S1", "S2", "S3"})
+        self.assertEqual(rows, status.scan(self.projects))
+
+    def test_other_sessions_follow_the_features(self):
+        self.held("bottomsup", "nba", "S1", status="waiting-owner", stage="spec")
+        pd = self.repo("proteindiary", {}, commit=True)
+        self.session("P1", age_s=2 * 3600, said="I still need the publisher JSON key path.", cwd=os.path.realpath(pd))
+        x = os.path.join(self.tmp, "home", "x")
+        os.makedirs(x)
+        with mock.patch.dict(os.environ, {"HOME": os.path.join(self.tmp, "home")}):
+            self.session("C1", "permission", age_s=300, provider="codex", pending=("Bash",), cwd=os.path.realpath(x))
+            before = json.loads(self.run_cmd("status", "--json"))
+            text = self.run_cmd("status")
+            everything = self.run_cmd("status", "--all")
+        self.assertIn("\nOther sessions waiting on you\n* proteindiary · claude · waiting 2h\n"
+                      "    Agent: I still need the publisher JSON key path.\n* ~/x · codex · needs approval: Bash · 5m\n",
+                      text)
+        self.assertLess(text.index("nba"), text.index("Other sessions"))
+        self.assertIn("3 waiting on you (*)", text)
+        self.assertIn("Other sessions waiting on you\n* proteindiary", everything)
+        self.assertEqual([r["feature"] for r in before], ["nba"])                 # --json: feature rows only
+        self.assertNotIn("P1", json.dumps(before))
+
+    def test_other_sessions_without_features(self):
+        self.session("P1", age_s=2 * 3600, said="Which key?")
+        text = self.run_cmd("status")
+        self.assertTrue(text.startswith("No relay features."), text)
+        self.assertIn("* Unknown folder · claude · waiting 2h\n    Agent: Which key?", text)
+        self.assertIn("1 waiting on you (*)", text)
+
+    def test_no_other_sessions_leaves_status_as_it_was(self):
+        self.repo("alpha", {"one": {"stage": "spec", "status": "waiting-owner"}})
+        clock = time.time()
+        with mock.patch("relaylib.status.time.time", return_value=clock):  # wait ages print to the second
+            text = self.run_cmd("status")
+            again = status.render(sorted(status.scan(self.projects), key=status.waiting.sort_key)) + "\n"
+        self.assertNotIn("Other sessions", text)
+        self.assertEqual(text, again)
+
+    def test_global_settings_choose_other_sessions(self):
+        pd = self.repo("proteindiary", {}, commit=True)
+        helpers.write(os.path.join(state.relay_dir(pd), "config.toml"),
+                      "[ui]\nhealth_grace_minutes = 60\nother_sessions_hours = 1\n")
+        self.session("A", age_s=600, said="a", cwd=os.path.realpath(pd))
+        self.session("B", age_s=5 * 3600, said="b", cwd=os.path.realpath(pd))
+        text = self.run_cmd("status")
+        self.assertIn("· waiting 10m", text)
+        self.assertIn("· waiting 5h", text)
 
     def test_waits_print_oldest_first_but_scan_keeps_its_order(self):
         self.held("alpha", "newer", "S1")

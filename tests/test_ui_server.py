@@ -124,6 +124,29 @@ class ServerTest(unittest.TestCase):
         with mock.patch("relaylib.ui.snapshot.read_file", side_effect=RelayError("outside feature")):
             self.assertEqual(self.request("/api/file?repo=/fixture&slug=demo&ref=x&path=README.md")[0], 400)
 
+    def test_session_endpoint_answers_only_for_listed_sessions(self):
+        entry = {"provider": "claude", "session_id": "S1", "label": "proteindiary", "folder": "/opt/pd",
+                 "state": "waiting", "since": 1.0, "pending_tools": [], "excerpt": None}
+        data = {"rows": [], "features": [], "usage": {"providers": {}}, "other_sessions": [entry]}
+        words = {"source": "agent", "text": "I still need the publisher JSON key path."}
+        with mock.patch.object(self.cache, "get", return_value={"data": data}), \
+                mock.patch("relaylib.agentask.last_words", return_value=words) as read:
+            code, text = self.request("/api/session?provider=claude&session=S1")
+            self.assertEqual(code, 200)
+            self.assertEqual(json.loads(text), {"provider": "claude", "session_id": "S1", "label": "proteindiary",
+                                                "state": "waiting", "pending_tools": [], "source": "agent",
+                                                "text": words["text"], "resume": "claude --resume S1"})
+            read.reset_mock()
+            self.assertEqual(self.request("/api/session?provider=claude&session=S2")[0], 404)
+            self.assertEqual(self.request("/api/session?provider=codex&session=S1")[0], 404)
+            read.assert_not_called()                                   # never reads a transcript it did not list
+            self.assertEqual(self.request("/api/session?provider=claude")[0], 400)
+            self.assertEqual(self.request("/api/session?provider=claude&session=S1", token=None)[0], 403)
+        with mock.patch.object(self.cache, "get", return_value={"data": data}), \
+                mock.patch("relaylib.agentask.last_words", return_value=None):
+            gone = json.loads(self.request("/api/session?provider=claude&session=S1")[1])
+            self.assertEqual((gone["text"], gone["source"]), (None, None))
+
     def test_action_conflicts_errors_and_success(self):
         payload = {"action": "go", "repo": "/fixture", "slug": "demo", "seen": {"commit": "a" * 40}}
         with mock.patch("relaylib.ui.snapshot.allowed_repo", return_value="/fixture"), \
@@ -226,6 +249,56 @@ class ServerTest(unittest.TestCase):
         for piece in ("announced.has(j.id)", "j.ended_at", "Last requested review"):
             self.assertIn(piece, page)
         self.assertNotIn("prev==='running'", page)
+
+    def test_page_shows_other_sessions(self):
+        page = self.request("/?t=test-token")[1]
+        for piece in ('<dialog id="session-dialog"', "claude:'Claude'", "codex:'Codex'", "' session'",
+                      "'Waiting for approval: '", "'Resume with: '", "'No last message to show.'",
+                      "'This session is no longer waiting.'", "data.other_sessions", "waitingCount(rows,others)",
+                      "document.title=count?"):
+            self.assertIn(piece, page)
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_other_session_rules_run_in_node(self):
+        page = self.request("/?t=test-token")[1]
+        funcs = re.search(r"function ageText\(.*?(?=function cardFlags\()", page, re.S).group(0)
+        script = """
+const made=[];
+class El{constructor(tag){this.tag=tag;this.children=[];this.className='';this.textContent='';}
+  append(...xs){this.children.push(...xs);} querySelectorAll(){return [];}}
+const document={createElement:t=>{const e=new El(t);made.push(e);return e;}};
+const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined&&text!==null)n.textContent=text;if(cls)n.className=cls;return n;};
+let calls=[];const notice=(t,err)=>calls.push(['notice',t,!!err]),load=async()=>calls.push(['load']);
+let fail=null;const api=async()=>{if(fail)throw fail;return {};};const $=()=>({});
+""" + funcs + """
+(async()=>{
+const now=1000000,feature={waiting_on_owner:true,wait_since:now-600,feature:'nba'};
+const waitingOn={provider:'claude',session_id:'S1',label:'proteindiary',state:'waiting',since:now-7200,pending_tools:[]};
+const approve={provider:'codex',session_id:'C1',label:'~/x',state:'permission',since:now-300,pending_tools:['Bash']};
+const card=sessionCard(waitingOn);
+fail=Object.assign(new Error('gone'),{status:404});await openSession(waitingOn);
+const after404=calls;calls=[];fail=Object.assign(new Error('Failed to fetch'),{});await openSession(waitingOn);
+console.log(JSON.stringify({
+  waitingLine:sessionLine(waitingOn,now), approveLine:sessionLine(approve,now),
+  order:inboxOrder([feature,approve,waitingOn]).map(x=>x.feature||x.session_id),
+  counts:[waitingCount([feature],[]),waitingCount([{waiting_on_owner:false}],[waitingOn]),waitingCount([feature],[waitingOn,approve]),waitingCount([],[])],
+  noText:sessionDialog(waitingOn,{state:'waiting',text:null,resume:'claude --resume S1'}),
+  tools:sessionDialog(approve,{state:'permission',pending_tools:['Bash'],text:'x',resume:'codex resume C1'}).tools,
+  buttons:made.filter(e=>e.tag==='button').length, cardKids:card.children.map(c=>c.className),
+  after404, offline:calls}));
+})();"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["waitingLine"], "Waiting on you · 2h")
+        self.assertEqual(out["approveLine"], "Waiting for approval: Bash · 5m")
+        self.assertEqual(out["order"], ["S1", "nba", "C1"])                     # one list, oldest wait first
+        self.assertEqual(out["counts"], [1, 1, 3, 0])
+        self.assertEqual(out["noText"], {"title": "Claude session · proteindiary", "tools": "",
+                                         "text": "No last message to show.", "resume": "Resume with: claude --resume S1"})
+        self.assertEqual(out["tools"], "Waiting for approval: Bash")
+        self.assertEqual(out["buttons"], 0)                                     # session cards act on nothing
+        self.assertEqual(out["cardKids"], ["t", "reason"])
+        self.assertEqual(out["after404"], [["notice", "This session is no longer waiting.", False], ["load"]])
+        self.assertEqual(out["offline"], [["notice", "Failed to fetch", True]])
 
     def test_reviewer_activity_tables_sort_by_any_column(self):
         page = self.request("/?t=test-token")[1]
@@ -352,7 +425,7 @@ console.log(JSON.stringify({up:ids(editList(L,'up',1)), topUp:ids(editList(L,'up
 
     def test_inbox_cards_show_asks_words_and_real_buttons(self):
         page = self.request("/?t=test-token")[1]
-        for piece in ("ASK_ACTIONS", "row.asks", "row.excerpt", "wait_since", "inboxOrder(waiting)", "askLine(row",
+        for piece in ("ASK_ACTIONS", "row.asks", "row.excerpt", "wait_since", "inboxOrder(waiting.concat(others))", "askLine(row",
                       "cardButtons(row)", "cardFlags(row)", "Agent’s last message", "Summary while you were away", "d.agent_text",
                       "d.pending_tools", "Waiting for approval: "):
             self.assertIn(piece, page)
