@@ -35,6 +35,26 @@ class ApplyTest(unittest.TestCase):
         self.assertIsNone(sessions.apply(None, "claude", ev("Notification", notification_type="auth_success"), 1))
         self.assertIsNone(sessions.apply(None, "codex", ev("SessionStart"), 1))   # Codex SessionStart is not mapped
 
+    def test_reopening_a_session_is_not_work(self):
+        # kpi-collection, 2026-10-07: Stop, then the session was reopened with no prompt (waiting-visibility D1)
+        for source in ("resume", "startup", "clear", None, "other"):
+            start = ev("SessionStart", **({"source": source} if source else {}))
+            r = self.run_events("claude", [ev("Stop"), start])
+            self.assertEqual((r["state"], r["since"], r["at"], r["event"]), ("waiting", 1000.0, 1001.0, "SessionStart"))
+        ask = ev("PermissionRequest", tool_name="Bash", tool_input={"command": "rm x"}, tool_use_id="t1")
+        r = self.run_events("claude", [ev("UserPromptSubmit"), ask, ev("SessionStart", source="resume")])
+        self.assertEqual((r["state"], r["since"], len(r["pending"])), ("permission", 1001.0, 1))
+        r = self.run_events("claude", [ev("UserPromptSubmit"), ev("SessionStart", source="resume")])
+        self.assertEqual(r["state"], "waiting")                 # at the prompt until the owner types
+
+    def test_session_start_without_a_record_and_compact(self):
+        self.assertEqual(sessions.apply(None, "claude", ev("SessionStart", source="startup"), 5)["state"], "waiting")
+        self.assertEqual(sessions.apply(None, "claude", ev("SessionStart", source="compact"), 5)["state"], "working")
+        r = self.run_events("claude", [ev("Stop"), ev("SessionStart", source="compact")])
+        self.assertEqual(r["state"], "working")                 # compaction happens mid-turn
+        r = self.run_events("claude", [ev("SessionStart", source="startup"), ev("UserPromptSubmit")])
+        self.assertEqual(r["state"], "working")
+
     def test_since_keeps_its_value_while_the_state_holds(self):
         r = self.run_events("claude", [ev("Stop"), ev("Notification", notification_type="idle_prompt")])
         self.assertEqual((r["since"], r["at"]), (1000.0, 1001.0))

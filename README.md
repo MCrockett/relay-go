@@ -36,7 +36,8 @@ A PR opened before relay can join it: on the PR's branch, `relay adopt <slug> [-
     relay new <slug>              start: branch, docs/relay/<slug>/, you own the repo
     relay new <slug> --small --type fix --idea "..."   small change: straight to build
     relay submit                  hand in the current stage; the other provider reviews it
-    relay status                  every feature in your projects folder; * = waiting on you
+    relay status                  every feature in your projects folder; * = waiting on you, with what
+                                  it needs, how long it has waited, and what the agent last said
     relay review                  re-run a review after an error or a stale GO
 
 Reviews continue while they make progress, up to 4 rounds. "Partly fixed" counts as progress. A stage stops and waits on you (with a `reviews/<stage>-stuck.md` summary) only when blocking findings rise, when the count stays the same and a finding the author already tried to fix is marked unresolved, or at round 4.
@@ -126,7 +127,17 @@ Run `relay ui` in your own terminal to open the dashboard, or `relay ui --backgr
 after the terminal closes. Use `--port 8765` to choose the first of eleven ports it tries. A second launch
 opens the running dashboard. Agent sessions cannot start it.
 
-The inbox lists features waiting on you. Open a feature to see its stage history, reviews, owner decisions,
+The inbox lists features waiting on you, longest wait first. Each card says in plain words what is needed
+("Decide: plan review stopped. <reason>", "Review failed: <why>", "Merge PR #6", "Take the handoff",
+"Answer the claude session", "Approve Bash in the codex session", "Check the codex session: no activity 2h"),
+how long it has waited, and the buttons for that ask: Override GO, Extra round, Reset rounds, Request review or
+Merge PR. When a session is waiting on you, the card shows the start of what the agent last said (Claude's
+summary while you were away, or the agent's last message), and the feature's details show all of it. relay reads
+that text live from the CLI's own log on this machine and never stores it. `relay status` shows the same asks.
+A failed review's reason is saved in state.md without paths, usernames, emails or tokens, since state.md is
+published with the branch.
+
+Open a feature to see its stage history, reviews, owner decisions,
 session, handoff and CI. Reviews open even when their branch is not checked out. The All features table
 can include completed work. Models shows Codex and Claude weekly limits, daily carry-forward budgets, and the
 review runs relay launched, by project and model, for seven or thirty days. Writing sessions shows the Claude Code

@@ -80,9 +80,8 @@ class ServerTest(unittest.TestCase):
             self.assertNotIn(filler, page)
         for header in ('id="summary"', 'id="usage-strip"', 'id="refresh"', 'id="updated"'):
             self.assertIn(header, page)
-        # Inbox cards offer only Merge PR; overrides and Release stay in the feature detail.
-        self.assertIn("const CARD_ACTIONS=new Set(['merge']);", page)
-        self.assertIn("actions(row,CARD_ACTIONS)", page)
+        # Inbox cards offer each ask's own buttons (waiting-visibility D7); Release stays in the feature detail.
+        self.assertIn("actions(row,new Set(cardButtons(row)))", page)
         self.assertIn("actions(d)", page)
 
     def test_page_reads_like_an_inbox(self):
@@ -340,11 +339,54 @@ console.log(JSON.stringify({up:ids(editList(L,'up',1)), topUp:ids(editList(L,'up
 
     def test_page_shows_session_health(self):
         page = self.request("/?t=test-token")[1]
-        # Options appears only when there is an owner action to pick, never just for health.
-        self.assertNotIn("||row.health_inbox)&&row.repo_path", page)
-        for piece in ("row.health", "health_inbox", "session_hints", 'id="session-hints"', "d.unpushed",
-                      "health-attention", "data.notes", "newest commit on origin", "withHealth()"):
+        for piece in ("row.health", "session_hints", 'id="session-hints"', "d.unpushed",
+                      "health-attention", "data.notes", "newest commit on origin"):
             self.assertIn(piece, page)
+
+    def test_inbox_cards_show_asks_words_and_real_buttons(self):
+        page = self.request("/?t=test-token")[1]
+        for piece in ("ASK_ACTIONS", "row.asks", "row.excerpt", "wait_since", "inboxOrder(waiting)", "askLine(row",
+                      "cardButtons(row)", "cardFlags(row)", "Agent’s last message", "Summary while you were away", "d.agent_text",
+                      "d.pending_tools", "Waiting for approval: "):
+            self.assertIn(piece, page)
+        self.assertNotIn("'Options'", page)                                  # the button that only opened details
+        self.assertIn("node('pre',d.agent_text.text,'agent-text')", page)    # textContent through node(), never HTML
+        self.assertNotIn("innerHTML", page)
+        self.assertIn("for(const row of rows.filter(r=>$('show-done').checked", page)   # the table keeps row order
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_card_rules_run_in_node(self):
+        page = self.request("/?t=test-token")[1]
+        funcs = re.search(r"const ASK_ACTIONS=.*?function cardFlags\(.*?\n", page, re.S).group(0)
+        script = funcs + """
+const ask=(kind,text,since)=>({kind,text,since});
+const merge={asks:[ask('merge','Merge PR #6',100),ask('answer','Answer the claude session',2800)],wait_since:100,
+  actions:['merge','review','release']};
+const decide={asks:[ask('decide','Decide: build review stopped',50)],wait_since:50,actions:['go','extra-round','reset-rounds','release']};
+const failed={asks:[ask('review-failed','Review failed',70)],wait_since:70,actions:['go','review','release']};
+const answer={asks:[ask('answer','Answer the claude session',3000)],wait_since:3000,actions:['release']};
+const broken={asks:[ask('error','Fix: cannot read',null)],wait_since:null,actions:[]};
+console.log(JSON.stringify({merge:cardButtons(merge),decide:cardButtons(decide),failed:cardButtons(failed),
+  answer:cardButtons(answer),line:askLine(merge,7300),broken:askLine(broken,7300),
+  order:inboxOrder([answer,broken,merge,decide]).map(r=>r.asks[0].kind),labels:[excerptLabel('summary'),excerptLabel('agent')],
+  ages:[ageText(59),ageText(61),ageText(7200),ageText(200000)],
+  flags:cardFlags({asks:[ask('merge','Merge PR #6 · fallback GO: confirm with codex before merging (codex out; your call)',1),
+                         ask('take','Take the handoff: open a session and run relay take',1)],
+                   flags:['fallback GO: confirm with codex before merging (codex out; your call)',
+                          'handoff: open a session and run `relay take`','local changes not published',
+                          'plan review: same provider as the author']})}));"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["merge"], ["merge"])                            # no Request review next to Merge
+        self.assertEqual(out["decide"], ["go", "extra-round", "reset-rounds"])
+        self.assertEqual(out["failed"], ["go", "review"])
+        self.assertEqual(out["answer"], [])                                   # the answer is in the session; no Release
+        self.assertEqual(out["line"], "Merge PR #6 · Answer the claude session · waiting 2h")
+        self.assertEqual(out["broken"], "Fix: cannot read")
+        self.assertEqual(out["order"], ["decide", "merge", "answer", "error"])
+        self.assertEqual(out["labels"], ["Summary", "Agent"])
+        self.assertEqual(out["ages"], ["59s", "1m", "2h", "2d"])
+        # Warnings stay on the card (owner, 2026-10-07); only notes the asks already say are left out.
+        self.assertEqual(out["flags"], ["local changes not published", "plan review: same provider as the author"])
 
     def test_ports_fallback_and_exhaustion(self):
         other = server.bind(self.port, "t", self.cache)

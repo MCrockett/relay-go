@@ -1,7 +1,9 @@
 """Session health for the dashboard: local git activity plus hook records (spec session-health R4-R6, R9)."""
+import datetime
 import os
 
-from . import gitops
+from . import config, gitops, state
+from .errors import RelayError
 
 UI_LIMITS = {"health_grace_minutes": (0, 60, 1), "quiet_minutes": (1, 1440, 30)}
 MAX_PATHS = 2000
@@ -130,3 +132,30 @@ def health(record, act, grace_min, quiet_min, now):
     if now - latest > quiet_min * 60:
         return {"kind": "attention", "text": f"no activity {age(now - latest)}", "since": latest}
     return {"kind": "ok", "text": f"active {age(now - latest)} ago", "since": latest}
+
+
+def _since_ts(owner):
+    try:
+        return datetime.datetime.fromisoformat(owner.get("since") or "").timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def session_health(repo, st, records, now):
+    """(health, activity, record) for a feature a session holds, else (None, None, None) (session-health R4-R6;
+    the record tells waiting-visibility which session to read)."""
+    owner = st.get("owner") or {}
+    if st.get("status") not in state.HOLDING_STATUSES or not owner.get("session") or st.get("stage") == "done":
+        return None, None, None
+    try:
+        repo_cfg = config.load(repo)
+    except (RelayError, OSError):  # a broken repository config must not hide the session's health
+        repo_cfg = {}
+    grace, quiet, _ = ui_settings(repo_cfg)
+    try:
+        checkouts = branch_checkouts(repo, st["branch"])
+        act = activity(checkouts, st["branch"])
+    except Exception:  # activity never hides what a hook record says (R4)
+        checkouts, act = [], {"last_activity": None, "unpushed": None, "origin": None}
+    record = match(records, owner.get("provider"), owner["session"], _since_ts(owner), checkouts)
+    return health(record, act, grace, quiet, now), act, record

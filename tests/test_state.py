@@ -24,6 +24,15 @@ class StateTest(unittest.TestCase):
         st = state.read_state(path)
         self.assertEqual((st["stage"], st["status"]), ("idea", "drafting"))
 
+    def test_review_error_reason_lives_only_while_the_review_has_failed(self):
+        self.put("alpha", status="review-error", review_error="boom")
+        path = state.state_path(self.root, "alpha")
+        self.assertEqual(state.read_state(path)["review_error"], "boom")
+        st = state.read_state(path)
+        st["status"] = "in-review"
+        state.write_state(path, st)
+        self.assertNotIn("review_error", state.read_state(path))
+
     def test_small_starts_at_build_and_skips(self):
         st = self.put("tiny", small=True)
         self.assertEqual(st["stage"], "build")

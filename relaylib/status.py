@@ -3,8 +3,9 @@ import datetime
 import glob
 import json
 import os
+import time
 
-from . import availability, config, freshness, gitops, merged, ownership, state
+from . import agentask, availability, config, freshness, gitops, health, merged, ownership, sessions, state, waiting
 from .errors import RelayError
 
 COLUMNS = ("repo", "feature", "stage", "status", "round", "owner", "verdict")
@@ -162,8 +163,32 @@ def _remote_row(checkout, ref, slug, st, has_handoff, fetched):
     }
 
 
+def with_asks(row, st, ref, records, now):
+    """Adds asks, wait_since and excerpt (waiting-visibility R6); waiting_on_owner becomes "has an ask"."""
+    found = record = None
+    if st is not None and row["feature"] != "?" and row["stage"] != "done":
+        try:
+            found, _, record = health.session_health(row["checkout"], st, records, now)
+        except Exception:  # F5: this row keeps its state asks
+            found = record = None
+    stuck = (waiting.stuck_reason(row["checkout"], ref, row["feature"], st.get("stage"))
+             if st is not None and row["status"] == "waiting-owner" else None)
+    asks = waiting.asks(row, st, found, record, stuck)
+    excerpt = None
+    if record and any(a["kind"] in ("answer", "approve") for a in asks):
+        words = agentask.last_words(record["provider"], record["session_id"])
+        if words:
+            excerpt = {"source": words["source"], "text": agentask.excerpt(words["text"])}
+    row.update(asks=asks, wait_since=waiting.since(asks), excerpt=excerpt, waiting_on_owner=bool(asks))
+    return row
+
+
 def scan(root_dir):
-    rows, fetched = {}, {}
+    rows, fetched, now = {}, {}, time.time()
+    try:
+        records = sessions.read_records()
+    except Exception:  # F2: no hook records, no session asks from them
+        records = []
     for checkout in checkouts(root_dir):
         try:
             features = state.list_features(checkout)
@@ -172,6 +197,7 @@ def scan(root_dir):
             rows[(name, "?")] = {"repo": name, "feature": "?", "stage": "?", "status": "?", "round": 0,
                                  "owner": "", "verdict": "", "pr": None, "flags": [str(e)], "path": checkout,
                                  "owner_actions": 0, "waiting_on_owner": True, "updated": "", "checkout": checkout}
+            with_asks(rows[(name, "?")], None, None, records, now)
             continue
         try:
             here = gitops.current_branch(checkout)
@@ -182,7 +208,7 @@ def scan(root_dir):
                     and gitops.git(checkout, "rev-parse", "--verify", "-q", f"origin/{st['branch']}",
                                    check=False).returncode == 0):
                 continue  # inherited copy on a stacked branch: the remote pass checks the feature's own branch
-            row = _row(checkout, slug, st, fetched)
+            row = with_asks(_row(checkout, slug, st, fetched), st, "HEAD", records, now)
             key = (gitops.origin_url(checkout), slug)
             if key not in rows or row["updated"] > rows[key]["updated"]:
                 rows[key] = row
@@ -200,7 +226,7 @@ def scan(root_dir):
             key = (url, slug)
             if key in local:  # a checked-out copy is at least as current as the last fetch
                 continue
-            row = _remote_row(checkout, ref, slug, st, has_handoff, fetched)
+            row = with_asks(_remote_row(checkout, ref, slug, st, has_handoff, fetched), st, ref, records, now)
             if key not in rows or row["updated"] > rows[key]["updated"]:
                 rows[key] = row
     return sorted(rows.values(), key=lambda r: (not r["waiting_on_owner"], r["repo"] or "", r["feature"]))
@@ -217,13 +243,21 @@ def render(rows):
         return "  ".join(cell.ljust(w) for cell, w in zip(cells, widths)).rstrip()
 
     lines = ["  " + fmt(heads)]
-    lines += [("* " if r["waiting_on_owner"] else "  ") + fmt(t) for r, t in zip(rows, table)]
+    now = time.time()
+    for r, t in zip(rows, table):
+        lines.append(("* " if r["waiting_on_owner"] else "  ") + fmt(t))
+        if r.get("asks"):
+            at = r["wait_since"]
+            lines.append("    " + r["asks"][0]["text"] + (f" · waiting {health.age(now - at)}" if at is not None else ""))
+            if r.get("excerpt"):
+                label = "Summary" if r["excerpt"]["source"] == "summary" else "Agent"
+                lines.append(f"    {label}: {r['excerpt']['text']}")
     lines.append(f"\n{sum(r['waiting_on_owner'] for r in rows)} waiting on you (*)")
     return "\n".join(lines)
 
 
 def cmd_status(args):
-    rows = scan(projects_root())
+    rows = sorted(scan(projects_root()), key=waiting.sort_key)  # oldest wait first (D6)
     if not args.all:
         rows = [r for r in rows if r["stage"] != "done"]
     print(json.dumps(rows, indent=2) if args.json else render(rows))

@@ -453,7 +453,7 @@ def review_current(c, args, candidates=None, discard_errors=False, announce=True
                  else f"no reviewers configured for work by {who}: run relay roles set review.{who} \"provider:model, ...\"")
         if discard_errors:  # an owner-requested review never costs the feature its state
             raise RelayError(f"review failed: {error}")
-        machine.apply_error(st)
+        machine.apply_error(st, error)
         c.save(f"relay: {stage} review error ({reviewer})")
         notify.send(c.cfg, f"relay: {st['repo']} review failed", f"{c.slug} {stage}: {error[:120]}")
         print(f"relay: review failed: {error}. Nothing advanced. Re-run `relay review` or tell the owner.",

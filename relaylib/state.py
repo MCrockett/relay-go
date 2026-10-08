@@ -70,6 +70,8 @@ def read_state(path):
 
 def write_state(path, st):
     st["updated"] = now_iso()
+    if st.get("status") != "review-error":  # every way out of a failed review clears its reason
+        st.pop("review_error", None)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write("---\n" + json.dumps(st, indent=2, sort_keys=True) + "\n---\n" + BODY)
