@@ -7,7 +7,19 @@
   "branch": "feat/codex-liveness",
   "extra_rounds": {},
   "feature": "codex-liveness",
-  "history": {},
+  "history": {
+    "spec": [
+      {
+        "blocking_ids": [
+          "R1-1"
+        ],
+        "head": "edace2f338fb41b79d1fa94be2dae2d8580d4bf9",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ]
+  },
   "owner": {
     "provider": "claude",
     "session": "958dee3a-031e-4b49-be5f-09efa15292b1",
@@ -28,6 +40,7 @@
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
+  "review_notes": {},
   "reviewed": {
     "build": null,
     "plan": null,
@@ -39,9 +52,11 @@
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "in-review",
-  "updated": "2026-10-08T19:34:42-04:00",
-  "verdicts": {}
+  "status": "changes-requested",
+  "updated": "2026-10-08T19:35:19-04:00",
+  "verdicts": {
+    "spec": "NO-GO"
+  }
 }
 ---
 
