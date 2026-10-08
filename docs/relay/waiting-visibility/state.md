@@ -77,7 +77,7 @@
   "pr": 7,
   "refresh": false,
   "repo": "relay-go",
-  "retried": true,
+  "retried": false,
   "review_notes": {},
   "reviewed": {
     "build": null,
@@ -94,15 +94,15 @@
     }
   },
   "rounds": {
-    "build": 1,
+    "build": 2,
     "plan": 4,
     "spec": 2
   },
   "skipped": [],
   "small": false,
   "stage": "build",
-  "status": "changes-requested",
-  "updated": "2026-10-07T20:19:52-04:00",
+  "status": "in-review",
+  "updated": "2026-10-07T20:23:39-04:00",
   "verdicts": {
     "build": "NO-GO",
     "plan": "GO",
