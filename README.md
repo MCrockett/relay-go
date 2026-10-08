@@ -40,7 +40,7 @@ A PR opened before relay can join it: on the PR's branch, `relay adopt <slug> [-
                                   it needs, how long it has waited, and what the agent last said
     relay review                  re-run a review after an error or a stale GO
 
-Reviews continue while they make progress, up to 4 rounds. "Partly fixed" counts as progress. A stage stops and waits on you (with a `reviews/<stage>-stuck.md` summary) only when blocking findings rise, when the count stays the same and a finding the author already tried to fix is marked unresolved, or at round 4.
+Reviews continue while they make progress, up to 4 rounds. "Partly fixed" counts as progress. A stage stops and waits on you (with a `reviews/<stage>-stuck.md` summary) only when blocking findings rise, when the count stays the same and a finding the author already tried to fix is marked unresolved, or at round 4. A review you request (Request review, Re-review spec or plan) starts a new cycle: rounds before it no longer count toward these rules, so its NO-GO goes back to the author.
 
 ## What reaches you
 
@@ -159,13 +159,13 @@ an immediate rebuild. A failed rebuild keeps the last good snapshot and reports 
 Every action asks for confirmation and is bound to the published commit, stage, status and session you
 saw. A changed revision is refused with fresh details. Overrides and release use temporary detached
 worktrees and a fast-forward push, leaving the session's checkout and branch untouched. Sessions pick
-up published owner actions before submit, review, handoff and take. Merge also requires a fresh GO,
+up published owner actions before submit, review, handoff, take and override. Merge also requires a fresh GO,
 confirmed fallback reviews and green CI, and passes the displayed PR head to GitHub's merge guard.
 
 Request review, in a feature's detail, runs a fresh build review for a PR that is ready to merge or whose
 review errored. It defaults to the reviewer a fallback GO is waiting for, or the author's first choice, and
 you can pick any reviewer from the preference table. It runs in the background in a temporary worktree and
-publishes only if the branch has not moved; a NO-GO sends the build back to the author like any review, and
+publishes only if the branch has not moved; a NO-GO sends the build back to the author with a new cycle of rounds, and
 a failed request changes nothing. `relay override review` does the same from your terminal.
 
 Re-review spec and Re-review plan, in the same place, ask for an approved spec or plan to be reviewed again,
