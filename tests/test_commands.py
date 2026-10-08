@@ -1485,6 +1485,34 @@ done
         self.assertIn("owner requested a spec re-review from codex:gpt-6-astra (default)",
                       [a["action"] for a in c.st["owner_actions"]])
 
+    def test_relay_override_review_takes_a_stage(self):
+        self.to_build()
+        self.assertEqual(self.relay("override", "review", "--stage", "spec"), 1)   # an agent, without --relayed
+        self.assertIn("relay override review", self.last_err)
+        with self.assertRaises((SystemExit, __import__("argparse").ArgumentError)):  # argparse refuses
+            commands.main(["override", "review", "--stage", "idea"])
+        self.enqueue_codex("GO")
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("override", "review", "--stage", "spec", "--relayed"), 0, self.last_err)
+        self.assertIn("codex:gpt-6-astra is reviewing demo's spec. This can take minutes.", self.last_out)
+        self.assertIn("spec and plan GO from codex:gpt-6-astra; back at build, drafting.", self.last_out)
+        action = [a for a in self.published("demo")["owner_actions"] if "spec re-review" in a["action"]][0]
+        self.assertEqual(action["relayed_by"], "claude session s1")
+        self.as_owner_terminal()
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("override", "review", "--stage", "plan"), 0, self.last_err)
+        self.assertIn("codex:gpt-6-astra is reviewing demo's plan", self.last_out)
+        self.assertEqual(self.relay("override", "go", "--stage", "plan"), 1)          # --stage is for review only
+        self.assertIn("--stage is only for relay override review", self.last_err)
+
+    def test_relay_override_review_refuses_offline(self):
+        self.to_build()
+        self.as_owner_terminal()
+        helpers.sh(self.work, "git", "remote", "set-url", "origin", os.path.join(self.tmp, "gone.git"))
+        calls = self.calls()
+        self.assertEqual(self.relay("override", "review", "--stage", "spec"), 1)
+        self.assertEqual(self.calls(), calls)
+
     def test_a_repository_reviewer_override_is_a_valid_choice(self):
         from relaylib import owneractions, reviewjobs
         self.fallback_build_go()

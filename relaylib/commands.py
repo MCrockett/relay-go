@@ -596,6 +596,9 @@ def apply_override(root, slug, st, action, relayed_by=None):
 def cmd_override(args):
     env = dict(os.environ)
     relayed_by = None
+    stage = getattr(args, "stage", None)
+    if stage and args.action != "review":
+        raise RelayError("--stage is only for relay override review")
     if args.relayed:  # an agent passing on a decision the owner made in its conversation; recorded as such
         if not identity.in_agent_session(env):
             raise RelayError("--relayed is for an agent passing on the owner's decision; in your own terminal, "
@@ -610,14 +613,17 @@ def cmd_override(args):
     gitops.fetch(c.root)  # an owner decision nobody else can see is not a decision; refuse offline
     if args.action == "review":
         from . import owneractions, reviewjobs
-        job = reviewjobs.prepare(c.root, c.slug, owneractions.fingerprint(c.root, c.slug), args.reviewer, relayed_by)
-        print(f"relay: {reviewjobs.spec_id(job.spec)} is reviewing {c.slug}. This can take minutes.")
+        stage = stage or "build"
+        job = reviewjobs.prepare(c.root, c.slug, owneractions.fingerprint(c.root, c.slug), args.reviewer, relayed_by,
+                                 stage=stage)
+        print(f"relay: {reviewjobs.spec_id(job.spec)} is reviewing {c.slug}"
+              + (f"'s {stage}" if stage != "build" else "") + ". This can take minutes.")
         result = job.run()
         if not result["ok"]:
             raise RelayError(result["message"])
         if relayed_by and c.st.get("pr"):
             try:
-                gitops.pr_comment(c.root, c.st["pr"], f"relay: owner decision `override review` on build, "
+                gitops.pr_comment(c.root, c.st["pr"], f"relay: owner decision `override review` on {stage}, "
                                                       f"relayed by {relayed_by}.")
             except RelayError as e:
                 print(f"relay: warning: could not comment on PR #{c.st['pr']}: {e}", file=sys.stderr)
@@ -939,6 +945,8 @@ def build_parser():
     o = add("override", cmd_override, "owner-only decisions, run in your own terminal")
     o.add_argument("action", choices=["go", "extra-round", "reset-rounds", "release", "review"])
     o.add_argument("--reviewer", help="review only: provider:model[@effort] from the review preference table")
+    o.add_argument("--stage", choices=["spec", "plan", "build"],
+                   help="review only: re-review an approved spec or plan (default: the build)")
     o.add_argument("--feature")
     o.add_argument("--relayed", action="store_true",
                    help="agents only: pass on a decision the owner made in this conversation (recorded as relayed)")
