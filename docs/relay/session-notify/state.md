@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/session-notify",
   "extra_rounds": {},
   "feature": "session-notify",
@@ -29,9 +31,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-10-08T19:31:35-04:00",
+  "updated": "2026-10-08T19:31:42-04:00",
   "verdicts": {}
 }
 ---
