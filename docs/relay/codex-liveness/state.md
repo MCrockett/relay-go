@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/codex-liveness",
   "extra_rounds": {},
   "feature": "codex-liveness",
@@ -29,9 +31,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-10-08T19:31:51-04:00",
+  "updated": "2026-10-08T19:31:58-04:00",
   "verdicts": {}
 }
 ---
