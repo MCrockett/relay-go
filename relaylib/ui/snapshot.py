@@ -135,6 +135,8 @@ def feature(repo, slug, records=None):
     repo_cfg = config.load(repo)  # the repository's effective table, the one prepare checks against
     options = reviewjobs.choices(repo_cfg)
     review_default = dict(zip(("id", "label", "note"), reviewjobs.default(repo_cfg, st, options)))
+    review_defaults = {stage: dict(zip(("id", "label", "note"), reviewjobs.default(repo_cfg, st, options, stage)))
+                       for stage in reviewjobs.STAGES}
     reviews = [_review(repo, commit, p) for p in files if "/reviews/" in p.lower() and p.endswith(".md")]
     reviews.sort(key=lambda r: (r.get("at", ""), r["path"]), reverse=True)
     local_error = None
@@ -162,6 +164,7 @@ def feature(repo, slug, records=None):
             "handoff": {"path": handoff_path, "text": handoff, "published": True} if handoff is not None else None,
             "local_handoff": local, "local_changes": changed,
             "review_job": job, "review_choices": options, "review_default": review_default,
+            "review_defaults": review_defaults,
             "health": found, "unpushed": (act or {}).get("unpushed"), "origin_at": (act or {}).get("origin"),
             "local_error": local_error, "agent_text": agent_text, "stuck_reason": stuck,
             "pending_tools": [p.get("tool_name") for p in (record or {}).get("pending") or [] if p.get("tool_name")],
@@ -305,7 +308,7 @@ def _enrich(row, errors, fetched, records):
             published["flags"] = [f for f in published["flags"] if "not checked out" not in f]
         row.update(published)
         for key in ("seen", "actions", "action_reasons", "pr_info", "ci", "review_job", "health", "review_choices",
-                    "review_default"):  # the card's Request review opens the same dialog as the details
+                    "review_default", "review_defaults"):  # the card's Request review opens the same dialog as the details
             row[key] = detail[key]
         asks = waiting.asks(row, st, detail["health"], detail["session_record"], detail["stuck_reason"])
         words = detail["agent_text"]

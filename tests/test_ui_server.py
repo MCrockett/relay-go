@@ -153,7 +153,7 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(code, 202, text)
             self.assertEqual(json.loads(text)["job"], "job-1")
             self.assertIn("codex:gpt-6-astra is reviewing demo", json.loads(text)["message"])
-            prepare.assert_called_once_with("/fixture", "demo", payload["seen"], "codex:gpt-6-astra")
+            prepare.assert_called_once_with("/fixture", "demo", payload["seen"], "codex:gpt-6-astra", stage="build")
             for _ in range(100):
                 if job.run.called and refresh.call_count >= 2:
                     break
@@ -165,6 +165,13 @@ class ServerTest(unittest.TestCase):
             prepare.side_effect = RelayError("the PR is not open")
             code, text = self.request("/api/action", "POST", payload)
             self.assertEqual((code, json.loads(text)["error"]), (400, "the PR is not open"))
+            prepare.side_effect, prepare.return_value = None, job                   # a spec re-review (stage-rereview)
+            code, text = self.request("/api/action", "POST", dict(payload, stage="spec"))
+            self.assertEqual(code, 202, text)
+            self.assertEqual(prepare.call_args.kwargs, {"stage": "spec"})
+            self.assertIn("is reviewing demo's spec", json.loads(text)["message"])
+            code, text = self.request("/api/action", "POST", dict(payload, stage=7))
+            self.assertEqual((code, json.loads(text)["error"]), (400, "stage must be spec, plan or build"))
 
     def test_roles_endpoints(self):
         cfg = os.path.join(self.tmp, "config.toml")
@@ -353,6 +360,24 @@ console.log(JSON.stringify({up:ids(editList(L,'up',1)), topUp:ids(editList(L,'up
         self.assertIn("node('pre',d.agent_text.text,'agent-text')", page)    # textContent through node(), never HTML
         self.assertNotIn("innerHTML", page)
         self.assertIn("for(const row of rows.filter(r=>$('show-done').checked", page)   # the table keeps row order
+
+    def test_re_review_buttons_live_in_the_details_only(self):
+        page = self.request("/?t=test-token")[1]
+        for piece in ("'review-spec':'Re-review spec'", "'review-plan':'Re-review plan'", "openReviewRequest(row,reviewStage(action))",
+                      "$('rr-feature').textContent=d.feature+' / '+stage", "stage:reviewTargetStage",
+                      "(d.review_defaults||{})[stage]", 'id="rr-title"'):
+            self.assertIn(piece, page)
+        # Never on inbox cards: relay does not suggest a re-review (stage-rereview D7).
+        self.assertIn("const ASK_ACTIONS={decide:['go','extra-round','reset-rounds'],'review-failed':['go','review'],merge:['merge']};", page)
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_review_stage_runs_in_node(self):
+        page = self.request("/?t=test-token")[1]
+        funcs = re.search(r"function reviewStage\([^\n]*?\}", page).group(0)
+        out = subprocess.run(["node", "-e", funcs + "console.log(JSON.stringify([reviewStage('review-spec'),"
+                              "reviewStage('review-plan'),reviewStage('review')]))"],
+                             capture_output=True, text=True, check=True).stdout
+        self.assertEqual(json.loads(out), ["spec", "plan", "build"])
 
     @unittest.skipUnless(shutil.which("node"), "needs node")
     def test_card_rules_run_in_node(self):

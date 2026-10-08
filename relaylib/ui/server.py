@@ -156,10 +156,14 @@ class Handler(BaseHTTPRequestHandler):
                     repo = snapshot.allowed_repo(body["repo"])
                     action = body["action"]
                     if action == "review":
-                        job = reviewjobs.prepare(repo, body["slug"], body["seen"], body.get("reviewer"))
+                        stage = body.get("stage") or "build"  # spec or plan: an owner re-review (stage-rereview)
+                        if stage not in reviewjobs.STAGES:
+                            raise RelayError("stage must be spec, plan or build")
+                        job = reviewjobs.prepare(repo, body["slug"], body["seen"], body.get("reviewer"), stage=stage)
                         reviewjobs.start(job, on_done=self.server.cache.refresh)
+                        what = body["slug"] + (f"'s {stage}" if stage != "build" else "")
                         self.reply(202, {"job": job.id, "message": f"{reviewjobs.spec_id(job.spec)} is reviewing "
-                                                                  f"{body['slug']}. This can take minutes."})
+                                                                  f"{what}. This can take minutes."})
                     elif action == "merge":
                         self.reply(200, owneractions.merge(repo, body["slug"], body["seen"]))
                     else:

@@ -69,6 +69,13 @@ def applicable(st):
         actions += ["extra-round", "reset-rounds"]
     if st.get("status") in state.HOLDING_STATUSES and (st.get("owner") or {}).get("session"):
         actions.append("release")
+    order = ("idea", "spec", "plan", "build", "done")
+    if (st.get("status") in state.HOLDING_STATUSES and st.get("status") != "in-review"
+            and st.get("stage") in order[2:4]):  # the owner may ask for an approved earlier stage again (stage-rereview)
+        for earlier in ("spec", "plan"):
+            if (order.index(earlier) < order.index(st["stage"]) and (st.get("verdicts") or {}).get(earlier) == "GO"
+                    and earlier not in (st.get("skipped") or [])):
+                actions.append(f"review-{earlier}")
     if st.get("stage") == "build" and st.get("status") in ("ready-to-merge", "review-error") and st.get("pr"):
         actions.append("review")
     if st.get("status") == "ready-to-merge":

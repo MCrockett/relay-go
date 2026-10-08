@@ -55,6 +55,7 @@ Reviews continue while they make progress, up to 4 rounds. "Partly fixed" counts
     relay override reset-rounds   after narrowing or splitting the stage
     relay override release        free a feature whose agent is gone, so another can `relay take`
     relay override review [--reviewer provider:model]   a fresh build review from the reviewer you pick
+    relay override review --stage spec|plan             review an approved spec or plan again
     relay hooks install | status  add relay's session hooks to Claude Code and Codex (owner), or check them
 
 Two ways to make one:
@@ -166,6 +167,12 @@ review errored. It defaults to the reviewer a fallback GO is waiting for, or the
 you can pick any reviewer from the preference table. It runs in the background in a temporary worktree and
 publishes only if the branch has not moved; a NO-GO sends the build back to the author like any review, and
 a failed request changes nothing. `relay override review` does the same from your terminal.
+
+Re-review spec and Re-review plan, in the same place, ask for an approved spec or plan to be reviewed again,
+for example by Codex once it is back after a same-provider GO. The default reviewer is the first choice for
+that stage's author. A spec re-review carries on to the plan, without new rounds, and the feature returns to
+where it was; a NO-GO sends that stage back to the author. `relay override review --stage spec|plan` does the
+same from your terminal. relay never suggests a re-review: a same-provider GO is a valid GO.
 
 Session health shows, for each feature a session holds, whether it needs permission, is waiting on you,
 has gone quiet, or is active. Run `relay hooks install` once in your terminal: it adds relay's hooks to

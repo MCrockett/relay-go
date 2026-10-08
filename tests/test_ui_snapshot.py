@@ -252,6 +252,20 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual((row["review_choices"], row["review_default"]),
                          (detail["review_choices"], detail["review_default"]))
 
+    def test_rows_offer_re_reviews_with_a_default_per_stage(self):
+        self.st.update(stage="build", status="drafting", verdicts={"spec": "GO", "plan": "GO"},
+                       authors={"spec": "claude", "plan": "codex", "build": "codex"})
+        self.save()
+        helpers.write(os.path.join(os.environ["RELAY_HOME"], "config.toml"),
+                      '[review.prefer]\nclaude = ["codex:gpt-6-astra"]\ncodex = ["claude:claude-opus-5-5"]\n')
+        row = snapshot.build()["rows"][0]
+        self.assertIn("review-spec", row["actions"])
+        self.assertIn("review-plan", row["actions"])
+        self.assertEqual(row["review_defaults"]["spec"]["id"], "codex:gpt-6-astra")
+        self.assertEqual(row["review_defaults"]["plan"]["id"], "claude:claude-opus-5-5")
+        self.assertEqual(snapshot.feature(self.work, "demo")["review_defaults"], row["review_defaults"])
+        self.assertEqual(row["asks"], [])                                  # never suggested (D7)
+
     def test_a_missing_log_keeps_the_ask_without_words(self):
         self.st.update(stage="build", status="drafting")
         self.save()
