@@ -265,7 +265,7 @@ class SnapshotTest(unittest.TestCase):
                       "[ui]\nhealth_grace_minutes = 60\nother_sessions_hours = 1\n")
         self.other("near", age_s=600, cwd=os.path.realpath(pd))
         self.other("far", age_s=5 * 3600, cwd=os.path.realpath(pd))
-        self.assertEqual([e["session_id"] for e in snapshot.build()["other_sessions"]], ["far", "near"])
+        self.assertEqual([e["session_id"] for e in snapshot.build()["other_sessions"]], ["near", "far"])
 
     def test_one_other_session_with_its_full_message(self):
         self.other("o1", said="Long question. " * 400)
@@ -320,6 +320,27 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(marks, {"A": {"slug": "merged", "done": True}, "B": {"slug": "done", "done": True},
                                  "C": {"slug": "live", "done": False}, "D": {"slug": "a2", "done": True},
                                  "E": {"slug": "matched", "done": False}, "F": {"slug": "matched", "done": False}})
+
+    def test_running_in_the_snapshot_and_api(self):
+        self.other("s1", age_s=30, cwd=os.path.realpath(self.work), state_="working", owner=True,
+                   said="Running the suite.")
+        self.other("o1", age_s=1200, state_="ended", owner=True)
+        with mock.patch.object(sessions, "alive", return_value=None):
+            data = snapshot.build()
+        self.assertEqual([(e["session_id"], e["project"], e["feature"]) for e in data["running"]],
+                         [("s1", "work", {"slug": "demo", "done": False})])
+        self.assertEqual(self.left(data), [("Unknown folder", [("o1", None)])])  # running is not left off
+        one = snapshot.other_session(data, "codex", "s1")
+        self.assertEqual((one["label"], one["state"], one["text"], one["resume"]),
+                         ("work", "working", "Running the suite.",
+                          f"cd ~/{os.path.basename(self.work)} && codex resume s1"))
+        self.assertIsNone(snapshot.other_session(data, "codex", "nobody"))
+        with mock.patch.object(snapshot.leftoff, "running", side_effect=RuntimeError("boom")), \
+                mock.patch.object(sessions, "alive", return_value=None):
+            data = snapshot.build()
+        self.assertEqual((data["running"], [r["feature"] for r in data["rows"]]), ([], ["demo"]))
+        with mock.patch.object(sessions, "alive", side_effect=RuntimeError("boom")):
+            self.assertEqual([e["session_id"] for e in snapshot.build()["running"]], ["s1"])
 
     def test_left_off_failures(self):
         self.other("s1", age_s=600, cwd=os.path.realpath(self.work), owner=True)

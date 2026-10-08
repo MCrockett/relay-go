@@ -172,10 +172,13 @@ def feature(repo, slug, records=None):
 
 
 def _listed(data, provider, session_id):
-    """(label, entry) for a session the snapshot listed as waiting or left off, else (None, None)."""
+    """(label, entry) for a session the snapshot listed as waiting, running or left off, else (None, None)."""
     for e in (data or {}).get("other_sessions") or []:
         if e["provider"] == provider and e["session_id"] == session_id:
             return e["label"], e
+    for e in (data or {}).get("running") or []:
+        if e["provider"] == provider and e["session_id"] == session_id:
+            return e["project"], e
     for p in (data or {}).get("left_off") or []:
         for e in p["sessions"]:
             if e["provider"] == provider and e["session_id"] == session_id:
@@ -402,9 +405,18 @@ def build():
         except Exception:  # where-i-left-off F5: sessions without feature marks
             marks = {}
         try:
-            left = leftoff.projects(records, marks, root)
+            alive = sessions.alive(records)
+        except Exception:  # running-now D2: unknown liveness
+            alive = None
+        now = time.time()
+        try:
+            left = leftoff.projects(records, marks, root, alive=alive, now=now)
         except Exception:  # F4
             left = []
+        try:
+            run = leftoff.running(records, marks, root, alive, now)
+        except Exception:  # running-now F4
+            run = []
     seen = {r["provider"] for r in records}
     hints = {}
     for provider in hookinstall.EVENTS:
@@ -434,7 +446,7 @@ def build():
     if scan_note:
         notes.add(scan_note)
     notes = sorted(notes)
-    return {"rows": rows, "features": details, "other_sessions": others, "left_off": left, "usage": usage(), "session_hints": hints, "notes": notes,
+    return {"rows": rows, "features": details, "other_sessions": others, "left_off": left, "running": run, "usage": usage(), "session_hints": hints, "notes": notes,
             "reviewers": _reviewers_or_error(repos), "writing": writing}
 
 
