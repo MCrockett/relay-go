@@ -250,6 +250,56 @@ class ServerTest(unittest.TestCase):
             self.assertIn(piece, page)
         self.assertNotIn("prev==='running'", page)
 
+    def test_page_shows_other_sessions(self):
+        page = self.request("/?t=test-token")[1]
+        for piece in ('<dialog id="session-dialog"', "claude:'Claude'", "codex:'Codex'", "' session'",
+                      "'Waiting for approval: '", "'Resume with: '", "'No last message to show.'",
+                      "'This session is no longer waiting.'", "data.other_sessions", "waitingCount(rows,others)",
+                      "document.title=count?"):
+            self.assertIn(piece, page)
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_other_session_rules_run_in_node(self):
+        page = self.request("/?t=test-token")[1]
+        funcs = re.search(r"function ageText\(.*?(?=function cardFlags\()", page, re.S).group(0)
+        script = """
+const made=[];
+class El{constructor(tag){this.tag=tag;this.children=[];this.className='';this.textContent='';}
+  append(...xs){this.children.push(...xs);} querySelectorAll(){return [];}}
+const document={createElement:t=>{const e=new El(t);made.push(e);return e;}};
+const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined&&text!==null)n.textContent=text;if(cls)n.className=cls;return n;};
+let calls=[];const notice=(t,err)=>calls.push(['notice',t,!!err]),load=async()=>calls.push(['load']);
+let fail=null;const api=async()=>{if(fail)throw fail;return {};};const $=()=>({});
+""" + funcs + """
+(async()=>{
+const now=1000000,feature={waiting_on_owner:true,wait_since:now-600,feature:'nba'};
+const waitingOn={provider:'claude',session_id:'S1',label:'proteindiary',state:'waiting',since:now-7200,pending_tools:[]};
+const approve={provider:'codex',session_id:'C1',label:'~/x',state:'permission',since:now-300,pending_tools:['Bash']};
+const card=sessionCard(waitingOn);
+fail=Object.assign(new Error('gone'),{status:404});await openSession(waitingOn);
+const after404=calls;calls=[];fail=Object.assign(new Error('Failed to fetch'),{});await openSession(waitingOn);
+console.log(JSON.stringify({
+  waitingLine:sessionLine(waitingOn,now), approveLine:sessionLine(approve,now),
+  order:inboxOrder([feature,approve,waitingOn]).map(x=>x.feature||x.session_id),
+  counts:[waitingCount([feature],[]),waitingCount([{waiting_on_owner:false}],[waitingOn]),waitingCount([feature],[waitingOn,approve]),waitingCount([],[])],
+  noText:sessionDialog(waitingOn,{state:'waiting',text:null,resume:'claude --resume S1'}),
+  tools:sessionDialog(approve,{state:'permission',pending_tools:['Bash'],text:'x',resume:'codex resume C1'}).tools,
+  buttons:made.filter(e=>e.tag==='button').length, cardKids:card.children.map(c=>c.className),
+  after404, offline:calls}));
+})();"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["waitingLine"], "Waiting on you · 2h")
+        self.assertEqual(out["approveLine"], "Waiting for approval: Bash · 5m")
+        self.assertEqual(out["order"], ["S1", "nba", "C1"])                     # one list, oldest wait first
+        self.assertEqual(out["counts"], [1, 1, 3, 0])
+        self.assertEqual(out["noText"], {"title": "Claude session · proteindiary", "tools": "",
+                                         "text": "No last message to show.", "resume": "Resume with: claude --resume S1"})
+        self.assertEqual(out["tools"], "Waiting for approval: Bash")
+        self.assertEqual(out["buttons"], 0)                                     # session cards act on nothing
+        self.assertEqual(out["cardKids"], ["t", "reason"])
+        self.assertEqual(out["after404"], [["notice", "This session is no longer waiting.", False], ["load"]])
+        self.assertEqual(out["offline"], [["notice", "Failed to fetch", True]])
+
     def test_reviewer_activity_tables_sort_by_any_column(self):
         page = self.request("/?t=test-token")[1]
         for piece in ("ledgerSort", "aria-sort", "sortLedger(", "nextSort(", "data-sort-key", "aria-hidden"):
