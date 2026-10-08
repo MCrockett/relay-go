@@ -45,8 +45,8 @@ Reviews continue while they make progress, up to 4 rounds. "Partly fixed" counts
 ## What reaches you
 
 - A macOS notification when a feature needs you: ready to merge, a review stopped, a review failed, or a handoff was pushed. Turn it off with `[notify] enabled = false` in `~/.relay/config.toml`.
-- `relay status`: the `*` rows are your inbox. Below the features, "Other sessions waiting on you" lists Claude and Codex sessions on this machine that are waiting on you for work outside any open feature (for example after its PR merged), with how long each has waited and the start of its last message.
-- `relay left`: where you left off, for coming back after a break, a closed project or a restart. Per project (a repository and its worktrees count as one), your newest 3 sessions on this machine in any state (waiting on you, needs approval, was working, ended), how long ago each was last active, the feature it holds, the start of its last message, and the command to resume it from its own folder, such as `cd ~/app && claude --resume <id>`. `relay left --all` shows every session. It reads only this machine: no fetch, no GitHub.
+- `relay status`: the `*` rows are your inbox, newest wait first (`--json` keeps its oldest-first order). Below the features, "Other sessions waiting on you" lists Claude and Codex sessions on this machine that are waiting on you for work outside any open feature (for example after its PR merged), with how long each has waited and the start of its last message.
+- `relay left`: where you left off, for coming back after a break, a closed project or a restart. Per project (a repository and its worktrees count as one), your newest 3 sessions on this machine in any state (waiting on you, needs approval, stopped, was working, ended), how long ago each was last active, the feature it holds, the start of its last message, and the command to resume it from its own folder, such as `cd ~/app && claude --resume <id>`. `relay left --all` shows every session, and `relay left --recent` shows them as one list, newest first across projects. A "Running now" block comes first: your sessions in the middle of a task. relay's hooks record the Claude or Codex process each session runs in, and a session counts as running while that process is alive and the session has sent a hook event in the last 2 hours. Sessions without a recorded process (older ones, or when the check fails) count as running only if they sent an event in the last 10 minutes. A session mid-task whose process is gone shows as "stopped"; one that went quiet without a known process shows as "was working". Codex sessions from an editor share one long-lived Codex process, so for them the 2-hour limit does most of the work. It reads only this machine: no fetch, no GitHub.
 - One open PR per repo: `relay new` refuses while another feature's PR is unmerged, unless you ask the agent for a stack (`--stack`, recorded as your decision).
 
 ## Owner decisions
@@ -129,7 +129,7 @@ Run `relay ui` in your own terminal to open the dashboard, or `relay ui --backgr
 after the terminal closes. Use `--port 8765` to choose the first of eleven ports it tries. A second launch
 opens the running dashboard. Agent sessions cannot start it.
 
-The inbox lists features waiting on you, longest wait first. Each card says in plain words what is needed
+The inbox lists features waiting on you, newest wait first. Each card says in plain words what is needed
 ("Decide: plan review stopped. <reason>", "Review failed: <why>", "Merge PR #6", "Take the handoff",
 "Answer the claude session", "Approve Bash in the codex session", "Check the codex session: no activity 2h"),
 how long it has waited, and the buttons for that ask: Override GO, Extra round, Reset rounds, Request review or
@@ -149,8 +149,10 @@ its terminal is gone (such as `cd ~/app && claude --resume <id>`, or `codex resu
 `~/.relay/config.toml` only, since many sessions are outside any repository. Nothing about these sessions is
 stored or published.
 
-Below the inbox, "Where you left off" shows the same as `relay left`: per project, your newest 3 sessions in any
-state, with the feature each holds. Clicking one shows its full last message and the resume command; the cards
+"Running now" at the top of the page lists your sessions in the middle of a task, as `relay left` does, with how
+long each has been running; click one for its last message. Below the inbox, "Where you left off" shows the same as
+`relay left`: per project, your newest 3 sessions in any state, with the feature each holds. Its menu switches
+between "By project" and "Most recent" (one list, newest first); your browser remembers the choice. Clicking one shows its full last message and the resume command; the cards
 have no buttons. Only sessions you started yourself are shown, not automated runs such as relay's own reviews
 (`claude -p`, `codex exec`), and only sessions that said something or wait for a tool approval. relay's hooks keep
 session records for 7 days, so older sessions and ones started before the hooks were installed are not shown.
