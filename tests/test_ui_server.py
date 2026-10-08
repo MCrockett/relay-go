@@ -425,7 +425,7 @@ console.log(JSON.stringify({up:ids(editList(L,'up',1)), topUp:ids(editList(L,'up
 
     def test_inbox_cards_show_asks_words_and_real_buttons(self):
         page = self.request("/?t=test-token")[1]
-        for piece in ("ASK_ACTIONS", "row.asks", "row.excerpt", "wait_since", "inboxOrder(waiting)", "askLine(row",
+        for piece in ("ASK_ACTIONS", "row.asks", "row.excerpt", "wait_since", "inboxOrder(waiting.concat(others))", "askLine(row",
                       "cardButtons(row)", "cardFlags(row)", "Agent’s last message", "Summary while you were away", "d.agent_text",
                       "d.pending_tools", "Waiting for approval: "):
             self.assertIn(piece, page)

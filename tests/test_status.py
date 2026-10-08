@@ -180,9 +180,12 @@ class StatusTest(unittest.TestCase):
 
     def test_no_other_sessions_leaves_status_as_it_was(self):
         self.repo("alpha", {"one": {"stage": "spec", "status": "waiting-owner"}})
-        text = self.run_cmd("status")
+        clock = time.time()
+        with mock.patch("relaylib.status.time.time", return_value=clock):  # wait ages print to the second
+            text = self.run_cmd("status")
+            again = status.render(sorted(status.scan(self.projects), key=status.waiting.sort_key)) + "\n"
         self.assertNotIn("Other sessions", text)
-        self.assertEqual(text, status.render(sorted(status.scan(self.projects), key=status.waiting.sort_key)) + "\n")
+        self.assertEqual(text, again)
 
     def test_global_settings_choose_other_sessions(self):
         pd = self.repo("proteindiary", {}, commit=True)
