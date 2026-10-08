@@ -74,6 +74,7 @@ Files: `relaylib/status.py`, `tests/test_status.py`, `tests/test_commands.py` if
   - With no features and one session: "No relay features…" followed by the section and "1 waiting on you (*)".
   - No sessions: output identical to today's.
   - `--all` lists the same sessions; `--json` output equals today's (same keys, no sessions).
+  - Global settings win (D1): a repository under the root whose own config sets `[ui] health_grace_minutes = 60` and `other_sessions_hours = 1`, with the global config at the defaults, still lists a session in that repository waiting 10 minutes and one waiting 5 hours.
 - [ ] Implement: `cmd_status` uses `scan_with_claims`, calls `othersessions.listed` with `sessions.read_records()` (an exception there lists none, F1/F5) and `config.load()`, and `render(rows, others=())` prints the section.
 - [ ] Run, commit `feat: other sessions waiting on you in relay status`.
 
@@ -84,7 +85,8 @@ Covers: R5, R6, D6, D7.
 Files: `relaylib/ui/snapshot.py`, `relaylib/ui/server.py`, `tests/test_ui_snapshot.py`, `tests/test_ui_server.py`.
 
 - [ ] Failing tests:
-  - `build()` returns `other_sessions` (patched records and transcripts): a waiting session in an unrelated folder is listed; a feature's owner session is not; feature rows are unchanged; an invalid global `other_sessions_hours` adds its note.
+  - `build()` returns `other_sessions` (patched records and transcripts): a waiting session in an unrelated folder is listed; a feature's owner session is not; feature rows are unchanged; an invalid global `other_sessions_hours` adds its note; with no records `other_sessions` is `[]`.
+  - Global settings win (D1): the same conflicting repository `[ui]` values as in Task 3 do not change which sessions `build()` lists.
   - `GET /api/session?provider=claude&session=S1` for a listed session: 200 with `provider, session_id, label, state, pending_tools, text, source, resume` (`resume` is `claude --resume S1`, or `codex resume C1`); `text` is `agentask.full` of the last message.
   - The transcript removed after the snapshot: 200 with `text` and `source` null.
   - A session not in the cached snapshot's `other_sessions` (including a real record that is claimed): 404. Missing provider or session: 400. No token: 403.
@@ -97,8 +99,8 @@ Covers: R7, D6.
 
 Files: `relaylib/ui/page.html`, `tests/test_ui_server.py`.
 
-- [ ] Failing tests: page strings `Claude session`, `Codex session`, `Waiting for approval: `, `Resume with: `, `No last message to show.`, `This session is no longer waiting.`, and a `session-dialog`; Node tests: `sessionLine(entry, now)` gives "Waiting on you · 2h" and "Waiting for approval: Bash · 5m"; `inboxOrder` sorts session entries and feature rows together by wait start (sessions use `since`); a session card has no `.actions` buttons; `inbox-count` counts features and sessions.
-- [ ] Implement: `renderRows` appends session cards (class `card decide session`) into the inbox order; the card click fetches `/api/session` and opens `session-dialog` (label and provider title, tools for a permission session, the message in a `pre` built through `node()`, the resume line); 404 shows "This session is no longer waiting." and reloads; other failures use `notice(message, true)`.
+- [ ] Failing tests: page strings `Claude session`, `Codex session`, `Waiting for approval: `, `Resume with: `, `No last message to show.`, `This session is no longer waiting.`, and a `session-dialog`; Node tests: `sessionLine(entry, now)` gives "Waiting on you · 2h" and "Waiting for approval: Bash · 5m"; `inboxOrder` sorts session entries and feature rows together by wait start (sessions use `since`); a session card has no `.actions` buttons; `waitingCount(rows, others)` gives the number used by both `inbox-count` and `document.title`, tested with features only, sessions only (title "(1) relay") and both ("(3) relay"), and none (title "relay", the empty-inbox text shown when `other_sessions` is empty and no feature waits); `sessionDialog(entry, response)` (a pure function returning the dialog's title, tools line, message text and resume line) gives "No last message to show." for a null `text`; the 404 path of `openSession` calls `load()` (Node test with a stubbed `api` and `load`).
+- [ ] Implement: `renderRows` appends session cards (class `card decide session`) into the inbox order and sets both `inbox-count` and `document.title` from `waitingCount`; the card click fetches `/api/session` and opens `session-dialog` (label and provider title, tools for a permission session, the message in a `pre` built through `node()`, the resume line); 404 shows "This session is no longer waiting." and reloads; other failures use `notice(message, true)`.
 - [ ] Browser check on a throwaway fixture server (`relay ui` is owner-only: use the server module directly): a session card shows beside feature cards, has no buttons, and opens the dialog with the full message.
 - [ ] Run, commit `feat: other session cards in the dashboard inbox`.
 
@@ -109,6 +111,7 @@ Covers: R8, R9.
 Files: `README.md`.
 
 - [ ] README: in the status and dashboard sections, what "Other sessions waiting on you" lists (D1, D2), that it is read-only and you answer in the terminal, the resume line, and `[ui] other_sessions_hours`.
+- [ ] Read the README changes against R8 item by item (the section, what is listed, read-only with answers in the terminal, the resume line, the setting).
 - [ ] Full suite green; push; PR; CI green; `relay submit`.
 
 ## Requirement coverage
