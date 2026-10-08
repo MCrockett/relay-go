@@ -2,6 +2,7 @@
 {
   "authors": {
     "idea": "claude",
+    "plan": "claude",
     "spec": "claude"
   },
   "branch": "feat/where-i-left-off",
@@ -64,13 +65,14 @@
     }
   },
   "rounds": {
+    "plan": 1,
     "spec": 3
   },
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "drafting",
-  "updated": "2026-10-08T08:38:14-04:00",
+  "status": "in-review",
+  "updated": "2026-10-08T08:38:52-04:00",
   "verdicts": {
     "spec": "GO"
   }
