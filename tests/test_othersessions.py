@@ -58,11 +58,11 @@ class ListedTest(Homes):
                    record("silent")]  # waiting, but never said anything
         self.assertEqual(self.listed(records, claimed={"claimed"}), [])
 
-    def test_oldest_wait_first_ties_by_id(self):
+    def test_newest_wait_first_ties_by_id(self):
         for sid in ("b", "a", "c"):
             self.claude_said(sid, "x")
         got = self.listed([record("b", since=NOW - 600), record("c", since=NOW - 900), record("a", since=NOW - 600)])
-        self.assertEqual([e["session_id"] for e in got], ["c", "a", "b"])
+        self.assertEqual([e["session_id"] for e in got], ["a", "b", "c"])
 
     def test_labels(self):
         sub = os.path.join(self.repo, "app", "src")

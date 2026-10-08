@@ -235,6 +235,44 @@ class LeftOffTest(test_status.StatusFixture):
         self.assertIn("claude --resume A3", full)
         self.assertNotIn("more", full)
 
+    def test_relay_left_running_now_and_recent(self):
+        repo = self.held("relay-go", "where", "S1")
+        tree = os.path.join(self.projects, "relay-go-dev")
+        helpers.sh(repo, "git", "worktree", "add", "-q", "--detach", tree)
+        app = os.path.join(self.home, "app")
+        os.makedirs(app)
+        now = time.time()
+        self.rec("S1", "working", 30, tree, said="Running the suite.", now=now)
+        self.rec("R2", "working", 60, app, said=None, now=now)
+        for i in range(4):
+            self.rec(f"A{i}", "ended", 3600 * (i + 1), app, now=now)
+        self.rec("B", "ended", 5400, tree, now=now)
+        with mock.patch("relaylib.leftoff.time.time", return_value=now), \
+                mock.patch.object(sessions, "alive", return_value=None):
+            text = self.run_cmd("left")
+            recent = self.run_cmd("left", "--recent")
+            everything = self.run_cmd("left", "--recent", "--all")
+        self.assertTrue(text.startswith("\n".join([
+            "Running now",
+            "  relay-go · claude · running 1m · relay-go-dev · feature where",
+            "    Agent: Running the suite.",
+            "  ~/app · claude · running 2m",
+            "",
+            "~/app · last active 1h ago"])), text)
+        self.assertEqual(recent.split("\n\n", 1)[1], "\n".join([
+            "  ~/app · claude · ended · 1h ago", "    Agent: done here", "    Resume: cd ~/app && claude --resume A0",
+            "  relay-go · claude · ended · 1h ago · relay-go-dev", "    Agent: done here",
+            f"    Resume: cd {shlex.quote(os.path.realpath(tree))} && claude --resume B",
+            "  ~/app · claude · ended · 2h ago", "    Agent: done here", "    Resume: cd ~/app && claude --resume A1",
+            "  ~/app · claude · ended · 3h ago", "    Agent: done here", "    Resume: cd ~/app && claude --resume A2",
+            "Showing the newest 3 per project: relay left --all for every session."]) + "\n")
+        self.assertIn("claude --resume A3", everything)
+        self.assertNotIn("Showing the newest", everything)
+        for sid in ("S1", "R2"):
+            os.remove(sessions.record_path("claude", sid))
+        with mock.patch.object(sessions, "alive", return_value=set()):
+            self.assertTrue(self.run_cmd("left").startswith("~/app"))  # nothing running: no block
+
     def test_relay_left_done_mark_and_empty(self):
         self.assertEqual(self.run_cmd("left"), leftoff.EMPTY + "\n")
         self.held("alpha", "shipped", "S1", stage="done", status="done")

@@ -158,6 +158,46 @@ def render(found, now):
     return "\n\n".join(blocks)
 
 
+def _feature(e):
+    return f" · feature {e['feature']['slug']}" + (" (done)" if e["feature"]["done"] else "") if e["feature"] else ""
+
+
+def _words(e, indent):
+    if not e["excerpt"]:
+        return []
+    label = "Summary" if e["excerpt"]["source"] == "summary" else "Agent"
+    return [f"{indent}{label}: {e['excerpt']['text']}"]
+
+
+def render_running(found, now):
+    """running-now D6: the Running now block, or "" when nothing runs."""
+    if not found:
+        return ""
+    lines = ["Running now"]
+    for e in found:
+        lines.append(f"  {e['project']} · {e['provider']} · running {health.age(now - e['since'])}"
+                     + (f" · {e['checkout']}" if e["checkout"] else "") + _feature(e))
+        lines += _words(e, "    ")
+    return "\n".join(lines)
+
+
+def render_recent(found, now):
+    """running-now D6: the shown sessions as one list, newest first across projects."""
+    flat = sorted(((p["project"], e) for p in found for e in p["sessions"]),
+                  key=lambda pe: (-pe[1]["at"], pe[1]["session_id"]))
+    if not flat:
+        return EMPTY
+    lines = []
+    for project, e in flat:
+        lines.append(f"  {project} · {e['provider']} · {state_word(e)} · {health.age(now - e['at'])} ago"
+                     + (f" · {e['checkout']}" if e["checkout"] else "") + _feature(e))
+        lines += _words(e, "    ")
+        lines.append(f"    Resume: {e['resume']}")
+    if any(p["more"] for p in found):
+        lines.append("Showing the newest 3 per project: relay left --all for every session.")
+    return "\n".join(lines)
+
+
 def cmd_left(args):
     root = status.projects_root()
     try:
@@ -168,4 +208,12 @@ def cmd_left(args):
         marks = status.local_marks(root)
     except Exception:  # F5: sessions without feature marks
         marks = {}
-    print(render(projects(records, marks, root, None if args.all else LIMIT), time.time()))
+    try:
+        alive = sessions.alive(records)
+    except Exception:  # unknown liveness: the 10-minute rule (running-now D2)
+        alive = None
+    now = time.time()
+    found = projects(records, marks, root, None if args.all else LIMIT, alive, now)
+    block = render_running(running(records, marks, root, alive, now), now)
+    body = render_recent(found, now) if args.recent else render(found, now)
+    print(block + "\n\n" + body if block else body)

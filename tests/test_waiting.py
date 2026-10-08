@@ -93,7 +93,9 @@ class AsksTest(unittest.TestCase):
                 dict(row(feature="error"), waiting_on_owner=True, wait_since=None),
                 dict(row(feature="new"), waiting_on_owner=True, wait_since=900.0),
                 dict(row(feature="old"), waiting_on_owner=True, wait_since=100.0)]
-        self.assertEqual([r["feature"] for r in sorted(rows, key=waiting.sort_key)], ["old", "new", "error", "quiet"])
+        self.assertEqual([r["feature"] for r in sorted(rows, key=waiting.sort_key)], ["new", "old", "error", "quiet"])
+        self.assertEqual([r["feature"] for r in sorted(rows, key=waiting.oldest_first_key)],
+                         ["old", "new", "error", "quiet"])
 
 
 class StuckReasonTest(unittest.TestCase):
