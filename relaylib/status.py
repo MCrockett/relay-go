@@ -245,9 +245,27 @@ def scan_with_claims(root_dir):
     return ordered, set().union(*claims.values())
 
 
-def render(rows):
+def _other_lines(others, now):
+    lines = ["", "Other sessions waiting on you"]
+    for e in others:
+        held = health.age(now - e["since"])
+        what = (f"needs approval: {', '.join(e['pending_tools']) or 'a tool'} · {held}" if e["state"] == "permission"
+                else f"waiting {held}")
+        lines.append(f"* {e['label']} · {e['provider']} · {what}")
+        if e.get("excerpt"):
+            label = "Summary" if e["excerpt"]["source"] == "summary" else "Agent"
+            lines.append(f"    {label}: {e['excerpt']['text']}")
+    return lines
+
+
+def render(rows, others=()):
+    now = time.time()
     if not rows:
-        return "No relay features. Start one with `relay new <slug>` inside a repo."
+        if not others:
+            return "No relay features. Start one with `relay new <slug>` inside a repo."
+        lines = ["No relay features. Start one with `relay new <slug>` inside a repo."] + _other_lines(others, now)
+        lines.append(f"\n{len(others)} waiting on you (*)")
+        return "\n".join(lines)
     heads = [c.upper() for c in COLUMNS] + ["FLAGS"]
     table = [[str(r[c] if r[c] is not None else "") for c in COLUMNS] + ["; ".join(r["flags"])] for r in rows]
     widths = [max(len(cell) for cell in col) for col in zip(heads, *table)]
@@ -256,7 +274,6 @@ def render(rows):
         return "  ".join(cell.ljust(w) for cell, w in zip(cells, widths)).rstrip()
 
     lines = ["  " + fmt(heads)]
-    now = time.time()
     for r, t in zip(rows, table):
         lines.append(("* " if r["waiting_on_owner"] else "  ") + fmt(t))
         if r.get("asks"):
@@ -265,12 +282,28 @@ def render(rows):
             if r.get("excerpt"):
                 label = "Summary" if r["excerpt"]["source"] == "summary" else "Agent"
                 lines.append(f"    {label}: {r['excerpt']['text']}")
-    lines.append(f"\n{sum(r['waiting_on_owner'] for r in rows)} waiting on you (*)")
+    if others:
+        lines += _other_lines(others, now)
+    lines.append(f"\n{sum(r['waiting_on_owner'] for r in rows) + len(others)} waiting on you (*)")
     return "\n".join(lines)
 
 
+def other_sessions(root, claimed, now=None):
+    """The other sessions waiting on the owner (other-sessions D1), or [] when they cannot be read (F1, F5)."""
+    try:
+        return othersessions.listed(sessions.read_records(), claimed, root, config.load(),
+                                    time.time() if now is None else now)
+    except Exception:
+        return []
+
+
 def cmd_status(args):
-    rows = sorted(scan(projects_root()), key=waiting.sort_key)  # oldest wait first (D6)
+    root = projects_root()
+    rows, claimed = scan_with_claims(root)
+    rows = sorted(rows, key=waiting.sort_key)  # oldest wait first (D6)
     if not args.all:
         rows = [r for r in rows if r["stage"] != "done"]
-    print(json.dumps(rows, indent=2) if args.json else render(rows))
+    if args.json:  # unchanged: feature rows only (other-sessions D5)
+        print(json.dumps(rows, indent=2))
+    else:
+        print(render(rows, other_sessions(root, claimed)))
