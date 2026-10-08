@@ -32,13 +32,17 @@ def history(st, stage):
 
 
 def ceiling(st, stage, max_rounds):
-    """The last round allowed: an owner-requested review starts a new cycle after the rounds before it."""
-    return st.get("round_base", {}).get(stage, 0) + max_rounds + st["extra_rounds"].get(stage, 0)
+    return max_rounds + st["extra_rounds"].get(stage, 0)
 
 
-def start_cycle(st, stage):
-    """An owner-requested independent review: earlier rounds no longer count toward the stop rules."""
-    st.setdefault("round_base", {})[stage] = st["rounds"].get(stage, 0)
+def start_cycle(st, stage, max_rounds):
+    """An owner-requested independent review: its NO-GO goes back to the author for one more round at most,
+    and the progress rules compare only rounds from here on (an earlier reviewer's findings do not count)."""
+    base = st["rounds"].get(stage, 0)
+    st.setdefault("round_base", {})[stage] = base
+    short = base + 2 - ceiling(st, stage, max_rounds)  # the review is round base+1; the author's fix base+2
+    if short > 0:
+        st["extra_rounds"][stage] = st["extra_rounds"].get(stage, 0) + short
 
 
 def known_ids(st, stage):

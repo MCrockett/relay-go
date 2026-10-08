@@ -40,7 +40,7 @@ A PR opened before relay can join it: on the PR's branch, `relay adopt <slug> [-
                                   it needs, how long it has waited, and what the agent last said
     relay review                  re-run a review after an error or a stale GO
 
-Reviews continue while they make progress, up to 4 rounds. "Partly fixed" counts as progress. A stage stops and waits on you (with a `reviews/<stage>-stuck.md` summary) only when blocking findings rise, when the count stays the same and a finding the author already tried to fix is marked unresolved, or at round 4. A review you request (Request review, Re-review spec or plan) starts a new cycle: rounds before it no longer count toward these rules, so its NO-GO goes back to the author.
+Reviews continue while they make progress, up to 4 rounds. "Partly fixed" counts as progress. A stage stops and waits on you (with a `reviews/<stage>-stuck.md` summary) only when blocking findings rise, when the count stays the same and a finding the author already tried to fix is marked unresolved, or at round 4. A review you request (Request review, Re-review spec or plan) is independent: its NO-GO goes back to the author for at least one more round, even at round 4, and is not compared with earlier reviewers' findings.
 
 ## What reaches you
 
@@ -165,7 +165,7 @@ confirmed fallback reviews and green CI, and passes the displayed PR head to Git
 Request review, in a feature's detail, runs a fresh build review for a PR that is ready to merge or whose
 review errored. It defaults to the reviewer a fallback GO is waiting for, or the author's first choice, and
 you can pick any reviewer from the preference table. It runs in the background in a temporary worktree and
-publishes only if the branch has not moved; a NO-GO sends the build back to the author with a new cycle of rounds, and
+publishes only if the branch has not moved; a NO-GO sends the build back to the author like any review, and
 a failed request changes nothing. `relay override review` does the same from your terminal.
 
 Re-review spec and Re-review plan, in the same place, ask for an approved spec or plan to be reviewed again,

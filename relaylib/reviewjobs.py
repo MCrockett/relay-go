@@ -256,7 +256,7 @@ def _run(job):
             done = []
             for stage in chain:
                 machine.mark_for_refresh(c.st, stage)
-                machine.start_cycle(c.st, stage)  # a NO-GO goes back to the author, not into the old ceiling
+                machine.start_cycle(c.st, stage, int(job.cfg["limits"]["max_rounds"]))  # one round past the old ceiling
                 c.st["confirming"] = True  # an independent fresh review, exactly like a fallback confirmation
                 review_current(c, argparse.Namespace(), candidates=[spec], discard_errors=True, announce=False)
                 if not c.saved:

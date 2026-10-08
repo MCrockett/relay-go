@@ -51,14 +51,21 @@ class MachineTest(unittest.TestCase):
         machine.apply_go(st, {"inputs": {}})
         self.assertEqual(machine.ceiling(st, "spec", 2), 2)
         machine.mark_for_refresh(st, "spec")
-        machine.start_cycle(st, "spec")
-        self.assertEqual(machine.ceiling(st, "spec", 2), 4)
+        machine.start_cycle(st, "spec", 2)
+        self.assertEqual(machine.ceiling(st, "spec", 2), 4)          # the review is round 3, one fix round 4
         # round 3 is past the old ceiling and has more findings than round 1; neither counts against it
         a, _ = machine.apply_nogo(st, RoundRecord(3, "NO-GO", ["R1-1", "R1-2", "R1-3"], {}), 2)
         self.assertEqual((a, st["status"]), ("continue", "changes-requested"))
         machine.submit(st, "claude")
         a, reason = machine.apply_nogo(st, RoundRecord(4, "NO-GO", ["R2-1"], {}), 2)
         self.assertEqual((a, reason), ("stall", "ceiling reached: round 4 of 4"))
+
+    def test_an_owner_review_with_rounds_to_spare_adds_none(self):
+        st = fresh(); machine.submit(st, "claude"); machine.submit(st, "claude")
+        machine.apply_go(st, {"inputs": {}})
+        machine.mark_for_refresh(st, "spec")
+        machine.start_cycle(st, "spec", 4)
+        self.assertEqual((machine.ceiling(st, "spec", 4), st["extra_rounds"].get("spec", 0)), (4, 0))
 
     def test_error_keeps_round(self):
         st = fresh(); machine.submit(st, "claude"); machine.submit(st, "claude")
