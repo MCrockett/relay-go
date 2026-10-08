@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/where-i-left-off",
   "extra_rounds": {},
   "feature": "where-i-left-off",
@@ -29,9 +31,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-10-08T08:32:23-04:00",
+  "updated": "2026-10-08T08:32:32-04:00",
   "verdicts": {}
 }
 ---
