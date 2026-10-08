@@ -147,6 +147,28 @@ class ServerTest(unittest.TestCase):
             gone = json.loads(self.request("/api/session?provider=claude&session=S1")[1])
             self.assertEqual((gone["text"], gone["source"]), (None, None))
 
+    def test_session_endpoint_answers_for_left_off_sessions(self):
+        home = os.path.realpath(os.path.join(self.tmp, "user"))
+        app = os.path.join(home, "app")
+        os.makedirs(app)
+        entry = {"provider": "codex", "session_id": "C1", "folder": app, "checkout": None, "state": "ended",
+                 "since": 1.0, "at": 2.0, "pending_tools": [], "excerpt": None, "feature": None,
+                 "resume": "cd ~/app && codex resume C1"}
+        data = {"rows": [], "features": [], "usage": {"providers": {}}, "other_sessions": [],
+                "left_off": [{"project": "~/app", "last_active": 2.0, "more": 0, "sessions": [entry]}]}
+        words = {"source": "agent", "text": "Done; the PR is up."}
+        with mock.patch.object(self.cache, "get", return_value={"data": data}), \
+                mock.patch.dict(os.environ, {"HOME": home}), \
+                mock.patch("relaylib.agentask.last_words", return_value=words) as read:
+            code, text = self.request("/api/session?provider=codex&session=C1")
+            self.assertEqual(code, 200)
+            self.assertEqual(json.loads(text), {"provider": "codex", "session_id": "C1", "label": "~/app",
+                                                "state": "ended", "pending_tools": [], "source": "agent",
+                                                "text": words["text"], "resume": "cd ~/app && codex resume C1"})
+            read.reset_mock()
+            self.assertEqual(self.request("/api/session?provider=codex&session=C2")[0], 404)
+            read.assert_not_called()
+
     def test_action_conflicts_errors_and_success(self):
         payload = {"action": "go", "repo": "/fixture", "slug": "demo", "seen": {"commit": "a" * 40}}
         with mock.patch("relaylib.ui.snapshot.allowed_repo", return_value="/fixture"), \

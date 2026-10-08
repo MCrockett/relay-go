@@ -221,15 +221,18 @@ class SnapshotTest(unittest.TestCase):
                           json.dumps({"type": "event_msg", "payload": {"type": "task_complete",
                                                                        "last_agent_message": said}}) + "\n")
 
-    def other(self, sid, age_s=2 * 3600, said="Which key should I use?", cwd=None):
-        """A waiting codex session sid outside any feature, its rollout ending with `said`."""
+    def other(self, sid, age_s=2 * 3600, said="Which key should I use?", cwd=None, state_="waiting", owner=False):
+        """A codex session sid outside any feature, its rollout ending with `said`; owner=True makes it one the
+        owner started in a terminal (where-i-left-off D1)."""
         os.makedirs(sessions.folder(), exist_ok=True)
         at = time.time() - age_s
-        json.dump({"provider": "codex", "session_id": sid, "cwd": cwd, "state": "waiting", "since": at, "at": at,
-                   "event": "Stop", "pending": []}, open(sessions.record_path("codex", sid), "w"))
+        with open(sessions.record_path("codex", sid), "w") as f:
+            json.dump({"provider": "codex", "session_id": sid, "cwd": cwd, "state": state_, "since": at, "at": at,
+                       "event": "Stop", "pending": []}, f)
+        start = json.dumps({"type": "session_meta", "payload": {"originator": "codex-tui", "source": "cli"}}) + "\n"
         helpers.write(os.path.join(self.tmp, "codex", "sessions", "2026", "10", "08", f"rollout-2026-10-08T10-00-00-{sid}.jsonl"),
-                      json.dumps({"type": "event_msg", "payload": {"type": "task_complete",
-                                                                   "last_agent_message": said}}) + "\n")
+                      (start if owner else "") + json.dumps({"type": "event_msg", "payload": {
+                          "type": "task_complete", "last_agent_message": said}}) + "\n")
 
     def test_other_sessions_in_the_snapshot(self):
         self.assertEqual(snapshot.build()["other_sessions"], [])
@@ -277,6 +280,62 @@ class SnapshotTest(unittest.TestCase):
             os.remove(path)
         gone = snapshot.other_session(data, "codex", "o1")
         self.assertEqual((gone["text"], gone["source"]), (None, None))
+
+    def left(self, data):
+        return [(p["project"], [(e["session_id"], e["feature"]) for e in p["sessions"]]) for p in data["left_off"]]
+
+    def test_left_off_in_the_snapshot(self):
+        self.assertEqual(snapshot.build()["left_off"], [])
+        self.other("s1", age_s=600, cwd=os.path.realpath(self.work), owner=True)  # the feature's owner session
+        self.other("auto", age_s=60, cwd=os.path.realpath(self.work), state_="ended")  # an automated run
+        self.other("o1", age_s=1200, state_="ended", owner=True)
+        data = snapshot.build()
+        self.assertEqual(self.left(data), [("work", [("s1", {"slug": "demo", "done": False})]),
+                                           ("Unknown folder", [("o1", None)])])
+        entry = data["left_off"][0]["sessions"][0]
+        self.assertEqual((entry["resume"], data["left_off"][0]["more"]),
+                         (f"cd ~/{os.path.basename(self.work)} && codex resume s1", 0))
+        one = snapshot.other_session(data, "codex", "o1")
+        self.assertEqual((one["label"], one["state"], one["resume"]), ("Unknown folder", "ended", "codex resume o1"))
+        self.assertEqual(one["text"], "Which key should I use?")
+        self.assertIsNone(snapshot.other_session(data, "codex", "auto"))
+
+    def test_a_health_matched_session_is_marked_on_the_dashboard(self):
+        self.st.update(stage="build", status="drafting", owner={"provider": "codex", "session": "gone"})
+        self.save()
+        self.other("m1", age_s=600, cwd=os.path.realpath(self.work), owner=True)
+        data = snapshot.build()
+        self.assertEqual(data["features"][0]["session_record"]["session_id"], "m1")
+        self.assertEqual(self.left(data), [("work", [("m1", {"slug": "demo", "done": False})])])
+
+    def test_left_marks_from_details(self):
+        def detail(slug, sid, stage="build", pr=None, updated="2026-10-01", matched=None):
+            return {"feature": slug, "state": {"stage": stage, "updated": updated}, "pr_info": {"state": pr} if pr else {},
+                    "owner_session": {"session": sid}, "session_record": {"session_id": matched} if matched else None}
+        marks = snapshot._left_marks([detail("merged", "A", pr="MERGED"), detail("done", "B", stage="done"),
+                                      detail("old-done", "C", stage="done", updated="2026-10-09"),
+                                      detail("live", "C"), detail("a1", "D", stage="done"),
+                                      detail("a2", "D", stage="done", updated="2026-10-02"),
+                                      detail("matched", "E", matched="F")])
+        self.assertEqual(marks, {"A": {"slug": "merged", "done": True}, "B": {"slug": "done", "done": True},
+                                 "C": {"slug": "live", "done": False}, "D": {"slug": "a2", "done": True},
+                                 "E": {"slug": "matched", "done": False}, "F": {"slug": "matched", "done": False}})
+
+    def test_left_off_failures(self):
+        self.other("s1", age_s=600, cwd=os.path.realpath(self.work), owner=True)
+        with mock.patch.object(status, "scan_with_claims", side_effect=RuntimeError("boom")):
+            data = snapshot.build()
+        self.assertEqual((data["rows"], data["features"], data["other_sessions"]), ([], [], []))
+        self.assertIn("Features could not be read: boom", data["notes"])
+        self.assertEqual(self.left(data), [("work", [("s1", None)])])
+        with mock.patch.object(snapshot, "_left_marks", side_effect=RuntimeError("boom")):
+            self.assertEqual(self.left(snapshot.build()), [("work", [("s1", None)])])
+        with mock.patch.object(snapshot.leftoff, "projects", side_effect=RuntimeError("boom")):
+            data = snapshot.build()
+        self.assertEqual((data["left_off"], [r["feature"] for r in data["rows"]]), ([], ["demo"]))
+        with mock.patch.object(sessions, "read_records", side_effect=RuntimeError("boom")):
+            data = snapshot.build()
+        self.assertEqual((data["left_off"], [r["feature"] for r in data["rows"]]), ([], ["demo"]))
 
     def test_asks_excerpt_and_full_text_live_only_in_memory(self):
         question = "PURPLE-GIRAFFE should I start the build now? " + "Details follow. " * 30
