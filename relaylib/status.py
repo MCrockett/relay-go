@@ -5,7 +5,8 @@ import json
 import os
 import time
 
-from . import agentask, availability, config, freshness, gitops, health, merged, ownership, sessions, state, waiting
+from . import (agentask, availability, config, freshness, gitops, health, merged, othersessions, ownership, sessions,
+               state, waiting)
 from .errors import RelayError
 
 COLUMNS = ("repo", "feature", "stage", "status", "round", "owner", "verdict")
@@ -163,8 +164,9 @@ def _remote_row(checkout, ref, slug, st, has_handoff, fetched):
     }
 
 
-def with_asks(row, st, ref, records, now):
-    """Adds asks, wait_since and excerpt (waiting-visibility R6); waiting_on_owner becomes "has an ask"."""
+def with_asks(row, st, ref, records, now, claims=None):
+    """Adds asks, wait_since and excerpt (waiting-visibility R6); waiting_on_owner becomes "has an ask".
+    claims, when given, collects the sessions this feature accounts for (other-sessions D2)."""
     found = record = None
     if st is not None and row["feature"] != "?" and row["stage"] != "done":
         try:
@@ -180,11 +182,19 @@ def with_asks(row, st, ref, records, now):
         if words:
             excerpt = {"source": words["source"], "text": agentask.excerpt(words["text"])}
     row.update(asks=asks, wait_since=waiting.since(asks), excerpt=excerpt, waiting_on_owner=bool(asks))
+    if claims is not None and st is not None and row["stage"] != "done":
+        owner = (st.get("owner") or {}).get("session")
+        claims.update(x for x in (owner, (record or {}).get("session_id")) if x)
     return row
 
 
 def scan(root_dir):
-    rows, fetched, now = {}, {}, time.time()
+    return scan_with_claims(root_dir)[0]
+
+
+def scan_with_claims(root_dir):
+    """(rows, claimed): claimed holds the session ids the listed, not-done features account for (D2)."""
+    rows, fetched, now, claims = {}, {}, time.time(), {}
     try:
         records = sessions.read_records()
     except Exception:  # F2: no hook records, no session asks from them
@@ -208,10 +218,11 @@ def scan(root_dir):
                     and gitops.git(checkout, "rev-parse", "--verify", "-q", f"origin/{st['branch']}",
                                    check=False).returncode == 0):
                 continue  # inherited copy on a stacked branch: the remote pass checks the feature's own branch
-            row = with_asks(_row(checkout, slug, st, fetched), st, "HEAD", records, now)
+            mine = set()
+            row = with_asks(_row(checkout, slug, st, fetched), st, "HEAD", records, now, mine)
             key = (gitops.origin_url(checkout), slug)
             if key not in rows or row["updated"] > rows[key]["updated"]:
-                rows[key] = row
+                rows[key], claims[key] = row, mine
     local, origins = set(rows), set()
     for checkout in checkouts(root_dir):  # then features that live only on origin branches
         url = gitops.origin_url(checkout)
@@ -226,10 +237,12 @@ def scan(root_dir):
             key = (url, slug)
             if key in local:  # a checked-out copy is at least as current as the last fetch
                 continue
-            row = with_asks(_remote_row(checkout, ref, slug, st, has_handoff, fetched), st, ref, records, now)
+            mine = set()
+            row = with_asks(_remote_row(checkout, ref, slug, st, has_handoff, fetched), st, ref, records, now, mine)
             if key not in rows or row["updated"] > rows[key]["updated"]:
-                rows[key] = row
-    return sorted(rows.values(), key=lambda r: (not r["waiting_on_owner"], r["repo"] or "", r["feature"]))
+                rows[key], claims[key] = row, mine
+    ordered = sorted(rows.values(), key=lambda r: (not r["waiting_on_owner"], r["repo"] or "", r["feature"]))
+    return ordered, set().union(*claims.values())
 
 
 def render(rows):

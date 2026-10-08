@@ -137,6 +137,20 @@ class StatusTest(unittest.TestCase):
         self.assertEqual(len(data[0]["excerpt"]["text"]), 161)          # the excerpt only, never the full text
         self.assertNotIn(question.strip(), json.dumps(data))
 
+    def test_scan_with_claims_names_the_sessions_features_account_for(self):
+        alpha = self.held("alpha", "drafting", "S1")
+        helpers.sh(alpha, "git", "switch", "-q", "-c", "feat/drafting")          # health matches checkouts on the branch
+        self.held("beta", "merging", "S2", status="ready-to-merge", pr=5)          # health does not watch it
+        self.session("S3", said="hi")
+        rec = json.load(open(sessions.record_path("claude", "S3")))
+        rec["cwd"] = os.path.realpath(os.path.join(self.projects, "alpha"))
+        json.dump(rec, open(sessions.record_path("claude", "S3"), "w"))       # matched to alpha by its folder
+        self.repo("gamma", {"shipped": {"stage": "done", "status": "done",
+                                        "owner": {"provider": "claude", "session": "S4"}}})
+        rows, claimed = status.scan_with_claims(self.projects)
+        self.assertEqual(claimed, {"S1", "S2", "S3"})
+        self.assertEqual(rows, status.scan(self.projects))
+
     def test_waits_print_oldest_first_but_scan_keeps_its_order(self):
         self.held("alpha", "newer", "S1")
         self.held("beta", "older", "S2")
