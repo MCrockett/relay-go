@@ -5,6 +5,8 @@ import os
 from . import transcripts
 
 WINDOW, EXCERPT, FULL = 1 << 20, 160, 4000
+HEAD = 64 * 1024  # how much of a transcript's start interactive() reads
+_ORIGIN = {}  # transcript path -> conclusive interactive answer; a session's origin never changes
 
 
 def _joined(parts, kind):
@@ -69,6 +71,52 @@ def last_words(provider, session_id):
         return {"source": newest[0], "text": newest[1]} if newest else None
     except (OSError, ValueError):
         return None
+
+
+def _parent(provider, session_id):
+    files = [p for p in transcripts.files_for(provider, session_id) if os.sep + "subagents" + os.sep not in p]
+    return max(files, key=os.path.getmtime) if files else None
+
+
+def _origin(provider, path):
+    """True or False when the transcript's start says how the session began, None when it does not say yet."""
+    with open(path, "rb") as f:
+        lines = f.read(HEAD).split(b"\n")[:-1]  # complete lines only
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            if provider == "codex":
+                return None  # the first record must be session_meta
+            continue
+        if not isinstance(record, dict):
+            continue
+        if provider == "claude":
+            if isinstance(record.get("entrypoint"), str):
+                return not record["entrypoint"].startswith("sdk-")
+            continue
+        payload = record.get("payload")
+        if record.get("type") != "session_meta" or not isinstance(payload, dict):
+            return None
+        return payload.get("originator") != "codex_exec" and payload.get("source") != "exec"
+    return None
+
+
+def interactive(provider, session_id):
+    """Whether the owner started this session in a terminal or editor, not an automated run such as `claude -p`
+    or `codex exec` (where-i-left-off D1). Only conclusive answers are cached."""
+    try:
+        path = _parent(provider, session_id)
+        if path is None:
+            return False
+        if path not in _ORIGIN:
+            found = _origin(provider, path)
+            if found is None:
+                return False
+            _ORIGIN[path] = found
+        return _ORIGIN[path]
+    except (OSError, ValueError):
+        return False
 
 
 def excerpt(text):
