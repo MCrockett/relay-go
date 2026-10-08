@@ -31,6 +31,20 @@ def history(st, stage):
     return [RoundRecord(**r) for r in st["history"].get(stage, [])]
 
 
+def ceiling(st, stage, max_rounds):
+    return max_rounds + st["extra_rounds"].get(stage, 0)
+
+
+def start_cycle(st, stage, max_rounds):
+    """An owner-requested independent review: its NO-GO goes back to the author for one more round at most,
+    and the progress rules compare only rounds from here on (an earlier reviewer's findings do not count)."""
+    base = st["rounds"].get(stage, 0)
+    st.setdefault("round_base", {})[stage] = base
+    short = base + 2 - ceiling(st, stage, max_rounds)  # the review is round base+1; the author's fix base+2
+    if short > 0:
+        st["extra_rounds"][stage] = st["extra_rounds"].get(stage, 0) + short
+
+
 def known_ids(st, stage):
     ids = set()
     for r in st["history"].get(stage, []):
@@ -56,7 +70,9 @@ def apply_nogo(st, record, max_rounds):
     st["history"].setdefault(stage, []).append(asdict(record))
     st["verdicts"][stage] = "NO-GO"
     st["refresh"] = False
-    action, reason = decide(history(st, stage), max_rounds, st["extra_rounds"].get(stage, 0))
+    base = st.get("round_base", {}).get(stage, 0)
+    cycle = [r for r in history(st, stage) if r.round > base]  # progress is judged within the current cycle
+    action, reason = decide(cycle, ceiling(st, stage, max_rounds))
     st["status"] = "changes-requested" if action == "continue" else "waiting-owner"
     return action, reason
 

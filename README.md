@@ -40,7 +40,7 @@ A PR opened before relay can join it: on the PR's branch, `relay adopt <slug> [-
                                   it needs, how long it has waited, and what the agent last said
     relay review                  re-run a review after an error or a stale GO
 
-Reviews continue while they make progress, up to 4 rounds. "Partly fixed" counts as progress. A stage stops and waits on you (with a `reviews/<stage>-stuck.md` summary) only when blocking findings rise, when the count stays the same and a finding the author already tried to fix is marked unresolved, or at round 4.
+Reviews continue while they make progress, up to 4 rounds. "Partly fixed" counts as progress. A stage stops and waits on you (with a `reviews/<stage>-stuck.md` summary) only when blocking findings rise, when the count stays the same and a finding the author already tried to fix is marked unresolved, or at round 4. A review you request (Request review, Re-review spec or plan) is independent: its NO-GO goes back to the author for at least one more round, even at round 4, and is not compared with earlier reviewers' findings.
 
 ## What reaches you
 
@@ -159,7 +159,7 @@ an immediate rebuild. A failed rebuild keeps the last good snapshot and reports 
 Every action asks for confirmation and is bound to the published commit, stage, status and session you
 saw. A changed revision is refused with fresh details. Overrides and release use temporary detached
 worktrees and a fast-forward push, leaving the session's checkout and branch untouched. Sessions pick
-up published owner actions before submit, review, handoff and take. Merge also requires a fresh GO,
+up published owner actions before submit, review, handoff, take and override. Merge also requires a fresh GO,
 confirmed fallback reviews and green CI, and passes the displayed PR head to GitHub's merge guard.
 
 Request review, in a feature's detail, runs a fresh build review for a PR that is ready to merge or whose
