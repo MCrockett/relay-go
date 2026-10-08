@@ -28,20 +28,27 @@
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
+  "review_notes": {},
   "reviewed": {
     "build": null,
     "plan": null,
-    "spec": null
+    "spec": {
+      "inputs": {
+        "spec": "a8956955761e417749ae20e07684444fc43832ab7fad68e7379edcaa35e4e9c4"
+      }
+    }
   },
   "rounds": {
     "spec": 1
   },
   "skipped": [],
   "small": false,
-  "stage": "spec",
-  "status": "in-review",
-  "updated": "2026-10-07T20:56:59-04:00",
-  "verdicts": {}
+  "stage": "plan",
+  "status": "drafting",
+  "updated": "2026-10-07T20:57:41-04:00",
+  "verdicts": {
+    "spec": "GO"
+  }
 }
 ---
 
