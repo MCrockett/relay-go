@@ -23,13 +23,15 @@ class LeftOffTest(test_status.StatusFixture):
         self.addCleanup(p.stop)
 
     def rec(self, sid, state_="ended", ago=3600, cwd=None, provider="claude", said="done here", origin=None,
-            pending=(), now=NOW):
+            pending=(), now=NOW, process=None):
         """A hook record last written `ago` seconds before now, and a transcript of the given origin."""
         os.makedirs(sessions.folder(), exist_ok=True)
         at = now - ago
         record = {"provider": provider, "session_id": sid, "cwd": cwd, "state": state_, "since": at - 60, "at": at,
                   "event": "Stop", "pending": [{"tool_use_id": None, "tool_name": t, "input_sha1": "x"}
                                                for t in pending]}
+        if process:
+            record["process"] = process
         with open(sessions.record_path(provider, sid), "w") as f:
             json.dump(record, f)
         lines = []
@@ -48,20 +50,20 @@ class LeftOffTest(test_status.StatusFixture):
         helpers.write(path, "\n".join(lines) + "\n")
         return record
 
-    def found(self, marks=None, limit=leftoff.LIMIT):
-        return leftoff.projects(sessions.read_records(), marks or {}, self.projects, limit)
+    def found(self, marks=None, limit=leftoff.LIMIT, alive=None, now=NOW):
+        return leftoff.projects(sessions.read_records(), marks or {}, self.projects, limit, alive, now)
 
     def test_owner_sessions_in_each_state(self):
         app = os.path.join(self.home, "app")
         os.makedirs(app)
         self.rec("W", "waiting", 100, app, said="Which key?")
         self.rec("P", "permission", 200, app, said=None, pending=("Bash", "Bash"))
-        self.rec("K", "working", 300, app)
+        self.rec("K", "working", 700, app)  # quiet past the 10 minutes: not running
         self.rec("E", "ended", 400, app)
         [project] = self.found(limit=None)
         self.assertEqual(project["project"], "~/app")
         self.assertEqual([(e["session_id"], leftoff.state_word(e)) for e in project["sessions"]],
-                         [("W", "waiting on you"), ("P", "needs approval: Bash"), ("K", "was working"), ("E", "ended")])
+                         [("W", "waiting on you"), ("P", "needs approval: Bash"), ("E", "ended"), ("K", "was working")])
         w = project["sessions"][0]
         self.assertEqual((w["at"], w["excerpt"], w["checkout"], w["feature"]),
                          (NOW - 100, {"source": "agent", "text": "Which key?"}, None, None))
@@ -120,6 +122,48 @@ class LeftOffTest(test_status.StatusFixture):
             return real(provider, sid)
         with mock.patch.object(leftoff.agentask, "last_words", flaky):
             self.assertEqual([e["session_id"] for e in self.found()[0]["sessions"]], ["ok"])
+
+    def test_running_sessions(self):
+        proc = lambda pid: {"pid": pid, "started": "Thu Oct  8 15:13:49 2026"}
+        records = [self.rec("live", "working", 7200, process=proc(1)), self.rec("old", "working", 7201, process=proc(2)),
+                   self.rec("dead", "working", 30, process=proc(3)), self.rec("plain", "working", 600),
+                   self.rec("late", "working", 601), self.rec("quiet", "working", 100, said=None),
+                   self.rec("auto", "working", 10, origin="sdk-cli"), self.rec("waits", "waiting", 10),
+                   self.rec("asks", "permission", 10, pending=("Bash",))]
+        alive = {"live", "old"}
+        got = leftoff.running(records, {"live": {"slug": "x", "done": False}}, self.projects, alive, NOW)
+        self.assertEqual([e["session_id"] for e in got], ["quiet", "plain", "live"])
+        self.assertIsNone(got[0]["excerpt"])
+        self.assertEqual(set(got[2]), {"provider", "session_id", "project", "folder", "checkout", "state",
+                                       "pending_tools", "since", "at", "feature", "excerpt", "resume"})
+        self.assertEqual((got[2]["feature"], got[2]["state"], got[2]["since"]), ({"slug": "x", "done": False},
+                                                                                "working", NOW - 7260))
+        unknown = leftoff.running(records, {}, self.projects, None, NOW)  # ps failed: the 10-minute rule
+        self.assertEqual([e["session_id"] for e in unknown], ["dead", "quiet", "plain"])
+        words = {e["session_id"]: leftoff.state_word(e) for p in self.found(limit=None, alive=alive)
+                 for e in p["sessions"]}
+        self.assertEqual((words["dead"], words["old"], words["late"]), ("stopped", "was working", "was working"))
+        self.assertNotIn("live", words)
+        self.assertNotIn("stopped", {leftoff.state_word(e) for p in self.found(limit=None, alive=None)
+                                     for e in p["sessions"]})
+
+    def test_running_sessions_are_not_counted_in_more(self):
+        for i in range(3):
+            self.rec(f"e{i}", ago=1000 + i, cwd=self.home)
+        self.rec("run", "working", 5, cwd=self.home)
+        [p] = self.found()
+        self.assertEqual(([e["session_id"] for e in p["sessions"]], p["more"]), (["e0", "e1", "e2"], 0))
+
+    def test_one_failing_running_session_is_skipped(self):
+        records = [self.rec("bad", "working", 5), self.rec("ok", "working", 5)]
+        real = agentask.last_words
+
+        def flaky(provider, sid):
+            if sid == "bad":
+                raise RuntimeError("boom")
+            return real(provider, sid)
+        with mock.patch.object(leftoff.agentask, "last_words", flaky):
+            self.assertEqual([e["session_id"] for e in leftoff.running(records, {}, self.projects, None, NOW)], ["ok"])
 
     def test_resume_lines(self):
         app, spaced, outside = (os.path.join(self.home, "app"), os.path.join(self.home, "My Projects", "app"),
