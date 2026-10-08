@@ -8,7 +8,19 @@
   "branch": "feat/stage-rereview",
   "extra_rounds": {},
   "feature": "stage-rereview",
-  "history": {},
+  "history": {
+    "plan": [
+      {
+        "blocking_ids": [
+          "R1-1"
+        ],
+        "head": "72e3bd489869b63ead9a271af7849a1f1602c40e",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ]
+  },
   "owner": {
     "provider": "claude",
     "session": "958dee3a-031e-4b49-be5f-09efa15292b1",
@@ -46,9 +58,10 @@
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "in-review",
-  "updated": "2026-10-07T20:58:53-04:00",
+  "status": "changes-requested",
+  "updated": "2026-10-07T20:59:32-04:00",
   "verdicts": {
+    "plan": "NO-GO",
     "spec": "GO"
   }
 }
