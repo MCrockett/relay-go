@@ -39,7 +39,7 @@ Covers: R1, D1.
 
 Files: `relaylib/agentask.py`, `tests/test_agentask.py`.
 
-- [ ] Failing tests: Claude transcript with `entrypoint: cli` is interactive, `sdk-cli` and `sdk-ts` are not; Codex `session_meta` with `originator: codex-tui` is, `originator: codex_exec` or `source: exec` is not; missing, empty and marker-less transcripts are not; a Claude transcript whose first line is incomplete is not, then after the line is completed (same process) it is; a conclusive answer is cached (the file deleted afterwards still answers the same).
+- [ ] Failing tests: Claude transcript with `entrypoint: cli` is interactive, `sdk-cli` and `sdk-ts` are not; Codex `session_meta` with `originator: codex-tui` is, `originator: codex_exec` or `source: exec` is not; missing, empty and marker-less transcripts are not; a transcript that exists but cannot be read (permissions removed, or `open` patched to raise) is not, and is retried; a Claude transcript whose first line is incomplete is not, then after the line is completed (same process) it is; the same for a Codex transcript whose `session_meta` line is incomplete; a conclusive answer is cached (the file deleted afterwards still answers the same).
 - [ ] Implement `interactive(provider, session_id)` reading at most the first 64 KB of the newest parent transcript (`transcripts.files_for`, subagents excluded as `last_words` does), complete lines only, and a module-level cache of conclusive answers.
 - [ ] Run, commit `feat: tell the owner's sessions from automated runs`.
 
@@ -49,7 +49,7 @@ Covers: R2, D2, D3, D4, D5, D7, F2, F3, F4.
 
 Files: `relaylib/leftoff.py` (new), `relaylib/othersessions.py`, `tests/test_leftoff.py` (new), `tests/test_othersessions.py`.
 
-- [ ] Failing tests: interactive sessions in each state shown with `state`, `at`, `pending_tools`, excerpt; automated ones and one without a last message left out (a `permission` one with tools but no message shown); a repo and its worktree grouped as one project with `checkout` set for the worktree; a folder outside any repo; `cwd` null ("Unknown folder"); projects newest first, sessions newest first, ties by id; limit 3 with `more` counting a not-walked session that has no message; `limit=None` shows all with `more` 0; marks applied (`feature: {slug, done}`); resume lines for `~/app`, `~/'My Projects/app'`, a folder outside home, the home folder (`cd ~`), no folder, a folder that no longer exists; one session whose read raises is skipped. `othersessions.label` tests still pass.
+- [ ] Failing tests: interactive sessions in each state shown with `state`, `at`, `pending_tools`, excerpt; automated ones and one without a last message left out (a `permission` one with tools but no message shown); a repo and its worktree grouped as one project with `checkout` set for the worktree; a folder outside any repo; `cwd` null ("Unknown folder"); projects newest first, sessions newest first, ties by id; limit 3 with `more` counting a not-walked session that has no message, and `agentask.last_words` never called for a not-walked session (patched to record its calls); `limit=None` shows all with `more` 0; marks applied (`feature: {slug, done}`); resume lines for `~/app`, `~/'My Projects/app'`, a folder outside home, the home folder (`cd ~`), no folder, a folder that no longer exists; one session whose read raises is skipped. `othersessions.label` tests still pass.
 - [ ] Implement `othersessions.place`, `leftoff.resume_line(provider, session_id, folder)` and `leftoff.projects(records, marks, root, limit=3)`.
 - [ ] Run, commit `feat: group the owner's recent sessions by project`.
 
@@ -69,8 +69,8 @@ Covers: R3 (dashboard part), R5, R6, D6, D9, D10.
 
 Files: `relaylib/ui/snapshot.py`, `relaylib/ui/server.py`, `tests/test_ui_snapshot.py`, `tests/test_ui_server.py`.
 
-- [ ] Failing tests: `build()` returns `left_off` (patched records and transcripts) with projects and marks, including a health-matched non-owner record marked and a merged feature marked done; existing fields unchanged; a failure inside left-off gives `[]`. `GET /api/session` for a left-off session: 200 with `label` its project and `resume` the D7 line; an other-session's `resume` is now the D7 line; a session in neither list 404; 400 and 403 as before.
-- [ ] Implement: snapshot marks from details (owner session and session_record; done when stage done or PR merged), `leftoff.projects(records, marks, root)`; `other_session` looks in both lists and uses `leftoff.resume_line`.
+- [ ] Failing tests: `build()` returns `left_off` (patched records and transcripts) with projects and marks, including a health-matched non-owner record marked and a merged feature marked done; two details naming one session: the not-done one wins, then the newest `updated`; existing fields unchanged. Failures (F4, F5): `sessions.read_records` raising gives `left_off` `[]` and the rest of the snapshot as today (today the read is unguarded and the build would fail); the marks step raising (patched) still gives `left_off` with sessions and no marks; `leftoff.projects` raising gives `[]`. `GET /api/session` for a left-off session: 200 with `label` its project and `resume` the D7 line; an other-session's `resume` is now the D7 line; a session in neither list 404; 400 and 403 as before.
+- [ ] Implement: `build()` guards its `sessions.read_records()` call (an exception means no records, for feature health and other sessions too, as `status.scan_with_claims` already does); a `_left_marks(details)` helper (owner session and session_record; done when stage done or PR merged; same precedence as `local_marks`) whose exception gives `{}`; `leftoff.projects(records, marks, root)` whose exception gives `[]`; `other_session` looks in both lists and uses `leftoff.resume_line`.
 - [ ] Run, commit `feat: where you left off in the dashboard snapshot and API`.
 
 ### Task 5: The page
@@ -79,7 +79,7 @@ Covers: R7, D9.
 
 Files: `relaylib/ui/page.html`, `tests/test_ui_server.py`.
 
-- [ ] Failing tests: page strings `Where you left off`, `No sessions to show yet.`, `This session is no longer listed.`, `run relay left --all`; Node tests: `leftLine(entry, now)` gives "Waiting on you · 2h ago", "Waiting for approval: Bash · 5m ago", "Ended · 3h ago", "Was working · 1d ago", with checkout and "feature x (done)" appended; a left-off card has no `.actions` buttons; the 404 path of opening a left-off card shows "This session is no longer listed." and calls `load()`; inbox count and title unchanged when only left-off sessions exist.
+- [ ] Failing tests: page strings `Where you left off`, `No sessions to show yet.`, `This session is no longer listed.`, `run relay left --all`; Node tests: `leftLine(entry, now)` gives "Waiting on you · 2h ago", "Needs approval: Bash · 5m ago", "Ended · 3h ago", "Was working · 1d ago", with checkout and "feature x (done)" appended; a left-off card has no `.actions` buttons; the 404 path of opening a left-off card shows "This session is no longer listed." and calls `load()`; inbox count and title unchanged when only left-off sessions exist.
 - [ ] Implement the section (between inbox and features), `renderLeftOff(data)`, `leftLine`, card click through `openSession` with the left-off 404 text.
 - [ ] Browser check on a throwaway fixture server (server module directly; `relay ui` is owner-only): the section, cards, "Up to N more" line, dialog with the resume line.
 - [ ] Run, commit `feat: where you left off in the dashboard`.
@@ -90,7 +90,7 @@ Covers: R8, R9.
 
 Files: `README.md`.
 
-- [ ] README: `relay left [--all]`, the dashboard section, which sessions are shown (owner's interactive sessions with a last message, 7 days of records), the resume line.
+- [ ] README: `relay left [--all]`, the dashboard section, which sessions are shown (owner's interactive sessions with a last message, or waiting for a tool approval even without one; 7 days of records), the resume line.
 - [ ] Full suite green; push; PR; CI green; `relay submit`.
 
 ## Requirement coverage
