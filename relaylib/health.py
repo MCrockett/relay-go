@@ -5,20 +5,29 @@ import os
 from . import config, gitops, state
 from .errors import RelayError
 
-UI_LIMITS = {"health_grace_minutes": (0, 60, 1), "quiet_minutes": (1, 1440, 30)}
+UI_LIMITS = {"health_grace_minutes": (0, 60, 1), "quiet_minutes": (1, 1440, 30),
+             "other_sessions_hours": (1, 168, 24)}
 MAX_PATHS = 2000
 
 
+def _ui(cfg, key):
+    """(value, note): an invalid value falls back to its default with a note."""
+    low, high, default = UI_LIMITS[key]
+    value = (cfg.get("ui") or {}).get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+        return default, f"ignored invalid [ui] {key}"
+    return value, None
+
+
+def ui_value(cfg, key):
+    return _ui(cfg, key)[0]
+
+
 def ui_settings(cfg):
-    """(grace_min, quiet_min, notes); an invalid value falls back to its default with a note."""
-    ui, values, notes = cfg.get("ui") or {}, [], []
-    for key, (low, high, default) in UI_LIMITS.items():
-        value = ui.get(key, default)
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
-            notes.append(f"ignored invalid [ui] {key}")
-            value = default
-        values.append(value)
-    return values[0], values[1], notes
+    """(grace_min, quiet_min, notes); notes cover every [ui] setting."""
+    found = {key: _ui(cfg, key) for key in UI_LIMITS}
+    notes = [note for _, note in found.values() if note]
+    return found["health_grace_minutes"][0], found["quiet_minutes"][0], notes
 
 
 def branch_checkouts(repo, branch):
