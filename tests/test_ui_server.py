@@ -346,7 +346,7 @@ console.log(JSON.stringify({up:ids(editList(L,'up',1)), topUp:ids(editList(L,'up
     def test_inbox_cards_show_asks_words_and_real_buttons(self):
         page = self.request("/?t=test-token")[1]
         for piece in ("ASK_ACTIONS", "row.asks", "row.excerpt", "wait_since", "inboxOrder(waiting)", "askLine(row",
-                      "cardButtons(row)", "Agent’s last message", "Summary while you were away", "d.agent_text",
+                      "cardButtons(row)", "cardFlags(row)", "Agent’s last message", "Summary while you were away", "d.agent_text",
                       "d.pending_tools", "Waiting for approval: "):
             self.assertIn(piece, page)
         self.assertNotIn("'Options'", page)                                  # the button that only opened details
@@ -357,7 +357,7 @@ console.log(JSON.stringify({up:ids(editList(L,'up',1)), topUp:ids(editList(L,'up
     @unittest.skipUnless(shutil.which("node"), "needs node")
     def test_card_rules_run_in_node(self):
         page = self.request("/?t=test-token")[1]
-        funcs = re.search(r"const ASK_ACTIONS=.*?function excerptLabel\([^}]*\}", page, re.S).group(0)
+        funcs = re.search(r"const ASK_ACTIONS=.*?function cardFlags\(.*?\n", page, re.S).group(0)
         script = funcs + """
 const ask=(kind,text,since)=>({kind,text,since});
 const merge={asks:[ask('merge','Merge PR #6',100),ask('answer','Answer the claude session',2800)],wait_since:100,
@@ -369,7 +369,12 @@ const broken={asks:[ask('error','Fix: cannot read',null)],wait_since:null,action
 console.log(JSON.stringify({merge:cardButtons(merge),decide:cardButtons(decide),failed:cardButtons(failed),
   answer:cardButtons(answer),line:askLine(merge,7300),broken:askLine(broken,7300),
   order:inboxOrder([answer,broken,merge,decide]).map(r=>r.asks[0].kind),labels:[excerptLabel('summary'),excerptLabel('agent')],
-  ages:[ageText(59),ageText(61),ageText(7200),ageText(200000)]}));"""
+  ages:[ageText(59),ageText(61),ageText(7200),ageText(200000)],
+  flags:cardFlags({asks:[ask('merge','Merge PR #6 · fallback GO: confirm with codex before merging (codex out; your call)',1),
+                         ask('take','Take the handoff: open a session and run relay take',1)],
+                   flags:['fallback GO: confirm with codex before merging (codex out; your call)',
+                          'handoff: open a session and run `relay take`','local changes not published',
+                          'plan review: same provider as the author']})}));"""
         out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
         self.assertEqual(out["merge"], ["merge"])                            # no Request review next to Merge
         self.assertEqual(out["decide"], ["go", "extra-round", "reset-rounds"])
@@ -380,6 +385,8 @@ console.log(JSON.stringify({merge:cardButtons(merge),decide:cardButtons(decide),
         self.assertEqual(out["order"], ["decide", "merge", "answer", "error"])
         self.assertEqual(out["labels"], ["Summary", "Agent"])
         self.assertEqual(out["ages"], ["59s", "1m", "2h", "2d"])
+        # Warnings stay on the card (owner, 2026-10-07); only notes the asks already say are left out.
+        self.assertEqual(out["flags"], ["local changes not published", "plan review: same provider as the author"])
 
     def test_ports_fallback_and_exhaustion(self):
         other = server.bind(self.port, "t", self.cache)
