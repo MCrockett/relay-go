@@ -9,6 +9,17 @@
   "extra_rounds": {},
   "feature": "where-i-left-off",
   "history": {
+    "plan": [
+      {
+        "blocking_ids": [
+          "R1-1"
+        ],
+        "head": "0023ecd7469621ceeb277ee51a16ec38ac747083",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ],
     "spec": [
       {
         "blocking_ids": [
@@ -71,9 +82,10 @@
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "in-review",
-  "updated": "2026-10-08T08:38:52-04:00",
+  "status": "changes-requested",
+  "updated": "2026-10-08T08:39:50-04:00",
   "verdicts": {
+    "plan": "NO-GO",
     "spec": "GO"
   }
 }
