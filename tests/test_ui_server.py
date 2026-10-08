@@ -361,6 +361,24 @@ console.log(JSON.stringify({up:ids(editList(L,'up',1)), topUp:ids(editList(L,'up
         self.assertNotIn("innerHTML", page)
         self.assertIn("for(const row of rows.filter(r=>$('show-done').checked", page)   # the table keeps row order
 
+    def test_re_review_buttons_live_in_the_details_only(self):
+        page = self.request("/?t=test-token")[1]
+        for piece in ("'review-spec':'Re-review spec'", "'review-plan':'Re-review plan'", "openReviewRequest(row,reviewStage(action))",
+                      "$('rr-feature').textContent=d.feature+' / '+stage", "stage:reviewTargetStage",
+                      "(d.review_defaults||{})[stage]", 'id="rr-title"'):
+            self.assertIn(piece, page)
+        # Never on inbox cards: relay does not suggest a re-review (stage-rereview D7).
+        self.assertIn("const ASK_ACTIONS={decide:['go','extra-round','reset-rounds'],'review-failed':['go','review'],merge:['merge']};", page)
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_review_stage_runs_in_node(self):
+        page = self.request("/?t=test-token")[1]
+        funcs = re.search(r"function reviewStage\([^\n]*?\}", page).group(0)
+        out = subprocess.run(["node", "-e", funcs + "console.log(JSON.stringify([reviewStage('review-spec'),"
+                              "reviewStage('review-plan'),reviewStage('review')]))"],
+                             capture_output=True, text=True, check=True).stdout
+        self.assertEqual(json.loads(out), ["spec", "plan", "build"])
+
     @unittest.skipUnless(shutil.which("node"), "needs node")
     def test_card_rules_run_in_node(self):
         page = self.request("/?t=test-token")[1]
