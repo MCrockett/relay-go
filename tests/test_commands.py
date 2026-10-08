@@ -1295,6 +1295,196 @@ done
         with self.assertRaisesRegex(RelayError, "GitHub is unknown"):
             reviewjobs.prepare(self.work, "tiny", owneractions.fingerprint(self.work, "tiny"))
 
+    # owner-requested re-reviews of an approved spec or plan (stage-rereview)
+    def to_build(self):
+        self.to_spec()
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)          # spec GO -> plan
+        helpers.write(os.path.join(self.fdir(), "plan.md"), "# Plan\nTask 1: add --version.\n")
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)          # plan GO -> build
+        self.assertEqual((self.st()["stage"], self.st()["status"]), ("build", "drafting"))
+
+    def rerequest(self, stage, slug="demo", reviewer=None, relayed_by=None):
+        from relaylib import owneractions, reviewjobs
+        job = reviewjobs.prepare(self.work, slug, owneractions.fingerprint(self.work, slug), reviewer, relayed_by,
+                                 stage=stage)
+        return job.run()
+
+    def calls(self):
+        return len(open(self.log).read().splitlines()) if os.path.exists(self.log) else 0
+
+    def origin_files(self, slug="demo"):
+        from relaylib import gitops
+        return gitops.ls_files(self.work, f"origin/{self.st(slug)['branch']}", f"{state.RELAY_DIR}/{slug}/reviews")
+
+    def test_a_spec_re_review_carries_on_to_the_plan_and_returns_to_build(self):
+        self.to_build()
+        rounds, before = dict(self.st()["rounds"]), self.head()
+        self.enqueue_codex("GO")
+        self.enqueue_codex("GO")
+        result = self.rerequest("spec")
+        self.assertTrue(result["ok"], result["message"])
+        self.assertEqual(result["message"], "demo: spec and plan GO from codex:gpt-6-astra; back at build, drafting.")
+        st = self.published("demo")
+        self.assertEqual((st["stage"], st["status"], st["rounds"]), ("build", "drafting", rounds))
+        self.assertEqual((st["verdicts"]["spec"], st["verdicts"]["plan"]), ("GO", "GO"))
+        self.assertIn("owner requested a spec re-review from codex:gpt-6-astra (default)",
+                      [a["action"] for a in st["owner_actions"]])
+        names = [p.rsplit("/", 1)[-1] for p in self.origin_files()]
+        self.assertIn("spec-1r.codex.md", names)
+        self.assertIn("plan-1r.codex.md", names)
+        self.assertEqual(self.head(), before)                                     # the session is untouched
+        self.assertEqual(len(helpers.sh(self.work, "git", "worktree", "list").splitlines()), 1)
+
+    def test_a_spec_no_go_stops_before_the_plan(self):
+        self.to_build()
+        calls = self.calls()
+        self.enqueue_codex("NO-GO", ["spec.md:1 - the flag's output format is missing"])
+        result = self.rerequest("spec")
+        self.assertTrue(result["ok"], result["message"])
+        self.assertEqual(result["message"], "demo: spec NO-GO from codex:gpt-6-astra; back to the author.")
+        self.assertEqual(self.calls(), calls + 1)                                 # the plan was not reviewed
+        st = self.published("demo")
+        self.assertEqual((st["stage"], st["status"], st["rounds"]["spec"]), ("spec", "changes-requested", 2))
+        self.assertNotIn("plan", st["verdicts"])
+
+    def test_a_re_review_that_hits_the_stop_rules_waits_on_the_owner(self):
+        self.to_build()
+        helpers.write(self.cfg, "[limits]\nmax_rounds = 1\n")
+        self.enqueue_codex("NO-GO", ["spec.md:1 - unclear"])
+        result = self.rerequest("spec")
+        self.assertIn("spec NO-GO from codex:gpt-6-astra; the review loop stopped and waits on you", result["message"])
+        st = self.published("demo")
+        self.assertEqual((st["stage"], st["status"]), ("spec", "waiting-owner"))
+        self.assertIn("spec-stuck.md", [p.rsplit("/", 1)[-1] for p in self.origin_files()])
+
+    def test_a_plan_re_review_alone(self):
+        self.to_build()
+        self.enqueue_codex("GO")
+        self.assertEqual(self.rerequest("plan")["message"], "demo: plan GO from codex:gpt-6-astra; back at build, drafting.")
+        self.enqueue_codex("NO-GO", ["plan.md:1 - no test for --version"])
+        self.assertIn("plan NO-GO", self.rerequest("plan")["message"])
+        self.assertEqual(self.published("demo")["status"], "changes-requested")
+        self.assertEqual(self.published("demo")["stage"], "plan")
+
+    def test_a_spec_re_review_while_at_plan_stays_at_plan(self):
+        self.to_spec()
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        calls = self.calls()
+        self.enqueue_codex("GO")
+        result = self.rerequest("spec")
+        self.assertEqual(result["message"], "demo: spec GO from codex:gpt-6-astra; back at plan, drafting.")
+        self.assertEqual(self.calls(), calls + 1)
+
+    def test_a_plan_error_after_a_spec_go_publishes_nothing(self):
+        self.to_build()
+        before = self.published("demo")
+        self.enqueue_codex("GO")
+        helpers.write(os.path.join(self.queue, f"{self.n:03d}"), "no verdict at all\n")
+        self.n += 1
+        result = self.rerequest("spec")
+        self.assertFalse(result["ok"])
+        self.assertIn("review failed", result["message"])
+        self.assertEqual(self.published("demo"), before)
+
+    def test_a_re_review_keeps_the_one_retry_after_a_timeout(self):
+        self.to_build()
+        helpers.write(self.cfg, "[limits]\nreview_timeout_min = 0.02\n")
+        helpers.write(os.path.join(self.queue, f"{self.n:03d}"),
+                      "#sleep 5\n" + helpers.codex_output(helpers.verdict_block("GO", (), ())))
+        self.n += 1
+        self.enqueue_codex("GO")
+        self.assertTrue(self.rerequest("plan")["ok"])
+        before = self.published("demo")
+        for _ in range(2):
+            helpers.write(os.path.join(self.queue, f"{self.n:03d}"),
+                          "#sleep 5\n" + helpers.codex_output(helpers.verdict_block("GO", (), ())))
+            self.n += 1
+        result = self.rerequest("plan")
+        self.assertFalse(result["ok"])
+        self.assertIn("timed out twice", result["message"])
+        self.assertEqual(self.published("demo"), before)
+
+    def test_a_re_review_does_not_overwrite_a_branch_that_moved(self):
+        from relaylib import owneractions, reviewjobs
+        self.to_build()
+        job = reviewjobs.prepare(self.work, "demo", owneractions.fingerprint(self.work, "demo"), stage="spec")
+        helpers.sh(self.work, "git", "commit", "-q", "--allow-empty", "-m", "the session pushes meanwhile")
+        helpers.sh(self.work, "git", "push", "-q")
+        self.enqueue_codex("GO")
+        self.enqueue_codex("GO")
+        result = job.run()
+        self.assertFalse(result["ok"])
+        self.assertIn("the branch moved during the review", result["message"])
+
+    def test_re_review_refusals_change_nothing(self):
+        from relaylib import owneractions, reviewjobs
+        self.to_spec()
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)                  # at plan, drafting
+        seen = owneractions.fingerprint(self.work, "demo")
+        with self.assertRaisesRegex(RelayError, "review-plan is not available for plan / drafting"):
+            reviewjobs.prepare(self.work, "demo", seen, stage="plan")              # the current stage
+        with self.assertRaisesRegex(RelayError, "choose spec, plan or build"):
+            reviewjobs.prepare(self.work, "demo", seen, stage="idea")
+        job = reviewjobs.prepare(self.work, "demo", seen, stage="spec")
+        with self.assertRaisesRegex(reviewjobs.Busy, "already running"):
+            reviewjobs.prepare(self.work, "demo", seen, stage="spec")
+        job.lock.release()
+        self.small_change()                                                        # spec and plan skipped
+        with self.assertRaisesRegex(RelayError, "review-spec is not available"):
+            reviewjobs.prepare(self.work, "tiny", owneractions.fingerprint(self.work, "tiny"), stage="spec")
+        self.assertEqual(self.calls(), 1)                                          # only the spec submit reviewed
+
+    def put_pr(self, status):
+        st = self.st()
+        st.update(pr=7, status=status)
+        state.write_state(state.state_path(self.work, "demo"), st)
+        helpers.sh(self.work, "git", "commit", "-qam", f"fixture: {status} with a PR")
+        helpers.sh(self.work, "git", "push", "-q")
+
+    def test_a_merged_feature_is_never_re_reviewed(self):
+        from relaylib import owneractions, reviewjobs
+        self.to_build()
+        calls = self.calls()
+        self.put_pr("drafting")
+        if os.path.exists(self.gh_json):
+            os.remove(self.gh_json)                                                # gh fails: GitHub is unknown
+        with self.assertRaisesRegex(RelayError, "GitHub is unknown"):
+            reviewjobs.prepare(self.work, "demo", owneractions.fingerprint(self.work, "demo"), stage="spec")
+        for status in ("ready-to-merge", "drafting", "changes-requested"):
+            self.put_pr(status)
+            self.pr(state="MERGED")
+            with self.assertRaisesRegex(RelayError, "the feature is merged; nothing to re-review"):
+                reviewjobs.prepare(self.work, "demo", owneractions.fingerprint(self.work, "demo"), stage="spec")
+        self.assertEqual(self.calls(), calls)
+        st = self.st()
+        st.pop("pr")
+        st["status"] = "drafting"
+        state.write_state(state.state_path(self.work, "demo"), st)
+        helpers.sh(self.work, "git", "commit", "-qam", "fixture: no PR")
+        helpers.sh(self.work, "git", "push", "-q")
+        os.remove(self.gh_json)                                                    # no PR needs no GitHub
+        reviewjobs.prepare(self.work, "demo", owneractions.fingerprint(self.work, "demo"), stage="spec").lock.release()
+
+    def test_the_session_picks_up_a_published_re_review(self):
+        from argparse import Namespace
+        self.to_build()
+        path = state.state_path(self.work, "demo")
+        with open(path) as f:
+            local = f.read()
+        self.enqueue_codex("GO")
+        self.enqueue_codex("GO")
+        helpers.write(path, local.replace('"drafting"', '"drafting" '))            # an unpublished local edit
+        self.assertTrue(self.rerequest("spec")["ok"])
+        helpers.sh(self.work, "git", "checkout", "--", path)                        # the session drops its edit
+        c = commands.Ctx(Namespace(feature="demo"))
+        c.sync()                                                                    # its next relay command
+        self.assertIn("owner requested a spec re-review from codex:gpt-6-astra (default)",
+                      [a["action"] for a in c.st["owner_actions"]])
+
     def test_a_repository_reviewer_override_is_a_valid_choice(self):
         from relaylib import owneractions, reviewjobs
         self.fallback_build_go()

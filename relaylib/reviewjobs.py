@@ -1,4 +1,5 @@
-"""Owner-requested build reviews: reviewer choices, one job per feature, run in an isolated worktree."""
+"""Owner-requested reviews of a build, or of an approved spec or plan (stage-rereview): reviewer choices, one job
+per feature, run in an isolated worktree."""
 import argparse
 import dataclasses
 import fcntl
@@ -159,6 +160,7 @@ class Job:
     lock: JobLock
     cfg: dict
     id: str
+    stage: str = "build"
     stopped: bool = False
 
     def run(self):
@@ -176,25 +178,38 @@ class Job:
         return {"ok": ok, "message": message}
 
 
-def prepare(repo, slug, seen, reviewer=None, relayed_by=None):
+STAGES = ("spec", "plan", "build")
+
+
+def prepare(repo, slug, seen, reviewer=None, relayed_by=None, stage="build"):
     """Lock the feature, check the request against what the owner saw and the configured reviewers,
     and return a Job ready to run. Raises Busy, owneractions.Conflict or RelayError."""
+    if stage not in STAGES:
+        raise RelayError(f"cannot review {stage!r}: choose spec, plan or build")
     if _STOPPING.is_set():
         raise RelayError("the dashboard is stopping; request the review again after it restarts")
     lock = JobLock(repo, slug)
     lock.acquire()
     try:
         with owneractions.action_lock():
-            fresh, st = owneractions._validate(repo, slug, "review", seen)
-        if fresh.get("github_error"):
-            raise RelayError(f"GitHub is unknown: {fresh['github_error']}")
-        if gitops.pr_info(repo, st["pr"]).get("state") != "OPEN":
-            raise RelayError("the PR is not open")
+            fresh, st = owneractions._validate(repo, slug, "review" if stage == "build" else f"review-{stage}", seen)
+        if stage == "build":
+            if fresh.get("github_error"):
+                raise RelayError(f"GitHub is unknown: {fresh['github_error']}")
+            if gitops.pr_info(repo, st["pr"]).get("state") != "OPEN":
+                raise RelayError("the PR is not open")
+        elif st.get("pr"):  # a merged PR can leave any published status behind; ask GitHub whatever it says
+            try:
+                merged_pr = gitops.pr_info(repo, st["pr"]).get("state") == "MERGED"
+            except (RelayError, OSError) as e:
+                raise RelayError(f"GitHub is unknown: {e}")
+            if merged_pr:
+                raise RelayError("the feature is merged; nothing to re-review")
         cfg = config.load(repo)
         options = choices(cfg)
         if not options:
             raise RelayError('no reviewers configured: run relay roles set review.<author> "provider:model, ..."')
-        default_id, default_label, _ = default(cfg, st, options)
+        default_id, default_label, _ = default(cfg, st, options, stage)
         chosen = reviewer or default_id
         if not chosen:
             raise RelayError("this feature has no default reviewer; pick one with --reviewer")
@@ -207,7 +222,7 @@ def prepare(repo, slug, seen, reviewer=None, relayed_by=None):
         label = default_label if chosen == default_id else ""
         started = time.time()
         job_id = f"{os.path.basename(lock.lock_path)[:12]}-{int(started * 1000)}"
-        job = Job(repo, slug, fresh, config.parse_model_spec(chosen), label, relayed_by, lock, cfg, job_id)
+        job = Job(repo, slug, fresh, config.parse_model_spec(chosen), label, relayed_by, lock, cfg, job_id, stage)
         lock.write(id=job_id, reviewer=chosen, started_at=started, pid=os.getpid(), state="running", message="")
         return job
     except BaseException:
@@ -224,17 +239,30 @@ def _run(job):
         try:
             c = WorkCtx(work, job.slug, job.cfg)
             st = c.st
-            record_owner_action(st, f"owner requested a build review from {who}"
-                                + (f" ({job.label})" if job.label else ""), job.relayed_by)
-            machine.mark_for_refresh(st, "build")
-            st["confirming"] = True  # an independent fresh review, exactly like a fallback confirmation
+            if job.stage == "build":
+                record_owner_action(st, f"owner requested a build review from {who}"
+                                    + (f" ({job.label})" if job.label else ""), job.relayed_by)
+                chain = ["build"]
+            else:
+                record_owner_action(st, f"owner requested a {job.stage} re-review from {who}"
+                                    + (f" ({job.label})" if job.label else ""), job.relayed_by)
+                # The plan's GO was given on the spec: a spec re-review carries on to it (D4). Read before
+                # mark_for_refresh clears it.
+                chain = [job.stage] + (["plan"] if job.stage == "spec" and st["verdicts"].get("plan") == "GO" else [])
             spec = job.spec
             if not spec.effort:
-                release = gitops.pr_info(work, st["pr"]).get("baseRefName") == "main"
+                release = job.stage == "build" and gitops.pr_info(work, st["pr"]).get("baseRefName") == "main"
                 spec = dataclasses.replace(spec, effort=config.review_effort(job.cfg, True, release))
-            review_current(c, argparse.Namespace(), candidates=[spec], discard_errors=True, announce=False)
-            if not c.saved:
-                raise RelayError("the review did not record a verdict")
+            done = []
+            for stage in chain:
+                machine.mark_for_refresh(c.st, stage)
+                c.st["confirming"] = True  # an independent fresh review, exactly like a fallback confirmation
+                review_current(c, argparse.Namespace(), candidates=[spec], discard_errors=True, announce=False)
+                if not c.saved:
+                    raise RelayError("the review did not record a verdict")
+                done.append(stage)
+                if c.st["verdicts"].get(stage) != "GO":
+                    break
             branch = job.seen["branch"]
             if not owneractions.ACTION_LOCK.acquire(timeout=60):  # held only to publish, never while reviewing
                 raise RelayError("another owner action kept the lock; nothing was published. Request again.")
@@ -247,12 +275,15 @@ def _run(job):
                 owneractions.ACTION_LOCK.release()
             if push.returncode:
                 raise RelayError("the branch moved during the review; nothing was published. Request again.")
-            if c.st["status"] == "ready-to-merge":
+            last, before = done[-1], (f"{done[0]} GO, then " if len(done) > 1 else "")
+            if job.stage != "build" and c.st["verdicts"].get(last) == "GO":
+                message = f"{job.slug}: {' and '.join(done)} GO from {who}; back at {c.st['stage']}, {c.st['status']}."
+            elif c.st["status"] == "ready-to-merge":
                 message = f"{job.slug}: build GO from {who}; ready to merge."
             elif c.st["status"] == "waiting-owner":
-                message = f"{job.slug}: build NO-GO from {who}; the review loop stopped and waits on you."
+                message = f"{job.slug}: {before}{last} NO-GO from {who}; the review loop stopped and waits on you."
             else:
-                message = f"{job.slug}: build NO-GO from {who}; back to the author."
+                message = f"{job.slug}: {before}{last} NO-GO from {who}; back to the author."
             notify.send(job.cfg, f"relay: {c.st['repo']} review done", message)  # only once it is published
             return message
         finally:
