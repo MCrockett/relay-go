@@ -365,7 +365,7 @@ def build():
         for members, error in zip(groups.values(), _parallel(lambda members: _fetch(members[0]), list(groups.values()))):
             fetched.update(dict.fromkeys(members, error))
         errors = {os.path.realpath(repo): error for repo, error in fetched.items() if error}
-        rows = status.scan(root)
+        rows, claimed = status.scan_with_claims(root)  # kept for rows whose details fail to load (D2)
         details = [d for d in _parallel(lambda row: _enrich(row, errors, fetched, records), rows) if d]
         writing = _writing_or_error(repos, errors)
     seen = {r["provider"] for r in records}
@@ -384,7 +384,6 @@ def build():
             notes.update(health.ui_settings(config.load(repo))[2])
         except (RelayError, OSError):
             continue  # that repository's row already reports its broken config
-    claimed = set()
     for d in details:  # the sessions the listed, not-done features account for (other-sessions D2)
         if d["state"].get("stage") != "done" and d["pr_info"].get("state") != "MERGED":
             claimed.update(x for x in ((d.get("owner_session") or {}).get("session"),

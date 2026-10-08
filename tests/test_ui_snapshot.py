@@ -245,6 +245,15 @@ class SnapshotTest(unittest.TestCase):
         helpers.write(os.path.join(os.environ["RELAY_HOME"], "config.toml"), "[ui]\nother_sessions_hours = 500\n")
         self.assertIn("ignored invalid [ui] other_sessions_hours", snapshot.build()["notes"])
 
+    def test_a_feature_whose_details_fail_still_claims_its_session(self):
+        self.st.update(stage="build", status="drafting")
+        self.save()
+        self.stopped(said="the feature's own question")
+        with mock.patch("relaylib.ui.snapshot.feature", side_effect=RelayError("branch not published")):
+            data = snapshot.build()
+        self.assertEqual([r["feature"] for r in data["rows"]], ["demo"])
+        self.assertEqual(data["other_sessions"], [])
+
     def test_other_sessions_use_the_global_settings(self):
         pd = os.path.join(self.tmp, "proteindiary")  # a repository with no feature, and its own [ui] values
         os.makedirs(pd)
