@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/running-now",
   "extra_rounds": {},
   "feature": "running-now",
@@ -29,9 +31,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-10-08T17:51:32-04:00",
+  "updated": "2026-10-08T17:51:38-04:00",
   "verdicts": {}
 }
 ---
