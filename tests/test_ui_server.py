@@ -153,7 +153,7 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(code, 202, text)
             self.assertEqual(json.loads(text)["job"], "job-1")
             self.assertIn("codex:gpt-6-astra is reviewing demo", json.loads(text)["message"])
-            prepare.assert_called_once_with("/fixture", "demo", payload["seen"], "codex:gpt-6-astra")
+            prepare.assert_called_once_with("/fixture", "demo", payload["seen"], "codex:gpt-6-astra", stage="build")
             for _ in range(100):
                 if job.run.called and refresh.call_count >= 2:
                     break
@@ -165,6 +165,13 @@ class ServerTest(unittest.TestCase):
             prepare.side_effect = RelayError("the PR is not open")
             code, text = self.request("/api/action", "POST", payload)
             self.assertEqual((code, json.loads(text)["error"]), (400, "the PR is not open"))
+            prepare.side_effect, prepare.return_value = None, job                   # a spec re-review (stage-rereview)
+            code, text = self.request("/api/action", "POST", dict(payload, stage="spec"))
+            self.assertEqual(code, 202, text)
+            self.assertEqual(prepare.call_args.kwargs, {"stage": "spec"})
+            self.assertIn("is reviewing demo's spec", json.loads(text)["message"])
+            code, text = self.request("/api/action", "POST", dict(payload, stage=7))
+            self.assertEqual((code, json.loads(text)["error"]), (400, "stage must be spec, plan or build"))
 
     def test_roles_endpoints(self):
         cfg = os.path.join(self.tmp, "config.toml")
