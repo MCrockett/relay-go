@@ -322,6 +322,54 @@ console.log(JSON.stringify({
         self.assertEqual(out["after404"], [["notice", "This session is no longer waiting.", False], ["load"]])
         self.assertEqual(out["offline"], [["notice", "Failed to fetch", True]])
 
+    def test_page_shows_where_you_left_off(self):
+        page = self.request("/?t=test-token")[1]
+        for piece in ('<section id="left-off"', "Where you left off", "'No sessions to show yet.'",
+                      "'This session is no longer listed.'", "' more: run relay left --all'", "data.left_off",
+                      "renderLeftOff();"):
+            self.assertIn(piece, page)
+        self.assertLess(page.index('id="inbox"'), page.index('id="left-off"'))
+        self.assertLess(page.index('id="left-off"'), page.index('id="features"'))
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_left_off_rules_run_in_node(self):
+        page = self.request("/?t=test-token")[1]
+        funcs = (re.search(r"function ageText\(.*?(?=function cardFlags\()", page, re.S).group(0)
+                 + re.search(r"const LEFT_STATE.*?(?=function renderRows\()", page, re.S).group(0))
+        script = """
+const made=[];
+class El{constructor(tag){this.tag=tag;this.children=[];this.className='';this.textContent='';}
+  append(...xs){this.children.push(...xs);} replaceChildren(...xs){this.children=xs;} querySelectorAll(){return [];}}
+const document={createElement:t=>{const e=new El(t);made.push(e);return e;}};
+const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined&&text!==null)n.textContent=text;if(cls)n.className=cls;return n;};
+let calls=[];const notice=(t,err)=>calls.push(['notice',t,!!err]),load=async()=>calls.push(['load']);
+let fail=null;const api=async()=>{if(fail)throw fail;return {};};const list=new El('div');const $=()=>list;
+let data={left_off:[]};
+""" + funcs + """
+(async()=>{
+const now=1000000;
+const e=(state,ago,extra)=>Object.assign({provider:'claude',session_id:'S'+state,state,at:now-ago,since:now-ago,
+  pending_tools:[],checkout:null,feature:null,excerpt:null},extra);
+const lines=[e('waiting',7200),e('permission',300,{pending_tools:['Bash']}),e('ended',3*3600,{checkout:'relay-go-dev'}),
+  e('working',86400,{feature:{slug:'x',done:true}})].map(x=>leftLine(x,now));
+renderLeftOff();const empty=list.children.map(c=>c.textContent);
+data={left_off:[{project:'relay-go',last_active:Date.now()/1000-60,more:2,sessions:[e('ended',60)]}]};
+renderLeftOff();const group=list.children[0];
+const card=group.children[1].children[0];
+fail=Object.assign(new Error('gone'),{status:404});await card.onclick();
+console.log(JSON.stringify({lines,empty,heading:group.children[0].textContent,more:group.children[2].textContent,
+  buttons:made.filter(x=>x.tag==='button').length,cardKids:card.children.map(c=>c.className),after404:calls}));
+})();"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["lines"], ["Waiting on you · 2h ago", "Needs approval: Bash · 5m ago",
+                                        "Ended · 3h ago · relay-go-dev", "Was working · 1d ago · feature x (done)"])
+        self.assertEqual(out["empty"], ["No sessions to show yet."])
+        self.assertEqual(out["heading"], "relay-go · last active 1m ago")
+        self.assertEqual(out["more"], "Up to 2 more: run relay left --all")
+        self.assertEqual(out["buttons"], 0)                                     # left-off cards act on nothing
+        self.assertEqual(out["cardKids"], ["t", "reason"])
+        self.assertEqual(out["after404"], [["notice", "This session is no longer listed.", False], ["load"]])
+
     def test_reviewer_activity_tables_sort_by_any_column(self):
         page = self.request("/?t=test-token")[1]
         for piece in ("ledgerSort", "aria-sort", "sortLedger(", "nextSort(", "data-sort-key", "aria-hidden"):
