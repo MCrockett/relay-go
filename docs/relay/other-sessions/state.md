@@ -30,6 +30,10 @@
     {
       "action": "owner joined idea",
       "at": "2026-10-08T06:40:04-04:00"
+    },
+    {
+      "action": "owner joined spec",
+      "at": "2026-10-08T06:43:53-04:00"
     }
   ],
   "pr": null,
@@ -43,13 +47,13 @@
     "spec": null
   },
   "rounds": {
-    "spec": 1
+    "spec": 2
   },
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "changes-requested",
-  "updated": "2026-10-08T06:42:59-04:00",
+  "status": "in-review",
+  "updated": "2026-10-08T06:43:53-04:00",
   "verdicts": {
     "spec": "NO-GO"
   }
