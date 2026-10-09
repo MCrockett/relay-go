@@ -6,6 +6,8 @@ from . import transcripts
 
 WINDOW, EXCERPT, FULL = 1 << 20, 160, 4000
 HEAD = 64 * 1024  # how much of a transcript's start interactive() reads
+TURN_CHUNK, TURN_SCAN = WINDOW, 16 * WINDOW  # codex_turn reads back 1 MB at a time, at most 16 MB (codex-liveness D1)
+TURN_MARKS = {"task_started": "started", "task_complete": "ended", "turn_aborted": "ended"}
 _ORIGIN = {}  # transcript path -> conclusive interactive answer; a session's origin never changes
 
 
@@ -69,6 +71,45 @@ def last_words(provider, session_id):
             if found:
                 newest = found
         return {"source": newest[0], "text": newest[1]} if newest else None
+    except (OSError, ValueError):
+        return None
+
+
+def _turn_mark(line):
+    try:
+        record = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(record, dict) or record.get("type") != "event_msg" or not isinstance(record.get("payload"), dict):
+        return None
+    return TURN_MARKS.get(record["payload"].get("type"))
+
+
+def codex_turn(session_id):
+    """{marker: "started"|"ended", mtime} from the last turn marker in the session's newest rollout, read back from
+    the end at most TURN_SCAN bytes; None when no marker is found or the file cannot be read (codex-liveness D1)."""
+    try:
+        files = transcripts.files_for("codex", session_id)
+        if not files:
+            return None
+        path = max(files, key=os.path.getmtime)
+        mtime = os.path.getmtime(path)
+        with open(path, "rb") as f:
+            pos = f.seek(0, os.SEEK_END)
+            limit, carry, newest = max(0, pos - TURN_SCAN), b"", True
+            while pos > limit:
+                start = max(limit, pos - TURN_CHUNK)
+                f.seek(start)
+                lines = (f.read(pos - start) + carry).split(b"\n")
+                if newest:
+                    lines, newest = lines[:-1], False  # after the last newline: empty, or a line still being written
+                carry = lines.pop(0) if start > 0 and lines else b""  # may begin before this chunk
+                for line in reversed(lines):
+                    mark = _turn_mark(line)
+                    if mark:
+                        return {"marker": mark, "mtime": mtime}
+                pos = start
+        return None
     except (OSError, ValueError):
         return None
 
