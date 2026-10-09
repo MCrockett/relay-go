@@ -17,6 +17,7 @@ STATES = ("permission", "waiting", "working", "ended")
 WAITING = {"claude": {"Stop"}, "codex": {"Stop", "Interrupt"}}
 WORKING = {"claude": {"UserPromptSubmit"}, "codex": {"UserPromptSubmit"}}
 NOTICE = {"claude": {"UserPromptSubmit", "SessionStart"}, "codex": {"UserPromptSubmit"}}  # merge notice events
+NOTE = {"claude": {"UserPromptSubmit", "PostToolUse"}, "codex": {"UserPromptSubmit"}}  # owner notes (session-notify D1)
 TOOL_REFRESH_S = 30  # PostToolUse is frequent: one write per 30 seconds is enough
 READ_DEADLINE_S = 0.7  # with the 0.1 s lock wait, the sink stays within 1 second
 READ_CAP = 32_000_000  # far above any real hook input; only a runaway pipe reaches it
@@ -288,9 +289,16 @@ def capture(provider, stream, now=None):
                 _write(path, new)
         finally:
             os.close(lock)
-        if tell:
+        notes_said = []
+        if name in NOTE[provider]:  # after the record, outside its lock: a busy notes lock never delays it (D5)
+            try:
+                from . import notes
+                notes_said = notes.render(notes.take(provider, event["session_id"]))
+            except Exception:  # F4: the notes stay queued for the next event
+                notes_said = []
+        if tell or notes_said:
             from . import notices
-            print(notices.render(name, tell), flush=True)
+            print(notices.render(name, tell, notes_said), flush=True)
     except Exception:  # the sink's whole contract: nothing an agent can see
         pass
     return 0

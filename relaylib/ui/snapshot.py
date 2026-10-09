@@ -10,7 +10,8 @@ import time
 import tomllib
 
 from .. import (agentask, availability, config, gitops, health, hookinstall, ledger, leftoff, merged, othersessions,
-               owneractions, reviewjobs, reviewtables, sessions, state, status, usage as samples, verdict, waiting, writerusage)
+               notes as ownernotes, owneractions, reviewjobs, reviewtables, sessions, state, status, usage as samples,
+               verdict, waiting, writerusage)
 from ..errors import RelayError
 
 WORKERS = 8  # parallel fetches and feature details; gh and git are the wait, not the CPU
@@ -378,6 +379,7 @@ def build():
     samples.prune()
     root = status.projects_root()
     sessions.prune()
+    ownernotes.prune()  # with the session records (session-notify D5)
     try:
         records = sessions.read_records()
     except Exception:  # where-i-left-off F4: no records

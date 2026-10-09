@@ -266,7 +266,7 @@ class InboxTest(unittest.TestCase):
             self.assertFalse(sessions._valid(dict(good, inbox=bad)))
 
 
-class MergeNoticeTest(unittest.TestCase):
+class NoticeFixture(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -298,6 +298,8 @@ class MergeNoticeTest(unittest.TestCase):
             self.assertEqual(sessions.capture(provider, io.StringIO(json.dumps(event)), now=10.0), 0)
         return out.getvalue()
 
+
+class MergeNoticeTest(NoticeFixture):
     def test_a_merged_pr_is_told_once_to_the_session_that_owns_it(self):
         self.feature("docker", 26)
         self.feature("other", 27)          # not merged
@@ -351,6 +353,71 @@ T1, T2 = "Thu Oct  8 15:13:49 2026", "Fri Oct  9 09:00:00 2026"
 def table(*rows):
     """ps lines: (pid, ppid, started, args)."""
     return [f"{pid:>6} {ppid:>6} {started} {args}" for pid, ppid, started, args in rows]
+
+
+class NoteDeliveryTest(NoticeFixture):
+    def event(self, provider, name, session="s1", **extra):
+        event = ev(name, session_id=session, cwd=os.path.join(self.repo, "src"), **extra)
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            self.assertEqual(sessions.capture(provider, io.StringIO(json.dumps(event)), now=10.0), 0)
+        self.assertTrue(os.path.exists(sessions.record_path(provider, session)))
+        return json.loads(out.getvalue())["hookSpecificOutput"]["additionalContext"] if out.getvalue() else ""
+
+    def queue(self, text, provider="claude", session="s1"):
+        from relaylib import notes
+        return notes.send(provider, session, text, None)[0]
+
+    def statuses(self, provider="claude"):
+        from relaylib import notes
+        return [n["status"] for n in notes.list_for(provider, "s1")]
+
+    def test_claude_gets_notes_at_a_prompt_or_a_tool_call_once(self):
+        self.queue("check the build")
+        said = self.event("claude", "UserPromptSubmit")
+        self.assertEqual(said, "Note from the owner, sent from the relay dashboard:\ncheck the build")
+        self.assertEqual(self.event("claude", "UserPromptSubmit"), "")
+        self.queue("then stop")
+        self.assertEqual(self.event("claude", "Stop"), "")                       # not an event that carries notes
+        self.assertIn("then stop", self.event("claude", "PostToolUse", tool_name="Bash"))
+        self.assertEqual(self.statuses(), ["delivered", "delivered"])
+
+    def test_codex_gets_notes_only_at_a_prompt(self):
+        self.queue("hello", provider="codex")
+        self.assertEqual(self.event("codex", "PostToolUse", tool_name="shell"), "")
+        self.assertEqual(self.statuses("codex"), ["queued"])
+        self.assertIn("hello", self.event("codex", "UserPromptSubmit"))
+
+    def test_notes_and_a_merge_notice_come_out_together(self):
+        self.feature("docker", 26)
+        self.merged(26)
+        self.queue("nice work")
+        said = self.event("claude", "UserPromptSubmit").split("\n")
+        self.assertIn("PR #26 (docker) was merged", said[0])
+        self.assertEqual(said[1:], ["Note from the owner, sent from the relay dashboard:", "nice work"])
+
+    def test_a_busy_or_broken_log_never_stops_the_record(self):
+        from relaylib import notes
+        self.queue("later")
+        fd = sessions._lock(os.path.join(notes.folder(), ".lock"), 1)
+        try:
+            self.assertEqual(self.event("claude", "UserPromptSubmit"), "")
+        finally:
+            os.close(fd)
+        self.assertEqual(self.statuses(), ["queued"])
+        os.chmod(notes.folder(), 0o500)                                           # cannot be written
+        try:
+            self.assertEqual(self.event("claude", "UserPromptSubmit"), "")
+        finally:
+            os.chmod(notes.folder(), 0o700)
+        self.assertEqual(self.statuses(), ["queued"])
+        self.assertIn("later", self.event("claude", "UserPromptSubmit"))         # delivered once it is fixed
+        os.makedirs(notes.log_path("claude", "s2"))                               # a log that cannot be read
+        self.assertEqual(self.event("claude", "UserPromptSubmit", session="s2"), "")
+        with mock.patch.object(notes, "take", side_effect=RuntimeError("boom")):
+            self.queue("again")
+            self.assertEqual(self.event("claude", "UserPromptSubmit"), "")
+        self.assertEqual(self.statuses()[0], "queued")
 
 
 class ProcessTest(unittest.TestCase):
