@@ -241,6 +241,7 @@ def scan_with_claims(root_dir):
             row = with_asks(_remote_row(checkout, ref, slug, st, has_handoff, fetched), st, ref, records, now, mine)
             if key not in rows or row["updated"] > rows[key]["updated"]:
                 rows[key], claims[key] = row, mine
+    waiting.one_ask_per_session(list(rows.values()))
     ordered = sorted(rows.values(), key=lambda r: (not r["waiting_on_owner"], r["repo"] or "", r["feature"]))
     return ordered, set().union(*claims.values())
 

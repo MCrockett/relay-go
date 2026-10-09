@@ -365,7 +365,8 @@ class SnapshotTest(unittest.TestCase):
         self.stopped(said=question)
         snap = snapshot.build()
         row = snap["rows"][0]
-        self.assertEqual(row["asks"], [{"kind": "answer", "text": "Answer the codex session", "since": row["wait_since"]}])
+        self.assertEqual(row["asks"], [{"kind": "answer", "text": "Answer the codex session", "since": row["wait_since"],
+                                        "session": "codex:s1"}])
         self.assertTrue(row["waiting_on_owner"])
         self.assertEqual(row["excerpt"]["source"], "agent")
         self.assertTrue(row["excerpt"]["text"].startswith("PURPLE-GIRAFFE should I") and row["excerpt"]["text"].endswith("…"))
@@ -463,6 +464,27 @@ class SnapshotTest(unittest.TestCase):
         self.assertIsNone(row["wait_since"])
         self.assertIsNone(row["excerpt"])
         self.assertTrue(row["waiting_on_owner"])
+
+    def test_one_session_waits_once_after_the_rows_get_their_asks(self):
+        self.st["status"] = "drafting"
+        self.save()
+        self.hook("Stop")
+        record_path = sessions.record_path("codex", "s1")
+        with open(record_path) as f:
+            data = json.load(f)
+        data["since"] = data["at"] = time.time() - 600            # stopped ten minutes ago
+        with open(record_path, "w") as f:
+            json.dump(data, f)
+        seen = []
+        real = snapshot.waiting.one_ask_per_session
+        def spy(rows):
+            seen.append([list(r.get("asks") or []) for r in rows])  # every row is enriched before the merge
+            return real(rows)
+        with mock.patch.object(snapshot.waiting, "one_ask_per_session", side_effect=spy):
+            snap = snapshot.build()
+        self.assertEqual(len(seen), 2)  # the scan's rows, then the enriched rows the page shows
+        self.assertEqual(seen[-1], [r["asks"] for r in snap["rows"]])
+        self.assertEqual([a["kind"] for a in snap["rows"][0]["asks"]], ["answer"])
 
     def test_a_waiting_session_puts_a_drafting_feature_in_the_inbox(self):
         self.st["status"] = "drafting"

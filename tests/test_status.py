@@ -227,6 +227,17 @@ class StatusTest(StatusFixture):
         self.assertLess(text.index("one"), text.index("    Fix: "))
         self.assertNotIn("Fix: ", text.split("    Fix: ")[1].split("\n")[0])   # no age on the error line
 
+    def test_one_session_holding_two_features_waits_once(self):
+        self.held("alpha", "one", "S1")
+        self.held("beta", "two", "S1")
+        self.session("S1")
+        rows = {r["feature"]: r for r in status.scan(self.projects)}
+        waiting_rows = [f for f, r in rows.items() if r["waiting_on_owner"]]
+        self.assertEqual(len(waiting_rows), 1)
+        kept, dropped = waiting_rows[0], ({"one", "two"} - set(waiting_rows)).pop()
+        self.assertEqual([a["text"] for a in rows[kept]["asks"]], [f"Answer the claude session · also for {dropped}"])
+        self.assertEqual(rows[dropped]["asks"], [])
+
     def test_session_health_failing_for_one_row_keeps_its_state_asks(self):
         self.held("alpha", "one", "S1", status="waiting-owner")
         self.held("beta", "two", "S2")

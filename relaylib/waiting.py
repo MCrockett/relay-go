@@ -15,8 +15,15 @@ def _updated(st):
         return None
 
 
-def _ask(kind, text, since):
-    return {"kind": kind, "text": text, "since": since}
+def _ask(kind, text, since, session=None):
+    out = {"kind": kind, "text": text, "since": since}
+    if session:
+        out["session"] = session  # the session this ask waits on, so one wait shows once (one_ask_per_session)
+    return out
+
+
+def _session(record):
+    return f"{record.get('provider')}:{record.get('session_id')}" if record and record.get("session_id") else None
 
 
 def _stale(flags):
@@ -48,9 +55,10 @@ def asks(row, st, health, record, stuck_reason):
         if text.startswith("needs permission") and record:
             tools = list(dict.fromkeys(p.get("tool_name") for p in record.get("pending") or [] if p.get("tool_name")))
             what = ", ".join(tools) or "a tool"
-            out.append(_ask("approve", f"Approve {what} in the {provider} session", record.get("since")))
+            out.append(_ask("approve", f"Approve {what} in the {provider} session", record.get("since"),
+                            _session(record)))
         elif text.startswith("waiting on you") and record:
-            out.append(_ask("answer", f"Answer the {provider} session", record.get("since")))
+            out.append(_ask("answer", f"Answer the {provider} session", record.get("since"), _session(record)))
         else:
             out.append(_ask("check", f"Check the {provider} session: {text}", health.get("since")))
     return out
@@ -59,6 +67,31 @@ def asks(row, st, health, record, stuck_reason):
 def since(found):
     times = [a["since"] for a in found if a.get("since") is not None]
     return min(times) if times else None
+
+
+def one_ask_per_session(rows):
+    """One session that owns several features waits on the owner once: its ask stays on the feature updated last,
+    naming the others, and leaves the others' rows (which stop waiting when it was their only ask)."""
+    groups = {}
+    for r in rows:
+        for key in {a["session"] for a in r.get("asks") or [] if a.get("session")}:
+            groups.setdefault(key, []).append(r)
+    for key, members in groups.items():
+        if len(members) < 2:
+            continue
+        keep = max(members, key=lambda r: (r.get("updated") or "", r.get("feature") or ""))
+        also = ", ".join(sorted(r.get("feature") or "" for r in members if r is not keep))
+        for r in members:
+            if r is keep:
+                for a in r["asks"]:
+                    if a.get("session") == key:
+                        a["text"] += f" · also for {also}"
+                continue
+            r["asks"] = [a for a in r["asks"] if a.get("session") != key]
+            r["wait_since"], r["waiting_on_owner"] = since(r["asks"]), bool(r["asks"])
+            if "health_inbox" in r:
+                r["health_inbox"] = bool(r["asks"]) and all(a["kind"] in ("answer", "approve", "check") for a in r["asks"])
+    return rows
 
 
 def sort_key(row):
