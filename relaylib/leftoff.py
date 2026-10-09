@@ -9,6 +9,7 @@ from . import agentask, health, othersessions, sessions, status
 
 LIMIT = 3
 QUIET_S, PROCESS_QUIET_S = 600, 7200  # running-now D3: without a process, and with a live one
+TURN_QUIET_S = 1800  # codex-liveness D2: a Codex turn whose rollout is silent this long is not running
 COMMAND = {"claude": "claude --resume {}", "codex": "codex resume {}"}
 EMPTY = "No sessions to show. relay sees sessions started after its hooks were installed, for 7 days."
 
@@ -36,7 +37,7 @@ def _tools(record):
     return out
 
 
-def is_running(record, alive, now):
+def _counts(record, alive, now):
     """running-now D3: a working session whose process is alive (and not quiet for over 2 hours), or, without a
     process to check, one written in the last 10 minutes."""
     if record["state"] != "working":
@@ -44,6 +45,30 @@ def is_running(record, alive, now):
     if record.get("process") and alive is not None:
         return record["session_id"] in alive and now - record["at"] <= PROCESS_QUIET_S
     return now - record["at"] <= QUIET_S
+
+
+def is_running(record, alive, now, turns=None):
+    """running-now D3, then for Codex the rollout's last turn marker (codex-liveness D2): an ended turn, or a started
+    one silent for over 30 minutes, is not running. A session with no answer in `turns` is judged by D3 alone."""
+    if not _counts(record, alive, now):
+        return False
+    turn = (turns or {}).get(record["session_id"]) if record["provider"] == "codex" else None
+    if turn is None:
+        return True
+    return turn["marker"] == "started" and now - turn["mtime"] <= TURN_QUIET_S
+
+
+def codex_turns(records, alive, now):
+    """{session_id: agentask.codex_turn answer} for the Codex sessions D3 counts as running, read once per run and
+    shared by both lists (codex-liveness D4); a failing read is None."""
+    out = {}
+    for r in records:
+        if r["provider"] == "codex" and _counts(r, alive, now):
+            try:
+                out[r["session_id"]] = agentask.codex_turn(r["session_id"])
+            except Exception:  # D5: unknown, D3 decides
+                out[r["session_id"]] = None
+    return out
 
 
 def _shown_state(record, alive):
@@ -84,10 +109,10 @@ def _placed(records, root):
     return out
 
 
-def running(records, marks, root, alive, now):
+def running(records, marks, root, alive, now, turns=None):
     """running-now D5: the owner's running sessions, newest activity first."""
     out = []
-    for r, project, checkout in _placed([r for r in records if is_running(r, alive, now)], root):
+    for r, project, checkout in _placed([r for r in records if is_running(r, alive, now, turns)], root):
         try:
             words = agentask.last_words(r["provider"], r["session_id"])
             out.append({"provider": r["provider"], "session_id": r["session_id"], "project": project,
@@ -101,12 +126,12 @@ def running(records, marks, root, alive, now):
     return sorted(out, key=lambda e: (-e["at"], e["session_id"]))
 
 
-def projects(records, marks, root, limit=LIMIT, alive=None, now=None):
+def projects(records, marks, root, limit=LIMIT, alive=None, now=None, turns=None):
     """[{project, last_active, more, sessions}] newest first (D3, D5); limit None shows every session. Running
     sessions are left out: they are in Running now (running-now D4)."""
     now = time.time() if now is None else now
     groups = {}
-    for r, project, checkout in _placed([r for r in records if not is_running(r, alive, now)], root):
+    for r, project, checkout in _placed([r for r in records if not is_running(r, alive, now, turns)], root):
         groups.setdefault(project, []).append((r, checkout))
     out = []
     for project, members in groups.items():
@@ -213,7 +238,11 @@ def cmd_left(args):
     except Exception:  # unknown liveness: the 10-minute rule (running-now D2)
         alive = None
     now = time.time()
-    found = projects(records, marks, root, None if args.all else LIMIT, alive, now)
-    block = render_running(running(records, marks, root, alive, now), now)
+    try:
+        turns = codex_turns(records, alive, now)  # one read per run, for both lists (codex-liveness D4)
+    except Exception:  # D5: unknown, running-now D3 decides
+        turns = None
+    found = projects(records, marks, root, None if args.all else LIMIT, alive, now, turns)
+    block = render_running(running(records, marks, root, alive, now, turns), now)
     body = render_recent(found, now) if args.recent else render(found, now)
     print(block + "\n\n" + body if block else body)

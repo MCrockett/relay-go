@@ -325,6 +325,7 @@ def other_sessions(root, claimed, now=None):
 def cmd_status(args):
     root = projects_root()
     rows, claimed = scan_with_claims(root)
+    waiting.one_ask_per_session(rows)  # here, not in the scan: the dashboard merges after its own enrichment
     if not args.all:
         rows = [r for r in rows if r["stage"] != "done"]
     if args.json:  # unchanged: feature rows only, oldest wait first (other-sessions D5, running-now D8)

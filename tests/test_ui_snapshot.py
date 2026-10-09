@@ -324,6 +324,10 @@ class SnapshotTest(unittest.TestCase):
     def test_running_in_the_snapshot_and_api(self):
         self.other("s1", age_s=30, cwd=os.path.realpath(self.work), state_="working", owner=True,
                    said="Running the suite.")
+        mid_turn = mock.patch.object(snapshot.leftoff.agentask, "codex_turn",  # its turn is still going
+                                     return_value={"marker": "started", "mtime": time.time()})
+        mid_turn.start()
+        self.addCleanup(mid_turn.stop)
         self.other("o1", age_s=1200, state_="ended", owner=True)
         with mock.patch.object(sessions, "alive", return_value=None):
             data = snapshot.build()
@@ -340,6 +344,26 @@ class SnapshotTest(unittest.TestCase):
             data = snapshot.build()
         self.assertEqual((data["running"], [r["feature"] for r in data["rows"]]), ([], ["demo"]))
         with mock.patch.object(sessions, "alive", side_effect=RuntimeError("boom")):
+            self.assertEqual([e["session_id"] for e in snapshot.build()["running"]], ["s1"])
+
+    def test_a_codex_turn_that_ended_is_left_off_not_running(self):
+        self.other("s1", age_s=30, cwd=os.path.realpath(self.work), state_="working", owner=True,
+                   said="Running the suite.")
+        real, calls = snapshot.leftoff.codex_turns, []
+
+        def spy(*a):
+            calls.append(a)
+            return real(*a)
+        ended = {"marker": "ended", "mtime": time.time()}
+        with mock.patch.object(sessions, "alive", return_value=None), \
+                mock.patch.object(snapshot.leftoff.agentask, "codex_turn", return_value=ended), \
+                mock.patch.object(snapshot.leftoff, "codex_turns", side_effect=spy):
+            data = snapshot.build()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(data["running"], [])
+        self.assertEqual(self.left(data), [("work", [("s1", {"slug": "demo", "done": False})])])
+        with mock.patch.object(sessions, "alive", return_value=None), \
+                mock.patch.object(snapshot.leftoff, "codex_turns", side_effect=RuntimeError("boom")):
             self.assertEqual([e["session_id"] for e in snapshot.build()["running"]], ["s1"])
 
     def test_left_off_failures(self):
@@ -365,7 +389,8 @@ class SnapshotTest(unittest.TestCase):
         self.stopped(said=question)
         snap = snapshot.build()
         row = snap["rows"][0]
-        self.assertEqual(row["asks"], [{"kind": "answer", "text": "Answer the codex session", "since": row["wait_since"]}])
+        self.assertEqual(row["asks"], [{"kind": "answer", "text": "Answer the codex session", "since": row["wait_since"],
+                                        "session": "codex:s1"}])
         self.assertTrue(row["waiting_on_owner"])
         self.assertEqual(row["excerpt"]["source"], "agent")
         self.assertTrue(row["excerpt"]["text"].startswith("PURPLE-GIRAFFE should I") and row["excerpt"]["text"].endswith("…"))
@@ -463,6 +488,58 @@ class SnapshotTest(unittest.TestCase):
         self.assertIsNone(row["wait_since"])
         self.assertIsNone(row["excerpt"])
         self.assertTrue(row["waiting_on_owner"])
+
+    def test_one_session_waits_once_after_the_rows_get_their_asks(self):
+        self.st["status"] = "drafting"
+        self.save()
+        self.hook("Stop")
+        record_path = sessions.record_path("codex", "s1")
+        with open(record_path) as f:
+            data = json.load(f)
+        data["since"] = data["at"] = time.time() - 600            # stopped ten minutes ago
+        with open(record_path, "w") as f:
+            json.dump(data, f)
+        seen = []
+        real = snapshot.waiting.one_ask_per_session
+        def spy(rows):
+            seen.append([list(r.get("asks") or []) for r in rows])  # every row is enriched before the merge
+            return real(rows)
+        with mock.patch.object(snapshot.waiting, "one_ask_per_session", side_effect=spy):
+            snap = snapshot.build()
+        self.assertEqual(len(seen), 1)  # once, after enrichment (the scan's rows stay whole for failed details)
+        self.assertEqual(seen[0], [r["asks"] for r in snap["rows"]])
+        self.assertEqual([a["kind"] for a in snap["rows"][0]["asks"]], ["answer"])
+
+    def two_features_one_session(self):
+        """A second feature, "other", held by the same session s1, which waits on the owner."""
+        self.st["status"] = "drafting"
+        other = state.new_state("other", "project", {"provider": "codex", "session": "s1"}, "feat/demo")
+        other.update(stage="spec", status="drafting")
+        state.write_state(state.state_path(self.work, "other"), other)
+        self.save()
+        self.stopped()
+
+    def test_one_session_holding_two_features_waits_once_in_the_dashboard(self):
+        self.two_features_one_session()
+        rows = {r["feature"]: r for r in snapshot.build()["rows"]}
+        answers = {f: [a["text"] for a in r["asks"] if a["kind"] == "answer"] for f, r in rows.items()}
+        self.assertEqual(sorted(len(v) for v in answers.values()), [0, 1])
+        kept = next(f for f, v in answers.items() if v)
+        self.assertEqual(answers[kept], ["Answer the codex session · also for " + ({"demo", "other"} - {kept}).pop()])
+
+    def test_a_feature_that_fails_to_load_keeps_the_wait_when_the_other_is_done(self):
+        self.two_features_one_session()
+        self.st.update(stage="done", status="done")
+        self.save()
+        real = snapshot.feature
+        def fail_other(repo, slug, *a, **k):
+            if slug == "other":
+                raise RelayError("cannot read other")
+            return real(repo, slug, *a, **k)
+        with mock.patch.object(snapshot, "feature", side_effect=fail_other):
+            rows = {r["feature"]: r for r in snapshot.build()["rows"]}
+        self.assertEqual([a["kind"] for a in rows["other"]["asks"]], ["answer"])  # the scan's ask, not merged away
+        self.assertEqual(rows["demo"]["asks"], [])
 
     def test_a_waiting_session_puts_a_drafting_feature_in_the_inbox(self):
         self.st["status"] = "drafting"

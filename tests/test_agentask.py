@@ -166,5 +166,71 @@ class InteractiveTest(LastWordsTest):
         self.assertFalse(agentask.interactive("claude", "S1"))
 
 
+def marker(kind):
+    return json.dumps({"type": "event_msg", "payload": {"type": kind}})
+
+
+def noise(n=1):
+    return json.dumps({"type": "event_msg", "payload": {"type": "token_count", "pad": "x" * n}})
+
+
+class CodexTurnTest(LastWordsTest):
+    def turn(self):
+        return agentask.codex_turn("C1")
+
+    def test_started_and_both_kinds_of_ended(self):
+        path = self.codex_log([marker("task_started"), reply("working"), noise()])
+        os.utime(path, (1000.0, 1000.0))
+        self.assertEqual(self.turn(), {"marker": "started", "mtime": 1000.0})
+        self.codex_log([marker("task_started"), done("ok"), noise()])
+        self.assertEqual(self.turn()["marker"], "ended")
+        self.codex_log([marker("task_started"), marker("turn_aborted")])
+        self.assertEqual(self.turn()["marker"], "ended")
+
+    def test_the_newest_marker_wins(self):
+        self.codex_log([marker("task_started"), done("a"), marker("task_started"), reply("b")])
+        self.assertEqual(self.turn()["marker"], "started")
+        self.codex_log([marker("task_started"), marker("task_started"), done("c")])
+        self.assertEqual(self.turn()["marker"], "ended")
+
+    def test_bad_lines_are_skipped_and_a_partial_last_line_ignored(self):
+        path = self.codex_log([marker("task_started"), "not json", json.dumps({"type": "event_msg", "payload": "x"}),
+                               json.dumps([1, 2]), json.dumps({"type": "event_msg"})])
+        with open(path, "a") as f:
+            f.write(json.dumps({"type": "event_msg", "payload": {"type": "task_complete"}})[:-1])  # still being written
+        self.assertEqual(self.turn()["marker"], "started")
+
+    def test_none_when_it_cannot_be_told(self):
+        self.assertIsNone(self.turn())                                  # no rollout
+        self.codex_log([reply("hi"), noise()])
+        self.assertIsNone(self.turn())                                  # no marker
+        self.codex_log([marker("task_started")])
+        with mock.patch("builtins.open", side_effect=OSError("denied")):
+            self.assertIsNone(self.turn())
+
+    def test_reads_back_in_chunks_up_to_the_limit(self):
+        with mock.patch.object(agentask, "TURN_CHUNK", 64), mock.patch.object(agentask, "TURN_SCAN", 2048):
+            self.codex_log([done("x"), marker("task_started")] + [noise(10)] * 20)       # about 1,100 bytes back
+            self.assertEqual(self.turn()["marker"], "started")
+            self.codex_log([marker("task_started")] + [noise(10)] * 60)                  # past 2,048 bytes
+            self.assertIsNone(self.turn())
+            self.codex_log([noise(10)] * 60)                                              # large, no markers at all
+            self.assertIsNone(self.turn())
+            self.codex_log([marker("turn_aborted"), noise(200)])  # a line longer than a chunk is joined whole
+            self.assertEqual(self.turn()["marker"], "ended")
+            self.codex_log([noise(200), marker("task_started")])
+            self.assertEqual(self.turn()["marker"], "started")
+
+    def test_the_newest_of_several_rollouts(self):
+        old = self.codex_log([marker("task_started")])
+        os.utime(old, (100.0, 100.0))
+        new = os.path.join(self.tmp, "codex", "sessions", "2026", "10", "08", "rollout-2026-10-08T10-00-00-C1.jsonl")
+        os.makedirs(os.path.dirname(new))
+        with open(new, "w") as f:
+            f.write(done("x") + "\n")
+        os.utime(new, (200.0, 200.0))
+        self.assertEqual(self.turn(), {"marker": "ended", "mtime": 200.0})
+
+
 if __name__ == "__main__":
     unittest.main()
