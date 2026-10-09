@@ -55,7 +55,12 @@
   "review_notes": {},
   "reviewed": {
     "build": null,
-    "plan": null,
+    "plan": {
+      "inputs": {
+        "plan": "a8189313ae2dfe8ffdd353a84f6f22a2b476c6f49e8affc732d07a16f6105612",
+        "spec": "38400a63146702b9a4e322497cba13c0ba0a3c3eb5e0b9064456cc44e5e81136"
+      }
+    },
     "spec": {
       "inputs": {
         "spec": "38400a63146702b9a4e322497cba13c0ba0a3c3eb5e0b9064456cc44e5e81136"
@@ -68,10 +73,11 @@
   },
   "skipped": [],
   "small": false,
-  "stage": "plan",
-  "status": "in-review",
-  "updated": "2026-10-08T20:57:15-04:00",
+  "stage": "build",
+  "status": "drafting",
+  "updated": "2026-10-08T20:57:45-04:00",
   "verdicts": {
+    "plan": "GO",
     "spec": "GO"
   }
 }
