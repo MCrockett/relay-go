@@ -505,7 +505,7 @@ await sendNote(claude);const failed=[$('sd-note-text').value,$('sd-note-result')
 reply={note:n('posted'),message:'Posted to the session, but relay could not record it.',notes:[]};
 await sendNote(claude);const f5=[$('sd-note-text').value,$('sd-note-result').textContent];
 reply={note:n('queued'),message:null,notes:[n('queued')]};$('sd-note-text').value='later';
-await sendNote(codex);const queued=$('sd-note-result').textContent;
+noteSession='codex:C1';await sendNote(codex);const queued=$('sd-note-result').textContent;noteSession='claude:S1';
 reply=Object.assign(new Error('That note was already handed to the session or is gone.'),{status:409,notes:[n('delivered')]});
 await removeNote(claude,'queued');const redraw=[$('sd-note-result').textContent,$('sd-note-list').children.length,
   $('sd-note-list').children[0].children.filter(c=>c.tag==='button').length];
@@ -526,6 +526,43 @@ console.log(JSON.stringify({words,hints,removable,shown,failed,f5,queued,redraw,
         self.assertEqual(out["redraw"], ["That note was already handed to the session or is gone.", 1, 0])
         self.assertEqual(out["sent"], ["/api/session?provider=claude&session=S1", "/api/note", "/api/note",
                                        "/api/note", "/api/note/remove"])
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_a_late_note_reply_never_touches_another_dialog_or_a_new_draft(self):
+        page = self.request("/?t=test-token")[1]
+        funcs = re.search(r"function ageText\(.*?(?=function cardFlags\()", page, re.S).group(0)
+        script = """
+class El{constructor(tag){this.tag=tag;this.children=[];this.className='';this.textContent='';this.value='';this.hidden=false;}
+  append(...xs){this.children.push(...xs);} replaceChildren(...xs){this.children=xs;} showModal(){}}
+const document={createElement:t=>new El(t)};
+const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined&&text!==null)n.textContent=text;if(cls)n.className=cls;return n;};
+const els={};const $=id=>els[id]||(els[id]=new El(id));const notice=()=>{},load=async()=>{};
+let pending=[];const api=(path,body)=>path.startsWith('/api/session')
+  ?Promise.resolve({state:'waiting',pending_tools:[],text:'x',resume:'r',not_running:false,notes:[]})
+  :new Promise((ok,fail)=>pending.push({ok,fail}));
+""" + funcs + """
+(async()=>{
+const A={provider:'claude',session_id:'A'},B={provider:'claude',session_id:'B'};
+const q={id:'q',text:'for A',at:1,status:'queued',status_at:1};
+await openSession(A);$('sd-note-text').value='for A';const sending=sendNote(A);
+await openSession(B);$('sd-note-text').value='draft for B';
+pending.shift().ok({note:q,message:null,notes:[q]});await sending;
+const other=[$('sd-note-text').value,$('sd-note-list').children.length,$('sd-note-result').textContent];
+await openSession(A);$('sd-note-text').value='first';const again=sendNote(A);$('sd-note-text').value='first, edited';
+pending.shift().ok({note:q,message:null,notes:[q]});await again;
+const edited=[$('sd-note-text').value,$('sd-note-list').children.length];
+await openSession(A);const failing=sendNote(A);await openSession(B);
+pending.shift().fail(Object.assign(new Error('busy'),{status:400}));await failing;
+const failed=$('sd-note-result').textContent;
+const removing=removeNote(A,'q');await openSession(B);
+pending.shift().ok({notes:[q,q]});await removing;
+console.log(JSON.stringify({other,edited,failed,removed:$('sd-note-list').children.length}));
+})();"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["other"], ["draft for B", 0, ""])                  # A's reply left B's dialog alone
+        self.assertEqual(out["edited"], ["first, edited", 1])                   # an edit made while sending stays
+        self.assertEqual(out["failed"], "")
+        self.assertEqual(out["removed"], 0)
 
     @unittest.skipUnless(shutil.which("node"), "needs node")
     def test_running_and_sort_rules_run_in_node(self):

@@ -67,9 +67,7 @@ class NotesTest(unittest.TestCase):
 
     def hold_lock(self):
         os.makedirs(notes.folder(), exist_ok=True)
-        fd = sessions._lock(os.path.join(notes.folder(), ".lock"), 1)
-        self.addCleanup(os.close, fd)
-        return fd
+        return sessions._lock(os.path.join(notes.folder(), ".lock"), 1)
 
     def test_queued_note_file_name_and_modes(self):
         note, message = notes.send("claude", "s1", "check the build", None, NOW)
@@ -145,7 +143,7 @@ class NotesTest(unittest.TestCase):
 
     def test_a_busy_lock(self):
         notes.send("claude", "s1", "waiting", None, NOW)
-        self.hold_lock()
+        self.addCleanup(os.close, self.hold_lock())
         fake = self.inbox()
         started = time.monotonic()
         self.assertEqual(notes.take("claude", "s1", NOW), [])
@@ -154,6 +152,25 @@ class NotesTest(unittest.TestCase):
             notes.send("claude", "s1", "hi", fake.path, NOW)
         self.assertEqual(fake.got, [])
         self.assertEqual([n["status"] for n in self.log()], ["queued"])
+
+    def test_a_send_while_the_hook_holds_the_lock_waits_and_stays_queued(self):
+        notes.send("claude", "s1", "first", None, NOW)
+        fd = self.hold_lock()                                                     # the hook is taking notes
+        result = {}
+        sender = threading.Thread(target=lambda: result.update(sent=notes.send("claude", "s1", "second", None, NOW)))
+        sender.start()
+        time.sleep(0.3)
+        self.assertTrue(sender.is_alive())                                        # waiting for the lock
+        with open(notes.log_path("claude", "s1")) as f:
+            logged = json.load(f)
+        for n in logged:
+            n.update(status="delivered", status_at=NOW)                           # what take writes, under the lock
+        with open(notes.log_path("claude", "s1"), "w") as f:
+            json.dump(logged, f)
+        os.close(fd)
+        sender.join(3)
+        self.assertEqual(result["sent"][0]["status"], "queued")
+        self.assertEqual([(n["text"], n["status"]) for n in self.log()], [("first", "delivered"), ("second", "queued")])
 
     def test_storage_failures_stop_the_send_before_any_post(self):
         fake = self.inbox()
