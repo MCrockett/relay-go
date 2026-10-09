@@ -366,6 +366,19 @@ class SnapshotTest(unittest.TestCase):
                 mock.patch.object(snapshot.leftoff, "codex_turns", side_effect=RuntimeError("boom")):
             self.assertEqual([e["session_id"] for e in snapshot.build()["running"]], ["s1"])
 
+    def test_listed_sessions_carry_their_notes(self):
+        from relaylib import notes
+        self.other("w1", age_s=600)                                               # waiting: other sessions
+        self.other("o1", age_s=1200, state_="ended", owner=True)                  # left off
+        notes.send("codex", "w1", "check the logs", None)
+        notes.send("codex", "o1", "when you are back", None)
+        with mock.patch.object(sessions, "alive", return_value=None):
+            data = snapshot.build()
+        [waiting] = [e for e in data["other_sessions"] if e["session_id"] == "w1"]
+        self.assertEqual([n["text"] for n in waiting["notes"]], ["check the logs"])
+        [left] = [e for p in data["left_off"] for e in p["sessions"] if e["session_id"] == "o1"]
+        self.assertEqual([(n["text"], n["status"]) for n in left["notes"]], [("when you are back", "queued")])
+
     def test_left_off_failures(self):
         self.other("s1", age_s=600, cwd=os.path.realpath(self.work), owner=True)
         with mock.patch.object(status, "scan_with_claims", side_effect=RuntimeError("boom")):

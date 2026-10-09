@@ -157,6 +157,25 @@ have no buttons. Only sessions you started yourself are shown, not automated run
 (`claude -p`, `codex exec`), and only sessions that said something or wait for a tool approval. relay's hooks keep
 session records for 7 days, so older sessions and ones started before the hooks were installed are not shown.
 
+Every session dialog (Running now, the inbox, "Where you left off") has a "Send a note" box. Each note starts with
+"Note from the owner, sent from the relay dashboard:" and reaches the session one of two ways:
+
+- **Inbox (Claude):** relay's hook records each Claude session's inbox socket (the path only, never its token), and
+  the dashboard posts the note there. Claude Code shows it in that terminal as a message from "Another Claude session" (the note's first line says it
+  is from you, through the dashboard) and
+  hands it to Claude at once: between tool calls if it is working, as a new turn if it is waiting on you (which
+  uses usage like a prompt you type). If that session skips permission prompts, Claude Code asks you to approve
+  the note in its terminal first; if it refuses messages from other sessions, the note is dropped. relay cannot
+  see which happened, so the note shows as "posted".
+- **Next event:** when there is no inbox to post to (Codex, a Claude session without one, or a session that has
+  ended or stopped), relay queues the note, and relay's hook adds it to the session's context with its next prompt
+  (Codex and Claude) or tool call (Claude). It then shows as "delivered".
+
+A note is information from you, not your approval: it cannot answer a permission prompt, so approve tools in the
+session's own terminal. The dialog lists the session's notes from the last 7 days with their status, and a queued
+note can be removed until the session takes it. relay never starts or resumes a session to deliver a note. Notes
+stay on this machine, in `~/.relay/notes`, and are pruned after 7 days.
+
 Open a feature to see its stage history, reviews, owner decisions,
 session, handoff and CI. Reviews open even when their branch is not checked out. The All features table
 can include completed work. Models shows Codex and Claude weekly limits, daily carry-forward budgets, and the

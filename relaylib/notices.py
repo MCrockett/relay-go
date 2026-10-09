@@ -46,7 +46,8 @@ def merged_features(session_id, cwd):
     return [(f"{url}#{pr}", slug, pr) for slug, pr in owned if cache.get(f"{url}#{pr}")]
 
 
-def render(event_name, features):
+def render(event_name, features, extra=()):
+    """One hookSpecificOutput with the merge notices, then any other lines (owner notes, session-notify D5)."""
     lines = [f"relay: PR #{pr} ({slug}) was merged. Its feature is done: switch to the base branch and pull "
-             "before new work." for _, slug, pr in features]
+             "before new work." for _, slug, pr in features] + list(extra)
     return json.dumps({"hookSpecificOutput": {"hookEventName": event_name, "additionalContext": "\n".join(lines)}})

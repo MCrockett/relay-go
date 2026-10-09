@@ -135,7 +135,8 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(code, 200)
             self.assertEqual(json.loads(text), {"provider": "claude", "session_id": "S1", "label": "proteindiary",
                                                 "state": "waiting", "pending_tools": [], "source": "agent",
-                                                "text": words["text"], "resume": "claude --resume S1"})
+                                                "text": words["text"], "resume": "claude --resume S1",
+                                                "not_running": False, "notes": []})
             read.reset_mock()
             self.assertEqual(self.request("/api/session?provider=claude&session=S2")[0], 404)
             self.assertEqual(self.request("/api/session?provider=codex&session=S1")[0], 404)
@@ -164,10 +165,104 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(code, 200)
             self.assertEqual(json.loads(text), {"provider": "codex", "session_id": "C1", "label": "~/app",
                                                 "state": "ended", "pending_tools": [], "source": "agent",
-                                                "text": words["text"], "resume": "cd ~/app && codex resume C1"})
+                                                "text": words["text"], "resume": "cd ~/app && codex resume C1",
+                                                "not_running": True, "notes": []})
             read.reset_mock()
             self.assertEqual(self.request("/api/session?provider=codex&session=C2")[0], 404)
             read.assert_not_called()
+
+    def note_data(self, state="waiting", shown=None):
+        entry = {"provider": "claude", "session_id": "S1", "label": "app", "folder": None, "state": state,
+                 "since": 1.0, "pending_tools": [], "excerpt": None}
+        if shown:
+            entry["shown_state"] = shown
+        return {"rows": [], "features": [], "usage": {"providers": {}}, "other_sessions": [entry]}
+
+    def record_inbox(self, inbox):
+        from relaylib import sessions
+        record = sessions.apply(None, "claude", {"session_id": "S1", "hook_event_name": "Stop", "cwd": "/w"}, 1.0,
+                                inbox)
+        os.makedirs(sessions.folder(), exist_ok=True)
+        with open(sessions.record_path("claude", "S1"), "w") as f:
+            json.dump(record, f)
+
+    def note(self, payload, path="/api/note", **kw):
+        code, text = self.request(path, "POST", payload, **kw)
+        return code, json.loads(text)
+
+    def test_notes_are_queued_posted_and_removed_only_for_listed_sessions(self):
+        from tests.test_notes import FakeInbox
+        sock_dir = tempfile.TemporaryDirectory(dir="/tmp")
+        self.addCleanup(sock_dir.cleanup)
+        fake = FakeInbox(sock_dir.name)
+        self.addCleanup(fake.close)
+        send = lambda text, sid="S1": self.note({"provider": "claude", "session_id": sid, "text": text})
+        with mock.patch.object(self.cache, "get", return_value={"data": self.note_data()}), \
+                mock.patch.object(self.cache, "refresh") as refresh:
+            code, body = send("first")                                           # no inbox recorded: queued
+            self.assertEqual((code, body["note"]["status"], body["message"]), (200, "queued", None))
+            refresh.assert_called()
+            self.record_inbox(fake.path)
+            code, body = send("second")
+            self.assertEqual((code, body["note"]["status"]), (200, "posted"))
+            self.assertEqual([n["text"] for n in body["notes"]], ["second", "first"])
+            self.assertEqual(len(fake.wait()), 1)
+            queued, posted = body["notes"][1]["id"], body["notes"][0]["id"]
+            remove = lambda nid, sid="S1": self.note({"provider": "claude", "session_id": sid, "id": nid},
+                                                     "/api/note/remove")
+            code, body = remove(posted)
+            self.assertEqual((code, [n["status"] for n in body["notes"]]), (409, ["posted", "queued"]))
+            self.assertEqual(remove("missing")[0], 409)
+            code, body = remove(queued)
+            self.assertEqual((code, [n["text"] for n in body["notes"]]), (200, ["second"]))
+            self.assertEqual(send("hi", "S2")[0], 404)
+            self.assertEqual(remove(queued, "S2")[0], 404)
+            for bad in ({"provider": "claude", "session_id": "S1", "text": "  "},
+                        {"provider": "claude", "session_id": "S1", "text": "x" * 2001},
+                        {"provider": "claude", "session_id": "S1", "text": 5},
+                        {"provider": "claude", "session_id": 5, "text": "hi"},
+                        {"session_id": "S1", "text": "hi"}):
+                self.assertEqual(self.note(bad)[0], 400, bad)
+            for bad in ({"provider": "claude", "session_id": "S1"}, {"provider": "claude", "session_id": "S1", "id": 3},
+                        {"provider": "claude", "id": "x"}):
+                self.assertEqual(self.note(bad, "/api/note/remove")[0], 400, bad)
+            self.assertEqual(self.request("/api/note", "POST", {"provider": "claude", "session_id": "S1",
+                                                                "text": "hi"}, token=None)[0], 403)
+            self.assertEqual(self.request("/api/note", "POST", {"provider": "claude", "session_id": "S1",
+                                                                "text": "hi"}, host="evil.test")[0], 403)
+        for state, shown in (("ended", None), ("working", "stopped")):          # not running: queued, never posted
+            with mock.patch.object(self.cache, "get", return_value={"data": self.note_data(state, shown)}):
+                self.assertEqual(send("later")[1]["note"]["status"], "queued")
+        self.assertEqual(len(fake.got), 1)
+
+    def test_a_note_that_cannot_be_stored_is_not_posted(self):
+        from relaylib import notes, sessions
+        from tests.test_notes import FakeInbox
+        sock_dir = tempfile.TemporaryDirectory(dir="/tmp")
+        self.addCleanup(sock_dir.cleanup)
+        fake = FakeInbox(sock_dir.name)
+        self.addCleanup(fake.close)
+        self.record_inbox(fake.path)
+        payload = {"provider": "claude", "session_id": "S1", "text": "hi"}
+        with mock.patch.object(self.cache, "get", return_value={"data": self.note_data()}):
+            os.makedirs(notes.folder())
+            fd = sessions._lock(os.path.join(notes.folder(), ".lock"), 1)
+            try:
+                with mock.patch.object(notes, "SEND_WAIT_S", 0.2):
+                    code, body = self.note(payload)
+            finally:
+                os.close(fd)
+            self.assertEqual(code, 400)
+            self.assertIn("busy", body["error"])
+            os.chmod(notes.folder(), 0o500)
+            try:
+                self.assertEqual(self.note(payload)[0], 400)
+            finally:
+                os.chmod(notes.folder(), 0o700)
+            self.assertEqual(fake.got, [])
+            with mock.patch.object(notes.os, "replace", side_effect=OSError("rename failed")):
+                code, body = self.note(payload)                                   # F5: posted, not recorded
+            self.assertEqual((code, body["note"]["status"], body["message"]), (200, "posted", notes.NOT_RECORDED))
 
     def test_action_conflicts_errors_and_success(self):
         payload = {"action": "go", "repo": "/fixture", "slug": "demo", "seen": {"commit": "a" * 40}}
@@ -378,6 +473,96 @@ console.log(JSON.stringify({lines,empty,heading:group.children[0].textContent,mo
             self.assertIn(piece, page)
         order = [page.index(f'id="{x}"') for x in ("running", "inbox", "left-off", "features")]
         self.assertEqual(order, sorted(order))
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_note_box_runs_in_node(self):
+        page = self.request("/?t=test-token")[1]
+        for text in ("Send a note", "sd-note-text", "sd-note-send"):
+            self.assertIn(text, page)
+        funcs = re.search(r"function ageText\(.*?(?=function cardFlags\()", page, re.S).group(0)
+        script = """
+class El{constructor(tag){this.tag=tag;this.children=[];this.className='';this.textContent='';this.value='';this.hidden=false;}
+  append(...xs){this.children.push(...xs);} replaceChildren(...xs){this.children=xs;} showModal(){this.open=true;}}
+const document={createElement:t=>new El(t)};
+const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined&&text!==null)n.textContent=text;if(cls)n.className=cls;return n;};
+const els={};const $=id=>els[id]||(els[id]=new El(id));
+const notice=()=>{},load=async()=>{};let reply=null,sent=[];
+const api=async(path,body)=>{sent.push([path,body]);if(reply instanceof Error)throw reply;return reply;};
+""" + funcs + """
+(async()=>{
+const now=Date.now()/1000;const claude={provider:'claude',session_id:'S1'},codex={provider:'codex',session_id:'C1'};
+const n=(status,extra)=>Object.assign({id:status,text:'hi '+status,at:now-120,status,status_at:now-120},extra);
+const words={queuedClaude:noteWords(n('queued'),'claude',now),queuedCodex:noteWords(n('queued'),'codex',now),
+  delivered:noteWords(n('delivered'),'claude',now),posted:noteWords(n('posted'),'claude',now)};
+const hints=[noteHint({not_running:true}),noteHint({not_running:false})];
+renderNotes(claude,[n('queued'),n('delivered'),n('posted')]);
+const removable=$('sd-note-list').children.map(li=>li.children.filter(c=>c.tag==='button').length);
+reply={provider:'claude',session_id:'S1',label:'app',state:'ended',pending_tools:[],text:'x',source:'agent',resume:'r',
+  not_running:true,notes:[n('queued')]};
+await openSession(claude);const shown=[$('sd-note-hint').textContent,$('sd-note-hint').hidden,$('sd-note-list').children.length];
+$('sd-note-text').value='keep me';reply=Object.assign(new Error('notes are busy right now; try again'),{status:400});
+await sendNote(claude);const failed=[$('sd-note-text').value,$('sd-note-result').textContent];
+reply={note:n('posted'),message:'Posted to the session, but relay could not record it.',notes:[]};
+await sendNote(claude);const f5=[$('sd-note-text').value,$('sd-note-result').textContent];
+reply={note:n('queued'),message:null,notes:[n('queued')]};$('sd-note-text').value='later';
+noteSession='codex:C1';await sendNote(codex);const queued=$('sd-note-result').textContent;noteSession='claude:S1';
+reply=Object.assign(new Error('That note was already handed to the session or is gone.'),{status:409,notes:[n('delivered')]});
+await removeNote(claude,'queued');const redraw=[$('sd-note-result').textContent,$('sd-note-list').children.length,
+  $('sd-note-list').children[0].children.filter(c=>c.tag==='button').length];
+console.log(JSON.stringify({words,hints,removable,shown,failed,f5,queued,redraw,sent:sent.map(x=>x[0])}));
+})();"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["words"]["queuedClaude"], "Queued. It reaches the session with its next prompt or tool call.")
+        self.assertEqual(out["words"]["queuedCodex"], "Queued. It reaches the session with your next prompt there.")
+        self.assertEqual(out["words"]["delivered"], "Delivered to the session 2m ago.")
+        self.assertTrue(out["words"]["posted"].startswith("Posted to the session's inbox 2m ago. Claude Code delivers"))
+        self.assertIn("relay cannot see which happened.", out["words"]["posted"])
+        self.assertEqual(out["hints"], ["This session is not running. The note waits until you resume it.", ""])
+        self.assertEqual(out["removable"], [1, 0, 0])                           # Remove only on queued notes
+        self.assertEqual(out["shown"], ["This session is not running. The note waits until you resume it.", False, 1])
+        self.assertEqual(out["failed"], ["keep me", "notes are busy right now; try again"])
+        self.assertEqual(out["f5"], ["", "Posted to the session, but relay could not record it."])
+        self.assertEqual(out["queued"], "Queued. It reaches the session with your next prompt there.")
+        self.assertEqual(out["redraw"], ["That note was already handed to the session or is gone.", 1, 0])
+        self.assertEqual(out["sent"], ["/api/session?provider=claude&session=S1", "/api/note", "/api/note",
+                                       "/api/note", "/api/note/remove"])
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_a_late_note_reply_never_touches_another_dialog_or_a_new_draft(self):
+        page = self.request("/?t=test-token")[1]
+        funcs = re.search(r"function ageText\(.*?(?=function cardFlags\()", page, re.S).group(0)
+        script = """
+class El{constructor(tag){this.tag=tag;this.children=[];this.className='';this.textContent='';this.value='';this.hidden=false;}
+  append(...xs){this.children.push(...xs);} replaceChildren(...xs){this.children=xs;} showModal(){}}
+const document={createElement:t=>new El(t)};
+const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined&&text!==null)n.textContent=text;if(cls)n.className=cls;return n;};
+const els={};const $=id=>els[id]||(els[id]=new El(id));const notice=()=>{},load=async()=>{};
+let pending=[];const api=(path,body)=>path.startsWith('/api/session')
+  ?Promise.resolve({state:'waiting',pending_tools:[],text:'x',resume:'r',not_running:false,notes:[]})
+  :new Promise((ok,fail)=>pending.push({ok,fail}));
+""" + funcs + """
+(async()=>{
+const A={provider:'claude',session_id:'A'},B={provider:'claude',session_id:'B'};
+const q={id:'q',text:'for A',at:1,status:'queued',status_at:1};
+await openSession(A);$('sd-note-text').value='for A';const sending=sendNote(A);
+await openSession(B);$('sd-note-text').value='draft for B';
+pending.shift().ok({note:q,message:null,notes:[q]});await sending;
+const other=[$('sd-note-text').value,$('sd-note-list').children.length,$('sd-note-result').textContent];
+await openSession(A);$('sd-note-text').value='first';const again=sendNote(A);$('sd-note-text').value='first, edited';
+pending.shift().ok({note:q,message:null,notes:[q]});await again;
+const edited=[$('sd-note-text').value,$('sd-note-list').children.length];
+await openSession(A);const failing=sendNote(A);await openSession(B);
+pending.shift().fail(Object.assign(new Error('busy'),{status:400}));await failing;
+const failed=$('sd-note-result').textContent;
+const removing=removeNote(A,'q');await openSession(B);
+pending.shift().ok({notes:[q,q]});await removing;
+console.log(JSON.stringify({other,edited,failed,removed:$('sd-note-list').children.length}));
+})();"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["other"], ["draft for B", 0, ""])                  # A's reply left B's dialog alone
+        self.assertEqual(out["edited"], ["first, edited", 1])                   # an edit made while sending stays
+        self.assertEqual(out["failed"], "")
+        self.assertEqual(out["removed"], 0)
 
     @unittest.skipUnless(shutil.which("node"), "needs node")
     def test_running_and_sort_rules_run_in_node(self):

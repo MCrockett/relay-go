@@ -17,6 +17,7 @@ STATES = ("permission", "waiting", "working", "ended")
 WAITING = {"claude": {"Stop"}, "codex": {"Stop", "Interrupt"}}
 WORKING = {"claude": {"UserPromptSubmit"}, "codex": {"UserPromptSubmit"}}
 NOTICE = {"claude": {"UserPromptSubmit", "SessionStart"}, "codex": {"UserPromptSubmit"}}  # merge notice events
+NOTE = {"claude": {"UserPromptSubmit", "PostToolUse"}, "codex": {"UserPromptSubmit"}}  # owner notes (session-notify D1)
 TOOL_REFRESH_S = 30  # PostToolUse is frequent: one write per 30 seconds is enough
 READ_DEADLINE_S = 0.7  # with the 0.1 s lock wait, the sink stays within 1 second
 READ_CAP = 32_000_000  # far above any real hook input; only a runaway pipe reaches it
@@ -111,14 +112,17 @@ def _valid(record):
         return False
     if "process" in record and not _valid_process(record["process"]):
         return False
+    if "inbox" in record and not (isinstance(record["inbox"], str) and os.path.isabs(record["inbox"])):
+        return False
     return all(isinstance(p, dict) and set(p) == {"tool_use_id", "tool_name", "input_sha1"}
                and (p["tool_use_id"] is None or isinstance(p["tool_use_id"], str))
                and isinstance(p["tool_name"], str) and isinstance(p["input_sha1"], str)
                for p in record["pending"])
 
 
-def apply(record, provider, event, now):
-    """The record after this event, or None when nothing should be written."""
+def apply(record, provider, event, now, inbox=None):
+    """The record after this event, or None when nothing should be written. `inbox` is the Claude session's inbox
+    socket path from its hook environment (session-notify D2)."""
     if not isinstance(event, dict):
         return None
     sid, name, cwd = event.get("session_id"), event.get("hook_event_name"), event.get("cwd")
@@ -176,6 +180,8 @@ def apply(record, provider, event, now):
            "pending": pending}
     if old and "process" in old:
         out["process"] = old["process"]
+    if provider == "claude" and isinstance(inbox, str) and os.path.isabs(inbox):
+        out["inbox"] = inbox  # the path only: relay never reads or keeps the session's messaging token
     return out
 
 
@@ -268,7 +274,8 @@ def capture(provider, stream, now=None):
                     old = json.load(f)
             except (OSError, ValueError):
                 old = None
-            new = apply(old, provider, event, time.time() if now is None else now)
+            new = apply(old, provider, event, time.time() if now is None else now,
+                        os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET") if provider == "claude" else None)
             if new is not None and walked is not False:
                 new.pop("process", None)  # walked and found nothing: the old process may be gone (D1)
                 if walked:
@@ -282,9 +289,16 @@ def capture(provider, stream, now=None):
                 _write(path, new)
         finally:
             os.close(lock)
-        if tell:
+        notes_said = []
+        if name in NOTE[provider]:  # after the record, outside its lock: a busy notes lock never delays it (D5)
+            try:
+                from . import notes
+                notes_said = notes.render(notes.take(provider, event["session_id"]))
+            except Exception:  # F4: the notes stay queued for the next event
+                notes_said = []
+        if tell or notes_said:
             from . import notices
-            print(notices.render(name, tell), flush=True)
+            print(notices.render(name, tell, notes_said), flush=True)
     except Exception:  # the sink's whole contract: nothing an agent can see
         pass
     return 0
