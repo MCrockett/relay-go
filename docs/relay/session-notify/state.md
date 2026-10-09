@@ -1,7 +1,8 @@
 ---
 {
   "authors": {
-    "idea": "claude"
+    "idea": "claude",
+    "spec": "claude"
   },
   "branch": "feat/session-notify",
   "extra_rounds": {},
@@ -17,6 +18,10 @@
     {
       "action": "owner joined idea",
       "at": "2026-10-08T19:31:35-04:00"
+    },
+    {
+      "action": "owner joined spec",
+      "at": "2026-10-08T20:22:09-04:00"
     }
   ],
   "pr": null,
@@ -28,12 +33,14 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "spec": 1
+  },
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "drafting",
-  "updated": "2026-10-08T19:31:42-04:00",
+  "status": "in-review",
+  "updated": "2026-10-08T20:22:09-04:00",
   "verdicts": {}
 }
 ---
