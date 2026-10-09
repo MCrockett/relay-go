@@ -411,11 +411,15 @@ def build():
             alive = None
         now = time.time()
         try:
-            left = leftoff.projects(records, marks, root, alive=alive, now=now)
+            turns = leftoff.codex_turns(records, alive, now)  # one read per run, for both lists (codex-liveness D4)
+        except Exception:  # D5: unknown, running-now D3 decides
+            turns = None
+        try:
+            left = leftoff.projects(records, marks, root, alive=alive, now=now, turns=turns)
         except Exception:  # F4
             left = []
         try:
-            run = leftoff.running(records, marks, root, alive, now)
+            run = leftoff.running(records, marks, root, alive, now, turns)
         except Exception:  # running-now F4
             run = []
     seen = {r["provider"] for r in records}

@@ -324,6 +324,10 @@ class SnapshotTest(unittest.TestCase):
     def test_running_in_the_snapshot_and_api(self):
         self.other("s1", age_s=30, cwd=os.path.realpath(self.work), state_="working", owner=True,
                    said="Running the suite.")
+        mid_turn = mock.patch.object(snapshot.leftoff.agentask, "codex_turn",  # its turn is still going
+                                     return_value={"marker": "started", "mtime": time.time()})
+        mid_turn.start()
+        self.addCleanup(mid_turn.stop)
         self.other("o1", age_s=1200, state_="ended", owner=True)
         with mock.patch.object(sessions, "alive", return_value=None):
             data = snapshot.build()
@@ -340,6 +344,26 @@ class SnapshotTest(unittest.TestCase):
             data = snapshot.build()
         self.assertEqual((data["running"], [r["feature"] for r in data["rows"]]), ([], ["demo"]))
         with mock.patch.object(sessions, "alive", side_effect=RuntimeError("boom")):
+            self.assertEqual([e["session_id"] for e in snapshot.build()["running"]], ["s1"])
+
+    def test_a_codex_turn_that_ended_is_left_off_not_running(self):
+        self.other("s1", age_s=30, cwd=os.path.realpath(self.work), state_="working", owner=True,
+                   said="Running the suite.")
+        real, calls = snapshot.leftoff.codex_turns, []
+
+        def spy(*a):
+            calls.append(a)
+            return real(*a)
+        ended = {"marker": "ended", "mtime": time.time()}
+        with mock.patch.object(sessions, "alive", return_value=None), \
+                mock.patch.object(snapshot.leftoff.agentask, "codex_turn", return_value=ended), \
+                mock.patch.object(snapshot.leftoff, "codex_turns", side_effect=spy):
+            data = snapshot.build()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(data["running"], [])
+        self.assertEqual(self.left(data), [("work", [("s1", {"slug": "demo", "done": False})])])
+        with mock.patch.object(sessions, "alive", return_value=None), \
+                mock.patch.object(snapshot.leftoff, "codex_turns", side_effect=RuntimeError("boom")):
             self.assertEqual([e["session_id"] for e in snapshot.build()["running"]], ["s1"])
 
     def test_left_off_failures(self):

@@ -147,6 +147,64 @@ class LeftOffTest(test_status.StatusFixture):
         self.assertNotIn("stopped", {leftoff.state_word(e) for p in self.found(limit=None, alive=None)
                                      for e in p["sessions"]})
 
+    def turn(self, marker, quiet_s):
+        return {"marker": marker, "mtime": NOW - quiet_s}
+
+    def test_codex_turn_rules(self):
+        run = lambda r, turns: leftoff.is_running(r, None, NOW, turns)
+        codex = self.rec("cx", "working", 5, provider="codex")
+        self.assertTrue(run(codex, None))
+        self.assertTrue(run(codex, {}))                                             # not read: D3 alone
+        self.assertTrue(run(codex, {"cx": None}))                                   # unknown: D3 alone
+        self.assertFalse(run(codex, {"cx": self.turn("ended", 1)}))
+        self.assertTrue(run(codex, {"cx": self.turn("started", 1800)}))
+        self.assertFalse(run(codex, {"cx": self.turn("started", 1801)}))
+        late = self.rec("late", "working", 601, provider="codex")                   # D3 leaves it out
+        self.assertFalse(run(late, {"late": self.turn("started", 1)}))
+        claude = self.rec("cl", "working", 5)
+        self.assertTrue(run(claude, {"cl": self.turn("ended", 1)}))                 # Claude is never checked
+
+    def test_codex_turns_reads_only_codex_sessions_d3_counts(self):
+        records = [self.rec("cx", "working", 5, provider="codex"), self.rec("bad", "working", 5, provider="codex"),
+                   self.rec("late", "working", 601, provider="codex"),
+                   self.rec("waits", "waiting", 5, provider="codex"), self.rec("cl", "working", 5)]
+        calls = []
+
+        def read(sid):
+            calls.append(sid)
+            if sid == "bad":
+                raise RuntimeError("boom")
+            return self.turn("ended", 1)
+        with mock.patch.object(leftoff.agentask, "codex_turn", side_effect=read):
+            turns = leftoff.codex_turns(records, None, NOW)
+        self.assertEqual(sorted(calls), ["bad", "cx"])
+        self.assertEqual(turns, {"cx": self.turn("ended", 1), "bad": None})
+
+    def test_a_codex_session_whose_turn_ended_is_in_left_off(self):
+        proc = {"pid": 1, "started": "Thu Oct  8 15:13:49 2026"}
+        for i in range(3):
+            self.rec(f"e{i}", ago=1000 + i, cwd=self.home)
+        self.rec("done", "working", 5, cwd=self.home, provider="codex")
+        self.rec("gone", "working", 5, cwd=self.home, provider="codex", process=proc)
+        records = sessions.read_records()
+        turns = {"done": self.turn("ended", 1), "gone": self.turn("started", 1)}
+        self.assertEqual(leftoff.running(records, {}, self.projects, set(), NOW, turns), [])
+        [p] = leftoff.projects(records, {}, self.projects, None, set(), NOW, turns)
+        words = {e["session_id"]: leftoff.state_word(e) for e in p["sessions"]}
+        self.assertEqual((words["done"], words["gone"]), ("was working", "stopped"))
+        [p] = leftoff.projects(records, {}, self.projects, leftoff.LIMIT, set(), NOW, turns)
+        self.assertEqual(p["more"], 2)                                              # 5 sessions, 3 shown
+
+    def test_one_map_keeps_a_session_in_exactly_one_list(self):
+        records = [self.rec("cx", "working", 5, cwd=self.home, provider="codex")]
+        with mock.patch.object(leftoff.agentask, "codex_turn", return_value=self.turn("started", 1)):
+            turns = leftoff.codex_turns(records, None, NOW)
+        with mock.patch.object(leftoff.agentask, "codex_turn", return_value=self.turn("ended", 1)):  # rewritten since
+            run = leftoff.running(records, {}, self.projects, None, NOW, turns)
+            left = leftoff.projects(records, {}, self.projects, None, None, NOW, turns)
+        self.assertEqual([e["session_id"] for e in run], ["cx"])
+        self.assertEqual(left, [])
+
     def test_running_sessions_are_not_counted_in_more(self):
         for i in range(3):
             self.rec(f"e{i}", ago=1000 + i, cwd=self.home)
@@ -272,6 +330,28 @@ class LeftOffTest(test_status.StatusFixture):
             os.remove(sessions.record_path("claude", sid))
         with mock.patch.object(sessions, "alive", return_value=set()):
             self.assertTrue(self.run_cmd("left").startswith("~/app"))  # nothing running: no block
+
+    def test_relay_left_codex_turn_that_ended(self):
+        app = os.path.join(self.home, "app")
+        os.makedirs(app)
+        now = time.time()
+        self.rec("CX", "working", 30, app, provider="codex", said="All tests pass.", now=now)  # ends task_complete
+        real, calls = leftoff.codex_turns, []
+
+        def spy(*a):
+            calls.append(a)
+            return real(*a)
+        with mock.patch("relaylib.leftoff.time.time", return_value=now), \
+                mock.patch.object(sessions, "alive", return_value=None), \
+                mock.patch.object(leftoff, "codex_turns", side_effect=spy):
+            text = self.run_cmd("left")
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("Running now", text)
+        self.assertIn("  codex · was working · 30s ago", text)
+        with mock.patch("relaylib.leftoff.time.time", return_value=now), \
+                mock.patch.object(sessions, "alive", return_value=None), \
+                mock.patch.object(leftoff, "codex_turns", side_effect=RuntimeError("boom")):
+            self.assertTrue(self.run_cmd("left").startswith("Running now"))  # unknown: running-now D3 alone
 
     def test_relay_left_done_mark_and_empty(self):
         self.assertEqual(self.run_cmd("left"), leftoff.EMPTY + "\n")
