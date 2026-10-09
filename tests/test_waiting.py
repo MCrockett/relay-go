@@ -63,7 +63,7 @@ class AsksTest(unittest.TestCase):
     def test_session_asks(self):
         waiting_on = {"kind": "attention", "text": "waiting on you 16h", "since": 500.0}
         self.assertEqual(waiting.asks(row(), st(), waiting_on, rec(), None),
-                         [{"kind": "answer", "text": "Answer the claude session", "since": 500.0}])
+                         [{"kind": "answer", "text": "Answer the claude session", "since": 500.0, "session": "claude:S"}])
         perm = {"kind": "attention", "text": "needs permission 3m", "since": 700.0}
         self.assertEqual(texts(waiting.asks(row(), st(), perm, rec("permission", 700.0, ("Bash", "Edit", "Bash"),
                                                                     provider="codex"), None)),
@@ -85,6 +85,32 @@ class AsksTest(unittest.TestCase):
 
     def test_done_has_no_asks(self):
         self.assertEqual(waiting.asks(row("done", stage="done", pr=6), st("ready-to-merge"), None, None, None), [])
+
+    def test_one_session_waits_once_across_its_features(self):
+        def waiting_row(feature, updated, *asks):
+            return dict(row(feature=feature), updated=updated, asks=list(asks), wait_since=waiting.since(asks),
+                        waiting_on_owner=bool(asks), health_inbox=True)
+        answer = lambda: {"kind": "answer", "text": "Answer the claude session", "since": 500.0, "session": "claude:S"}
+        older = waiting_row("older", "2026-10-07T09:00:00-04:00", answer())
+        newer = waiting_row("newer", "2026-10-07T11:00:00-04:00", answer())
+        merge = waiting_row("merge", "2026-10-07T08:00:00-04:00",
+                            {"kind": "merge", "text": "Merge PR #6", "since": 100.0}, answer())
+        other = waiting_row("other", "2026-10-07T07:00:00-04:00",
+                            dict(answer(), session="codex:T", text="Answer the codex session"))
+        waiting.one_ask_per_session([older, newer, merge, other])
+        self.assertEqual(texts(newer["asks"]), ["Answer the claude session · also for merge, older"])
+        self.assertEqual((older["asks"], older["waiting_on_owner"], older["wait_since"], older["health_inbox"]),
+                         ([], False, None, False))
+        self.assertEqual((texts(merge["asks"]), merge["waiting_on_owner"], merge["wait_since"], merge["health_inbox"]),
+                         (["Merge PR #6"], True, 100.0, False))
+        self.assertEqual(texts(other["asks"]), ["Answer the codex session"])  # a different session is untouched
+
+    def test_asks_without_a_record_are_never_merged(self):
+        check = lambda: {"kind": "check", "text": "Check the claude session: no activity 1d", "since": 1.0}
+        rows = [dict(row(feature=f), updated=UPDATED, asks=[check()], wait_since=1.0, waiting_on_owner=True)
+                for f in ("a", "b")]
+        waiting.one_ask_per_session(rows)
+        self.assertEqual([texts(r["asks"]) for r in rows], [["Check the claude session: no activity 1d"]] * 2)
 
     def test_since_and_sort(self):
         self.assertEqual(waiting.since([{"since": 5.0}, {"since": None}, {"since": 3.0}]), 3.0)

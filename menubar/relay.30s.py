@@ -5,7 +5,7 @@ import sys
 from urllib.parse import quote
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-from relaylib import owneractions, status
+from relaylib import owneractions, status, waiting
 from relaylib.errors import RelayError
 from relaylib.ui.server import page_url, running_info
 
@@ -50,7 +50,7 @@ def render(rows, info, error=None):
 
 def output():
     try:
-        return render(status.scan(status.projects_root()), running_info())
+        return render(waiting.one_ask_per_session(status.scan(status.projects_root())), running_info())
     except Exception as e:
         return render([], None, str(e))
 
