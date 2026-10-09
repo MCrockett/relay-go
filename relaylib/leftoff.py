@@ -238,7 +238,11 @@ def cmd_left(args):
     except Exception:  # unknown liveness: the 10-minute rule (running-now D2)
         alive = None
     now = time.time()
-    found = projects(records, marks, root, None if args.all else LIMIT, alive, now)
-    block = render_running(running(records, marks, root, alive, now), now)
+    try:
+        turns = codex_turns(records, alive, now)  # one read per run, for both lists (codex-liveness D4)
+    except Exception:  # D5: unknown, running-now D3 decides
+        turns = None
+    found = projects(records, marks, root, None if args.all else LIMIT, alive, now, turns)
+    block = render_running(running(records, marks, root, alive, now, turns), now)
     body = render_recent(found, now) if args.recent else render(found, now)
     print(block + "\n\n" + body if block else body)

@@ -331,6 +331,28 @@ class LeftOffTest(test_status.StatusFixture):
         with mock.patch.object(sessions, "alive", return_value=set()):
             self.assertTrue(self.run_cmd("left").startswith("~/app"))  # nothing running: no block
 
+    def test_relay_left_codex_turn_that_ended(self):
+        app = os.path.join(self.home, "app")
+        os.makedirs(app)
+        now = time.time()
+        self.rec("CX", "working", 30, app, provider="codex", said="All tests pass.", now=now)  # ends task_complete
+        real, calls = leftoff.codex_turns, []
+
+        def spy(*a):
+            calls.append(a)
+            return real(*a)
+        with mock.patch("relaylib.leftoff.time.time", return_value=now), \
+                mock.patch.object(sessions, "alive", return_value=None), \
+                mock.patch.object(leftoff, "codex_turns", side_effect=spy):
+            text = self.run_cmd("left")
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("Running now", text)
+        self.assertIn("  codex · was working · 30s ago", text)
+        with mock.patch("relaylib.leftoff.time.time", return_value=now), \
+                mock.patch.object(sessions, "alive", return_value=None), \
+                mock.patch.object(leftoff, "codex_turns", side_effect=RuntimeError("boom")):
+            self.assertTrue(self.run_cmd("left").startswith("Running now"))  # unknown: running-now D3 alone
+
     def test_relay_left_done_mark_and_empty(self):
         self.assertEqual(self.run_cmd("left"), leftoff.EMPTY + "\n")
         self.held("alpha", "shipped", "S1", stage="done", status="done")
