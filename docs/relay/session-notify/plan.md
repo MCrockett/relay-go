@@ -25,7 +25,7 @@
   2. write both possible next logs in full to two temporary files in the notes folder (one with the new note `queued`, one with it `posted`), each flushed and synced;
   3. when the session may be posted to (Claude, an `inbox` recorded, not shown as `ended` or `stopped`), post;
   4. rename the matching temporary file over the log (`posted` after a successful post, `queued` otherwise) and delete the other.
-  Every write that can fail for lack of space, permission or a broken log happens in steps 1 and 2, before any socket is opened: if the lock stays busy or step 1 or 2 fails, `send` raises and nothing is sent or posted (F3). Step 4 is a rename within one folder. If that rename still fails after a successful post, the log is left as it was before the send, without the new note, so the hook can never deliver it a second time; `send` reports "Posted to the session, but relay could not record it." The hook's `take` needs the same lock, so it can never take a note that is mid-send, and a note is either posted or left for the hook, never both. The post holds the lock for at most its 2-second timeout; a hook arriving then finds the lock busy and leaves its notes for its next event (D5).
+  Every write that can fail for lack of space, permission or a broken log happens in steps 1 and 2, before any socket is opened: if the lock stays busy or step 1 or 2 fails, `send` raises and nothing is sent or posted (F3). Step 4 is a rename within one folder. If that rename still fails after a successful post, spec F5 applies: the log is left as it was before the send, without the new note, so the hook can never deliver it a second time, and `send` reports "Posted to the session, but relay could not record it." The hook's `take` needs the same lock, so it can never take a note that is mid-send, and a note is either posted or left for the hook, never both. The post holds the lock for at most its 2-second timeout; a hook arriving then finds the lock busy and leaves its notes for its next event (D5).
 - **Order inside the hook:** `capture` takes the notes after writing the session record and outside the sessions lock (two locks are never held together), so a busy notes lock never delays the record.
 - **Listed sessions:** the API reuses `snapshot._listed` to decide whether a session is listed; the snapshot attaches `notes` to each session entry (other sessions, running, left off).
 - **Socket checks:** `os.lstat` on the path: `stat.S_ISSOCK`, `st_uid == os.getuid()`, not a symlink; then `socket.AF_UNIX` connect and `sendall` with a 2-second timeout.
@@ -87,7 +87,7 @@ Covers: R5.
 
 Files: `relaylib/ui/page.html`, `tests/test_ui_server.py`.
 
-- [ ] Failing tests: page strings from D6; Node tests: `noteWords(note, provider, now)` for `queued` (Claude and Codex), `delivered`, `posted`; Remove only on `queued`; the not-running line for `ended` and `stopped`; a 409 redraws the list from the response.
+- [ ] Failing tests: page strings from D6; Node tests: `noteWords(note, provider, now)` for `queued` (Claude and Codex), `delivered`, `posted`; Remove only on `queued`; the not-running line for `ended` and `stopped`; a 409 redraws the list from the response; a failed send (an error response from `POST /api/note`) shows the API's error text in the dialog and keeps the typed note; a 200 with the could-not-record message (spec F5) shows that message.
 - [ ] Implement the box, the list and the calls in the session dialog.
 - [ ] Browser check on a throwaway fixture server.
 - [ ] Run, commit `feat: send a note from the session dialog`.

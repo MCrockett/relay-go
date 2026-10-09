@@ -51,7 +51,8 @@ Research on this machine (Claude Code 2.1.295, Codex CLI 0.160):
 
 - F1. Posting fails: the note is queued (D4).
 - F2. The session refuses or holds peer messages: the post succeeds but the note is held or dropped by Claude Code. The dashboard's line after sending names the approval case; relay cannot see the outcome.
-- F3. The note log cannot be written or its lock stays busy: the dashboard shows the error and nothing is sent or posted.
+- F3. The note log cannot be written or its lock stays busy: the dashboard shows the error and nothing is sent or posted. relay prepares every write a send needs before it posts, so a storage failure found then stops the send (see the plan).
+- F5. Recording a note fails after the inbox already accepted it (the last step of a send, a rename within the notes folder): a posted note cannot be taken back, so relay does not show an error as if nothing were sent. The dashboard shows "Posted to the session, but relay could not record it." and the note is left out of the log, so it never appears as `queued` and the hook never delivers it a second time. This is the one case where a sent note is missing from the history D5 and D6 describe.
 - F4. The hook cannot read or update the note log: the record is still written, no note is printed, and the notes stay `queued` for the next event.
 
 ## Non-goals
