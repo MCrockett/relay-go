@@ -233,6 +233,39 @@ class CaptureTest(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(sessions.folder(), "junk.json")))  # unreadable: left alone
 
 
+class InboxTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        patch = mock.patch.dict(os.environ, {"RELAY_HOME": temp.name})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def capture(self, provider, env, name="UserPromptSubmit"):
+        clean = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_CODE_MESSAGING")}
+        with mock.patch.dict(os.environ, dict(clean, **env), clear=True):
+            sessions.capture(provider, io.StringIO(json.dumps(ev(name))), now=5.0)
+        with open(sessions.record_path(provider, "s1")) as f:
+            return json.load(f)
+
+    def test_the_claude_hook_records_the_inbox_path_only(self):
+        env = {"CLAUDE_CODE_MESSAGING_SOCKET": "/tmp/cc/1.sock", "CLAUDE_CODE_MESSAGING_TOKEN": "secret-token"}
+        record = self.capture("claude", env)
+        self.assertEqual(record["inbox"], "/tmp/cc/1.sock")
+        self.assertNotIn("secret-token", json.dumps(record))
+        self.assertNotIn("inbox", self.capture("claude", {}, "Stop"))                     # unset drops it
+        self.assertNotIn("inbox", self.capture("claude", {"CLAUDE_CODE_MESSAGING_SOCKET": "rel/1.sock"},
+                                               "UserPromptSubmit"))
+        self.assertNotIn("inbox", self.capture("codex", env))                             # never for Codex
+
+    def test_shape_check(self):
+        good = sessions.apply(None, "claude", ev("Stop"), 1.0)
+        self.assertTrue(sessions._valid(good))
+        self.assertTrue(sessions._valid(dict(good, inbox="/tmp/x.sock")))
+        for bad in ("", "x.sock", 5, None):
+            self.assertFalse(sessions._valid(dict(good, inbox=bad)))
+
+
 class MergeNoticeTest(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()

@@ -111,14 +111,17 @@ def _valid(record):
         return False
     if "process" in record and not _valid_process(record["process"]):
         return False
+    if "inbox" in record and not (isinstance(record["inbox"], str) and os.path.isabs(record["inbox"])):
+        return False
     return all(isinstance(p, dict) and set(p) == {"tool_use_id", "tool_name", "input_sha1"}
                and (p["tool_use_id"] is None or isinstance(p["tool_use_id"], str))
                and isinstance(p["tool_name"], str) and isinstance(p["input_sha1"], str)
                for p in record["pending"])
 
 
-def apply(record, provider, event, now):
-    """The record after this event, or None when nothing should be written."""
+def apply(record, provider, event, now, inbox=None):
+    """The record after this event, or None when nothing should be written. `inbox` is the Claude session's inbox
+    socket path from its hook environment (session-notify D2)."""
     if not isinstance(event, dict):
         return None
     sid, name, cwd = event.get("session_id"), event.get("hook_event_name"), event.get("cwd")
@@ -176,6 +179,8 @@ def apply(record, provider, event, now):
            "pending": pending}
     if old and "process" in old:
         out["process"] = old["process"]
+    if provider == "claude" and isinstance(inbox, str) and os.path.isabs(inbox):
+        out["inbox"] = inbox  # the path only: relay never reads or keeps the session's messaging token
     return out
 
 
@@ -268,7 +273,8 @@ def capture(provider, stream, now=None):
                     old = json.load(f)
             except (OSError, ValueError):
                 old = None
-            new = apply(old, provider, event, time.time() if now is None else now)
+            new = apply(old, provider, event, time.time() if now is None else now,
+                        os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET") if provider == "claude" else None)
             if new is not None and walked is not False:
                 new.pop("process", None)  # walked and found nothing: the old process may be gone (D1)
                 if walked:
