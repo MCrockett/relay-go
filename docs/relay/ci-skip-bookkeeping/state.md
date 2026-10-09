@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/ci-skip-bookkeeping",
   "extra_rounds": {},
   "feature": "ci-skip-bookkeeping",
@@ -29,9 +31,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-10-09T19:09:53-04:00",
+  "updated": "2026-10-09T19:10:02-04:00",
   "verdicts": {}
 }
 ---
