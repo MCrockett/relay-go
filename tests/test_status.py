@@ -1,7 +1,7 @@
-import io, json, os, shutil, tempfile, time, unittest
+import argparse, io, json, os, shutil, tempfile, time, unittest
 from contextlib import redirect_stdout
 from unittest import mock
-from relaylib import commands, freshness, gitops, sessions, state, status
+from relaylib import commands, freshness, gitops, sessions, state, status, waiting
 from tests import helpers
 
 
@@ -231,12 +231,17 @@ class StatusTest(StatusFixture):
         self.held("alpha", "one", "S1")
         self.held("beta", "two", "S1")
         self.session("S1")
-        rows = {r["feature"]: r for r in status.scan(self.projects)}
+        raw = status.scan(self.projects)
+        self.assertEqual(sum(r["waiting_on_owner"] for r in raw), 2)  # the scan keeps both for the dashboard
+        rows = {r["feature"]: r for r in waiting.one_ask_per_session(raw)}
         waiting_rows = [f for f, r in rows.items() if r["waiting_on_owner"]]
         self.assertEqual(len(waiting_rows), 1)
         kept, dropped = waiting_rows[0], ({"one", "two"} - set(waiting_rows)).pop()
         self.assertEqual([a["text"] for a in rows[kept]["asks"]], [f"Answer the claude session · also for {dropped}"])
         self.assertEqual(rows[dropped]["asks"], [])
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            status.cmd_status(argparse.Namespace(all=False, json=False))
+        self.assertEqual(out.getvalue().count("Answer the claude session"), 1)
 
     def test_session_health_failing_for_one_row_keeps_its_state_asks(self):
         self.held("alpha", "one", "S1", status="waiting-owner")

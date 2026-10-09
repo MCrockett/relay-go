@@ -241,7 +241,6 @@ def scan_with_claims(root_dir):
             row = with_asks(_remote_row(checkout, ref, slug, st, has_handoff, fetched), st, ref, records, now, mine)
             if key not in rows or row["updated"] > rows[key]["updated"]:
                 rows[key], claims[key] = row, mine
-    waiting.one_ask_per_session(list(rows.values()))
     ordered = sorted(rows.values(), key=lambda r: (not r["waiting_on_owner"], r["repo"] or "", r["feature"]))
     return ordered, set().union(*claims.values())
 
@@ -326,6 +325,7 @@ def other_sessions(root, claimed, now=None):
 def cmd_status(args):
     root = projects_root()
     rows, claimed = scan_with_claims(root)
+    waiting.one_ask_per_session(rows)  # here, not in the scan: the dashboard merges after its own enrichment
     if not args.all:
         rows = [r for r in rows if r["stage"] != "done"]
     if args.json:  # unchanged: feature rows only, oldest wait first (other-sessions D5, running-now D8)
