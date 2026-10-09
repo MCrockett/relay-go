@@ -135,7 +135,8 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(code, 200)
             self.assertEqual(json.loads(text), {"provider": "claude", "session_id": "S1", "label": "proteindiary",
                                                 "state": "waiting", "pending_tools": [], "source": "agent",
-                                                "text": words["text"], "resume": "claude --resume S1"})
+                                                "text": words["text"], "resume": "claude --resume S1",
+                                                "not_running": False, "notes": []})
             read.reset_mock()
             self.assertEqual(self.request("/api/session?provider=claude&session=S2")[0], 404)
             self.assertEqual(self.request("/api/session?provider=codex&session=S1")[0], 404)
@@ -164,10 +165,104 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(code, 200)
             self.assertEqual(json.loads(text), {"provider": "codex", "session_id": "C1", "label": "~/app",
                                                 "state": "ended", "pending_tools": [], "source": "agent",
-                                                "text": words["text"], "resume": "cd ~/app && codex resume C1"})
+                                                "text": words["text"], "resume": "cd ~/app && codex resume C1",
+                                                "not_running": True, "notes": []})
             read.reset_mock()
             self.assertEqual(self.request("/api/session?provider=codex&session=C2")[0], 404)
             read.assert_not_called()
+
+    def note_data(self, state="waiting", shown=None):
+        entry = {"provider": "claude", "session_id": "S1", "label": "app", "folder": None, "state": state,
+                 "since": 1.0, "pending_tools": [], "excerpt": None}
+        if shown:
+            entry["shown_state"] = shown
+        return {"rows": [], "features": [], "usage": {"providers": {}}, "other_sessions": [entry]}
+
+    def record_inbox(self, inbox):
+        from relaylib import sessions
+        record = sessions.apply(None, "claude", {"session_id": "S1", "hook_event_name": "Stop", "cwd": "/w"}, 1.0,
+                                inbox)
+        os.makedirs(sessions.folder(), exist_ok=True)
+        with open(sessions.record_path("claude", "S1"), "w") as f:
+            json.dump(record, f)
+
+    def note(self, payload, path="/api/note", **kw):
+        code, text = self.request(path, "POST", payload, **kw)
+        return code, json.loads(text)
+
+    def test_notes_are_queued_posted_and_removed_only_for_listed_sessions(self):
+        from tests.test_notes import FakeInbox
+        sock_dir = tempfile.TemporaryDirectory(dir="/tmp")
+        self.addCleanup(sock_dir.cleanup)
+        fake = FakeInbox(sock_dir.name)
+        self.addCleanup(fake.close)
+        send = lambda text, sid="S1": self.note({"provider": "claude", "session_id": sid, "text": text})
+        with mock.patch.object(self.cache, "get", return_value={"data": self.note_data()}), \
+                mock.patch.object(self.cache, "refresh") as refresh:
+            code, body = send("first")                                           # no inbox recorded: queued
+            self.assertEqual((code, body["note"]["status"], body["message"]), (200, "queued", None))
+            refresh.assert_called()
+            self.record_inbox(fake.path)
+            code, body = send("second")
+            self.assertEqual((code, body["note"]["status"]), (200, "posted"))
+            self.assertEqual([n["text"] for n in body["notes"]], ["second", "first"])
+            self.assertEqual(len(fake.wait()), 1)
+            queued, posted = body["notes"][1]["id"], body["notes"][0]["id"]
+            remove = lambda nid, sid="S1": self.note({"provider": "claude", "session_id": sid, "id": nid},
+                                                     "/api/note/remove")
+            code, body = remove(posted)
+            self.assertEqual((code, [n["status"] for n in body["notes"]]), (409, ["posted", "queued"]))
+            self.assertEqual(remove("missing")[0], 409)
+            code, body = remove(queued)
+            self.assertEqual((code, [n["text"] for n in body["notes"]]), (200, ["second"]))
+            self.assertEqual(send("hi", "S2")[0], 404)
+            self.assertEqual(remove(queued, "S2")[0], 404)
+            for bad in ({"provider": "claude", "session_id": "S1", "text": "  "},
+                        {"provider": "claude", "session_id": "S1", "text": "x" * 2001},
+                        {"provider": "claude", "session_id": "S1", "text": 5},
+                        {"provider": "claude", "session_id": 5, "text": "hi"},
+                        {"session_id": "S1", "text": "hi"}):
+                self.assertEqual(self.note(bad)[0], 400, bad)
+            for bad in ({"provider": "claude", "session_id": "S1"}, {"provider": "claude", "session_id": "S1", "id": 3},
+                        {"provider": "claude", "id": "x"}):
+                self.assertEqual(self.note(bad, "/api/note/remove")[0], 400, bad)
+            self.assertEqual(self.request("/api/note", "POST", {"provider": "claude", "session_id": "S1",
+                                                                "text": "hi"}, token=None)[0], 403)
+            self.assertEqual(self.request("/api/note", "POST", {"provider": "claude", "session_id": "S1",
+                                                                "text": "hi"}, host="evil.test")[0], 403)
+        for state, shown in (("ended", None), ("working", "stopped")):          # not running: queued, never posted
+            with mock.patch.object(self.cache, "get", return_value={"data": self.note_data(state, shown)}):
+                self.assertEqual(send("later")[1]["note"]["status"], "queued")
+        self.assertEqual(len(fake.got), 1)
+
+    def test_a_note_that_cannot_be_stored_is_not_posted(self):
+        from relaylib import notes, sessions
+        from tests.test_notes import FakeInbox
+        sock_dir = tempfile.TemporaryDirectory(dir="/tmp")
+        self.addCleanup(sock_dir.cleanup)
+        fake = FakeInbox(sock_dir.name)
+        self.addCleanup(fake.close)
+        self.record_inbox(fake.path)
+        payload = {"provider": "claude", "session_id": "S1", "text": "hi"}
+        with mock.patch.object(self.cache, "get", return_value={"data": self.note_data()}):
+            os.makedirs(notes.folder())
+            fd = sessions._lock(os.path.join(notes.folder(), ".lock"), 1)
+            try:
+                with mock.patch.object(notes, "SEND_WAIT_S", 0.2):
+                    code, body = self.note(payload)
+            finally:
+                os.close(fd)
+            self.assertEqual(code, 400)
+            self.assertIn("busy", body["error"])
+            os.chmod(notes.folder(), 0o500)
+            try:
+                self.assertEqual(self.note(payload)[0], 400)
+            finally:
+                os.chmod(notes.folder(), 0o700)
+            self.assertEqual(fake.got, [])
+            with mock.patch.object(notes.os, "replace", side_effect=OSError("rename failed")):
+                code, body = self.note(payload)                                   # F5: posted, not recorded
+            self.assertEqual((code, body["note"]["status"], body["message"]), (200, "posted", notes.NOT_RECORDED))
 
     def test_action_conflicts_errors_and_success(self):
         payload = {"action": "go", "repo": "/fixture", "slug": "demo", "seen": {"commit": "a" * 40}}

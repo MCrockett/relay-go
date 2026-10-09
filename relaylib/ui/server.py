@@ -16,7 +16,7 @@ import time
 from urllib.parse import parse_qs, urlencode, urlsplit
 import webbrowser
 
-from .. import config, identity, owneractions, reviewjobs, reviewtables
+from .. import config, identity, notes, owneractions, reviewjobs, reviewtables
 from ..errors import RelayError
 from ..usage import atomic_write
 from . import snapshot
@@ -180,6 +180,27 @@ class Handler(BaseHTTPRequestHandler):
                         self.reply(200, owneractions.run_override(repo, body["slug"], action, body["seen"]))
                 finally:
                     self.server.cache.refresh()
+            elif path in ("/api/note", "/api/note/remove"):  # session-notify D6
+                provider, sid = body.get("provider"), body.get("session_id")
+                if not (isinstance(provider, str) and provider and isinstance(sid, str) and sid):
+                    raise RelayError("provider and session_id must be strings")
+                cached = self.server.cache.get()
+                if cached.get("data") is None:
+                    self.reply(503, {"error": cached.get("error") or "snapshot is loading"})
+                    return
+                try:
+                    if path == "/api/note":
+                        found = snapshot.send_note(cached["data"], provider, sid, body.get("text"))
+                    else:
+                        if not isinstance(body.get("id"), str):
+                            raise RelayError("id must be a string")
+                        found = snapshot.remove_note(cached["data"], provider, sid, body["id"])
+                except notes.Conflict as e:
+                    self.reply(409, {"error": str(e), "notes": e.notes})
+                    return
+                finally:
+                    self.server.cache.refresh()
+                self.reply(200 if found else 404, found or {"error": "This session is no longer listed."})
             elif path in ("/api/roles", "/api/roles/end"):
                 try:
                     if not isinstance(body.get("seen"), str):

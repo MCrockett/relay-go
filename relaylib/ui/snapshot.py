@@ -3,6 +3,7 @@ import concurrent.futures
 import contextvars
 import dataclasses
 import datetime as dt
+import json
 import os
 import re
 import threading
@@ -187,6 +188,45 @@ def _listed(data, provider, session_id):
     return None, None
 
 
+def _attach_notes(others, run, left):
+    """Each listed session's notes from the last 7 days (session-notify D6); [] for one whose log cannot be read."""
+    for e in list(others) + list(run) + [e for p in left for e in p["sessions"]]:
+        e["notes"] = ownernotes.list_for(e["provider"], e["session_id"])
+
+
+def _not_running(entry):
+    return entry.get("shown_state", entry["state"]) in ("ended", "stopped")
+
+
+def _inbox(provider, session_id):
+    """The inbox socket the session's hook recorded (session-notify D2), or None."""
+    try:
+        with open(sessions.record_path(provider, session_id)) as f:
+            record = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return record.get("inbox") if sessions._valid(record) else None
+
+
+def send_note(data, provider, session_id, text):
+    """session-notify D6: post or queue a note for a listed session; None when the snapshot did not list it. A
+    session shown as ended or stopped is never posted to: its note waits for the session's next prompt."""
+    _, entry = _listed(data, provider, session_id)
+    if entry is None:
+        return None
+    inbox = None if _not_running(entry) else _inbox(provider, session_id)
+    note, message = ownernotes.send(provider, session_id, text, inbox)
+    return {"note": note, "message": message, "notes": ownernotes.list_for(provider, session_id)}
+
+
+def remove_note(data, provider, session_id, note_id):
+    """The session's notes after removing a queued one; None when the snapshot did not list the session."""
+    _, entry = _listed(data, provider, session_id)
+    if entry is None:
+        return None
+    return {"notes": ownernotes.remove(provider, session_id, note_id)}
+
+
 def other_session(data, provider, session_id):
     """One session the snapshot listed (other_sessions or left_off) with its full last message, read live
     (other-sessions D6, D7; where-i-left-off D10), or None when the snapshot did not list it."""
@@ -197,7 +237,8 @@ def other_session(data, provider, session_id):
     return {"provider": provider, "session_id": session_id, "label": label, "state": entry["state"],
             "pending_tools": entry["pending_tools"], "text": agentask.full(words["text"]) if words else None,
             "source": words["source"] if words else None,
-            "resume": leftoff.resume_line(provider, session_id, entry.get("folder"))}
+            "resume": leftoff.resume_line(provider, session_id, entry.get("folder")),
+            "not_running": _not_running(entry), "notes": ownernotes.list_for(provider, session_id)}
 
 
 def usage():
@@ -453,6 +494,7 @@ def build():
     if scan_note:
         notes.add(scan_note)
     notes = sorted(notes)
+    _attach_notes(others, run, left)
     return {"rows": rows, "features": details, "other_sessions": others, "left_off": left, "running": run, "usage": usage(), "session_hints": hints, "notes": notes,
             "reviewers": _reviewers_or_error(repos), "writing": writing}
 
