@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "fix/inbox-one-row",
   "extra_rounds": {},
   "feature": "inbox-one-row",
@@ -17,7 +19,7 @@
       "at": "2026-10-08T20:24:43-04:00"
     }
   ],
-  "pr": null,
+  "pr": 13,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -26,15 +28,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-10-08T20:24:43-04:00",
+  "status": "in-review",
+  "updated": "2026-10-08T20:43:49-04:00",
   "verdicts": {}
 }
 ---
