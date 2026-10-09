@@ -365,7 +365,8 @@ class SnapshotTest(unittest.TestCase):
         self.stopped(said=question)
         snap = snapshot.build()
         row = snap["rows"][0]
-        self.assertEqual(row["asks"], [{"kind": "answer", "text": "Answer the codex session", "since": row["wait_since"]}])
+        self.assertEqual(row["asks"], [{"kind": "answer", "text": "Answer the codex session", "since": row["wait_since"],
+                                        "session": "codex:s1"}])
         self.assertTrue(row["waiting_on_owner"])
         self.assertEqual(row["excerpt"]["source"], "agent")
         self.assertTrue(row["excerpt"]["text"].startswith("PURPLE-GIRAFFE should I") and row["excerpt"]["text"].endswith("…"))
@@ -463,6 +464,58 @@ class SnapshotTest(unittest.TestCase):
         self.assertIsNone(row["wait_since"])
         self.assertIsNone(row["excerpt"])
         self.assertTrue(row["waiting_on_owner"])
+
+    def test_one_session_waits_once_after_the_rows_get_their_asks(self):
+        self.st["status"] = "drafting"
+        self.save()
+        self.hook("Stop")
+        record_path = sessions.record_path("codex", "s1")
+        with open(record_path) as f:
+            data = json.load(f)
+        data["since"] = data["at"] = time.time() - 600            # stopped ten minutes ago
+        with open(record_path, "w") as f:
+            json.dump(data, f)
+        seen = []
+        real = snapshot.waiting.one_ask_per_session
+        def spy(rows):
+            seen.append([list(r.get("asks") or []) for r in rows])  # every row is enriched before the merge
+            return real(rows)
+        with mock.patch.object(snapshot.waiting, "one_ask_per_session", side_effect=spy):
+            snap = snapshot.build()
+        self.assertEqual(len(seen), 1)  # once, after enrichment (the scan's rows stay whole for failed details)
+        self.assertEqual(seen[0], [r["asks"] for r in snap["rows"]])
+        self.assertEqual([a["kind"] for a in snap["rows"][0]["asks"]], ["answer"])
+
+    def two_features_one_session(self):
+        """A second feature, "other", held by the same session s1, which waits on the owner."""
+        self.st["status"] = "drafting"
+        other = state.new_state("other", "project", {"provider": "codex", "session": "s1"}, "feat/demo")
+        other.update(stage="spec", status="drafting")
+        state.write_state(state.state_path(self.work, "other"), other)
+        self.save()
+        self.stopped()
+
+    def test_one_session_holding_two_features_waits_once_in_the_dashboard(self):
+        self.two_features_one_session()
+        rows = {r["feature"]: r for r in snapshot.build()["rows"]}
+        answers = {f: [a["text"] for a in r["asks"] if a["kind"] == "answer"] for f, r in rows.items()}
+        self.assertEqual(sorted(len(v) for v in answers.values()), [0, 1])
+        kept = next(f for f, v in answers.items() if v)
+        self.assertEqual(answers[kept], ["Answer the codex session · also for " + ({"demo", "other"} - {kept}).pop()])
+
+    def test_a_feature_that_fails_to_load_keeps_the_wait_when_the_other_is_done(self):
+        self.two_features_one_session()
+        self.st.update(stage="done", status="done")
+        self.save()
+        real = snapshot.feature
+        def fail_other(repo, slug, *a, **k):
+            if slug == "other":
+                raise RelayError("cannot read other")
+            return real(repo, slug, *a, **k)
+        with mock.patch.object(snapshot, "feature", side_effect=fail_other):
+            rows = {r["feature"]: r for r in snapshot.build()["rows"]}
+        self.assertEqual([a["kind"] for a in rows["other"]["asks"]], ["answer"])  # the scan's ask, not merged away
+        self.assertEqual(rows["demo"]["asks"], [])
 
     def test_a_waiting_session_puts_a_drafting_feature_in_the_inbox(self):
         self.st["status"] = "drafting"

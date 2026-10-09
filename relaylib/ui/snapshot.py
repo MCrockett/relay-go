@@ -396,6 +396,7 @@ def build():
         try:
             rows, claimed = status.scan_with_claims(root)  # kept for rows whose details fail to load (D2)
             details = [d for d in _parallel(lambda row: _enrich(row, errors, fetched, records), rows) if d]
+            waiting.one_ask_per_session(rows)
             scan_note = None
         except Exception as e:  # where-i-left-off F5: the rest of the dashboard is still built
             rows, claimed, details, scan_note = [], set(), [], f"Features could not be read: {e}"

@@ -40,6 +40,20 @@ class MenubarTest(unittest.TestCase):
         with mock.patch.object(menubar.owneractions, "github_repo", side_effect=menubar.RelayError("not GitHub")):
             self.assertNotIn("href=", menubar.render([row], None))
 
+    def test_one_session_waiting_on_two_features_counts_once(self):
+        def held(feature, updated):
+            return {"repo": "project", "feature": feature, "stage": "spec", "status": "drafting", "flags": [],
+                    "pr": None, "checkout": None, "updated": updated, "waiting_on_owner": True, "wait_since": 5.0,
+                    "asks": [{"kind": "answer", "text": "Answer the claude session", "since": 5.0,
+                              "session": "claude:S"}]}
+        rows = [held("one", "2026-10-07T09:00:00-04:00"), held("two", "2026-10-07T10:00:00-04:00")]
+        with mock.patch.object(menubar.status, "scan", return_value=rows), \
+                mock.patch.object(menubar, "running_info", return_value=None):
+            output = menubar.output()
+        self.assertIn("relay 1\n", output)
+        self.assertIn("project / two", output)
+        self.assertNotIn("project / one", output)
+
     def test_stale_discovery_is_not_linked(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"RELAY_HOME": tmp}):
             helpers.write(os.path.join(tmp, "ui.json"), json.dumps({"pid": 99999999, "port": 8765, "token": "old"}))
