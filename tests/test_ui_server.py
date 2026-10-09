@@ -475,6 +475,59 @@ console.log(JSON.stringify({lines,empty,heading:group.children[0].textContent,mo
         self.assertEqual(order, sorted(order))
 
     @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_note_box_runs_in_node(self):
+        page = self.request("/?t=test-token")[1]
+        for text in ("Send a note", "sd-note-text", "sd-note-send"):
+            self.assertIn(text, page)
+        funcs = re.search(r"function ageText\(.*?(?=function cardFlags\()", page, re.S).group(0)
+        script = """
+class El{constructor(tag){this.tag=tag;this.children=[];this.className='';this.textContent='';this.value='';this.hidden=false;}
+  append(...xs){this.children.push(...xs);} replaceChildren(...xs){this.children=xs;} showModal(){this.open=true;}}
+const document={createElement:t=>new El(t)};
+const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined&&text!==null)n.textContent=text;if(cls)n.className=cls;return n;};
+const els={};const $=id=>els[id]||(els[id]=new El(id));
+const notice=()=>{},load=async()=>{};let reply=null,sent=[];
+const api=async(path,body)=>{sent.push([path,body]);if(reply instanceof Error)throw reply;return reply;};
+""" + funcs + """
+(async()=>{
+const now=Date.now()/1000;const claude={provider:'claude',session_id:'S1'},codex={provider:'codex',session_id:'C1'};
+const n=(status,extra)=>Object.assign({id:status,text:'hi '+status,at:now-120,status,status_at:now-120},extra);
+const words={queuedClaude:noteWords(n('queued'),'claude',now),queuedCodex:noteWords(n('queued'),'codex',now),
+  delivered:noteWords(n('delivered'),'claude',now),posted:noteWords(n('posted'),'claude',now)};
+const hints=[noteHint({not_running:true}),noteHint({not_running:false})];
+renderNotes(claude,[n('queued'),n('delivered'),n('posted')]);
+const removable=$('sd-note-list').children.map(li=>li.children.filter(c=>c.tag==='button').length);
+reply={provider:'claude',session_id:'S1',label:'app',state:'ended',pending_tools:[],text:'x',source:'agent',resume:'r',
+  not_running:true,notes:[n('queued')]};
+await openSession(claude);const shown=[$('sd-note-hint').textContent,$('sd-note-hint').hidden,$('sd-note-list').children.length];
+$('sd-note-text').value='keep me';reply=Object.assign(new Error('notes are busy right now; try again'),{status:400});
+await sendNote(claude);const failed=[$('sd-note-text').value,$('sd-note-result').textContent];
+reply={note:n('posted'),message:'Posted to the session, but relay could not record it.',notes:[]};
+await sendNote(claude);const f5=[$('sd-note-text').value,$('sd-note-result').textContent];
+reply={note:n('queued'),message:null,notes:[n('queued')]};$('sd-note-text').value='later';
+await sendNote(codex);const queued=$('sd-note-result').textContent;
+reply=Object.assign(new Error('That note was already handed to the session or is gone.'),{status:409,notes:[n('delivered')]});
+await removeNote(claude,'queued');const redraw=[$('sd-note-result').textContent,$('sd-note-list').children.length,
+  $('sd-note-list').children[0].children.filter(c=>c.tag==='button').length];
+console.log(JSON.stringify({words,hints,removable,shown,failed,f5,queued,redraw,sent:sent.map(x=>x[0])}));
+})();"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["words"]["queuedClaude"], "Queued. It reaches the session with its next prompt or tool call.")
+        self.assertEqual(out["words"]["queuedCodex"], "Queued. It reaches the session with your next prompt there.")
+        self.assertEqual(out["words"]["delivered"], "Delivered to the session 2m ago.")
+        self.assertTrue(out["words"]["posted"].startswith("Posted to the session's inbox 2m ago. Claude Code delivers"))
+        self.assertIn("relay cannot see which happened.", out["words"]["posted"])
+        self.assertEqual(out["hints"], ["This session is not running. The note waits until you resume it.", ""])
+        self.assertEqual(out["removable"], [1, 0, 0])                           # Remove only on queued notes
+        self.assertEqual(out["shown"], ["This session is not running. The note waits until you resume it.", False, 1])
+        self.assertEqual(out["failed"], ["keep me", "notes are busy right now; try again"])
+        self.assertEqual(out["f5"], ["", "Posted to the session, but relay could not record it."])
+        self.assertEqual(out["queued"], "Queued. It reaches the session with your next prompt there.")
+        self.assertEqual(out["redraw"], ["That note was already handed to the session or is gone.", 1, 0])
+        self.assertEqual(out["sent"], ["/api/session?provider=claude&session=S1", "/api/note", "/api/note",
+                                       "/api/note", "/api/note/remove"])
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
     def test_running_and_sort_rules_run_in_node(self):
         page = self.request("/?t=test-token")[1]
         funcs = (re.search(r"function ageText\(.*?(?=function cardFlags\()", page, re.S).group(0)
