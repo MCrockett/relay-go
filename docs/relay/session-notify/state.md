@@ -12,6 +12,17 @@
   },
   "feature": "session-notify",
   "history": {
+    "build": [
+      {
+        "blocking_ids": [
+          "R1-1"
+        ],
+        "head": "9811c497c100f3c7c45b1b9a27da743f578cabca",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ],
     "plan": [
       {
         "blocking_ids": [
@@ -122,9 +133,10 @@
   "skipped": [],
   "small": false,
   "stage": "build",
-  "status": "in-review",
-  "updated": "2026-10-08T23:50:34-04:00",
+  "status": "changes-requested",
+  "updated": "2026-10-08T23:52:09-04:00",
   "verdicts": {
+    "build": "NO-GO",
     "plan": "GO",
     "spec": "GO"
   }
