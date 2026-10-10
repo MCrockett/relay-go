@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/mobile-hub",
   "extra_rounds": {},
   "feature": "mobile-hub",
@@ -29,9 +31,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-10-10T13:19:25-04:00",
+  "updated": "2026-10-10T13:19:37-04:00",
   "verdicts": {}
 }
 ---
