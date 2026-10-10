@@ -1,0 +1,260 @@
+# mobile-hub: plan
+
+Builds the spec in `spec.md` (spec GO, codex round 4). Tests first in every task. Gate: `python3.11 -m unittest discover -s tests -t . -v`. Tests use temporary RELAY_HOME, HOME, CLAUDE_CONFIG_DIR and CODEX_HOME, the fake gh from `tests/helpers.py`, and never call real Claude or Codex.
+
+## Two clarifications from the spec GO notes
+
+- **Actions offered = the dashboard's filtered list.** A feature item lists exactly `row["actions"]` from the snapshot, which `snapshot.feature()` has already filtered: merge only when merge readiness passes, review only for an open PR, nothing while a review job runs. `relay hub act` refuses any action not in the saved item's list, then the execution checks in `owneractions` and `reviewjobs` run as usual. Wherever the spec says "what `owneractions.applicable` offers", this filtered list is what is meant.
+- **An override during a running review.** D7's sentence that an override is "refused by the fingerprint check" while a review runs is too strong. An override on that feature can pass its fingerprint check while the reviewer works. The review then fails to publish, because its lease check sees the branch moved, and it reports that. The hub does not add a lock of its own for this; the existing lease check protects the result. The hub skill tells the hub to say so if a review it started reports that the branch moved.
+
+## Shapes used below
+
+New module `relaylib/hub.py` (one responsibility: the hub's digest, its storage and its session registry). The CLI handlers live in `relaylib/commands.py` with the other commands, and call into `hub.py`.
+
+Digest item (saved and `--json`):
+
+```
+{"n": 1, "kind": "feature", "repo": "bottomsup", "repo_path": "...", "slug": "x", "stage": "build",
+ "status": "ready-to-merge", "asks": [{"kind": "merge", "text": "Merge PR #12"}], "wait_since": 1760100000.0,
+ "pr": 12, "pr_state": "OPEN", "ci": "green", "actions": ["merge"], "session": {"provider": "claude",
+ "session_id": "...", "label": "bottomsup", "state": "waiting"} | null, "answer_here": false, "seen": {...}}
+{"n": 2, "kind": "session", "provider": "codex", "session_id": "...", "label": "proteindiary", "state": "permission",
+ "pending_tools": ["Bash"], "wait_since": ..., "excerpt": "...", "answer_here": true}
+```
+
+`answer_here` is true when the wait is a permission prompt or a question tool: a session item in state `permission`, or a feature item whose session ask has kind `approve` (spec D8). `repo_path` and `seen` are saved but never printed in text mode. The saved digest file also holds `id`, `created_at`, `session` (`{"provider", "session_id"}` or null) and `source`.
+
+## Tasks
+
+### Task 1: cross-process owner action lock
+
+Files: `relaylib/owneractions.py`, `tests/test_owneractions.py`.
+
+- `action_lock()` keeps the existing `threading.Lock` (threads in the dashboard) and also takes `fcntl.flock(fd, LOCK_EX | LOCK_NB)` on `<relay_home>/owner-action.lock`, opened per call. Either failing raises `Conflict("busy: another owner action is running")`. The lock file is created with mode 0o600.
+- `relay override` (`cmd_override`, non-review path) wraps its state change and save in `owneractions.action_lock()`, so it also refuses while the dashboard or a hub acts.
+- Test: a child process (`subprocess` running `python3.11 -c` that imports `relaylib.owneractions`, enters `action_lock()`, prints "held" and sleeps until stdin closes) holds the lock; the parent's `action_lock()` raises `Conflict` with "busy"; after the child exits, the parent acquires it. A second test shows `relay override go` from an owner terminal is refused with "busy" while the child holds it.
+
+Covers: R13.
+
+### Task 2: hub session registry, left out of other sessions
+
+Files: `relaylib/hub.py` (new), `relaylib/othersessions.py`, `tests/test_hub.py` (new), `tests/test_othersessions.py`.
+
+- `hub.register(provider, session_id, records)`: under `fcntl.flock` on `<relay_home>/hub/lock`, read `hub/sessions.json` (a list of `{"provider", "session_id", "at"}`), drop entries whose session record (from `records`, keyed by provider and id) is missing or has state `ended`, add this session if absent, and write with a temp file and `os.replace`. Returns a warning string or None: an unreadable file is treated as empty and rewritten; a failed write returns "could not record this hub session: <error>", and nothing raises.
+- `hub.registered()`: the set of `(provider, session_id)` in the file; an unreadable or missing file gives the empty set.
+- `othersessions.listed` drops candidates whose `(provider, session_id)` is in `hub.registered()`. `relay status` and `snapshot.build` both call `listed`, so both leave the hub out.
+- Tests: register adds, is idempotent, drops ended and missing sessions; two threads registering two sessions at once both end up in the file; an unreadable file leaves nothing out; an unwritable folder (chmod 0o500) gives the warning; `listed` leaves out a registered waiting session and keeps an unregistered one.
+
+Covers: R14.
+
+### Task 3: snapshot source
+
+Files: `relaylib/hub.py`, `tests/test_hub.py`.
+
+- `hub.load(timeout=5)` returns `(data, source)`, where source is `{"from": "dashboard", "age_seconds": a}` or `{"from": "build", "seconds": t}`.
+  - Dashboard path: read `~/.relay/ui.json` through `server._discovery_path()`, check the pid is alive, and `GET /api/snapshot` with the token, using an `http.client.HTTPConnection` with a 5-second timeout. It uses the response only when it is 200, `loading` is false and `data` is not null.
+  - Any failure: `snapshot.build()` timed with `time.monotonic()`.
+  - The token is never returned or printed.
+- Tests:
+  - A fake dashboard (a `http.server` thread in the test, serving a canned snapshot and checking the token header), with `ui.json` written in the temp RELAY_HOME. `hub.load` returns its data with `from: dashboard`. No git or gh process runs: `subprocess.run`, `gitops.run` and `snapshot.build` are patched to fail the test if called.
+  - A dashboard answering `loading: true`, one that sleeps past the timeout (timeout passed as 0.2 in the test), and a stale `ui.json` with a dead pid each fall back to `build` (patched to return canned data).
+  - The token string does not appear in `repr(hub.load(...))`.
+
+Covers: R6.
+
+### Task 4: digest items and order
+
+Files: `relaylib/hub.py`, `tests/test_hub.py`.
+
+- `hub.items(data)` builds the item list from `data["rows"]` and `data["other_sessions"]`:
+  - A feature row becomes an item when `waiting_on_owner` is true, or its status is `waiting-owner` or `ready-to-merge`, or a flag starts with "stale" or "fallback GO". Each item copies:
+    - repo, slug, stage, status;
+    - asks (kind and text);
+    - `wait_since`;
+    - pr number, PR state and ci;
+    - `actions`;
+    - `seen`, `repo_path`;
+    - the session named by its `answer` or `approve` ask (`provider:session_id`), with label from the row's repo and state `waiting` or `permission`.
+  - A row with `error` becomes an error item: repo plus the error text, and no actions.
+  - Each `other_sessions` entry becomes a session item.
+  - `answer_here` as in the shapes above.
+- Order: `wait_since` ascending; items without it last, ordered by repo then slug for features and label then session id for sessions.
+- `hub.counts(data, items)`: features listed in `rows` that are not items and not done, and `running` sessions (from `data["running"]`) that are not items.
+- Tests: canned snapshot dicts covering:
+  - every inclusion rule, the error item and the order with missing wait times;
+  - an `approve` ask setting `answer_here` on a feature item, and a `permission` session item;
+  - `actions` copied unchanged from the filtered row (a ready-to-merge row whose actions lack `merge` gives an item without it);
+  - counts.
+
+Covers: R1, R2, R3.
+
+### Task 5: digest storage and references
+
+Files: `relaylib/hub.py`, `tests/test_hub.py`.
+
+- `hub.new_id(now_ms)`: `base36(now_ms) + 4 chars from secrets.choice(digits + lowercase)`.
+- `hub.save(items, source, session, now)` writes the digest dict to a temp file in `<relay_home>/hub/digests/`, then `os.link(temp, final)`. On `FileExistsError` it draws a new id, up to 5 tries; then it unlinks the temp file. It returns `(id, None)`, or `(None, warning)` on any OSError. After a save it prunes files whose `created_at` is older than 24 hours, keeping the newest 20 by `created_at`.
+- `hub.resolve(ref, session, now)` parses `<id>.<n>`. It loads the digest file, requires the same session (provider and id, or both null) and `now - created_at <= 86400`, and returns the item. Every miss raises `RelayError("unknown reference <ref>: run relay hub for a fresh digest")`: bad format, no file, unreadable JSON, another session, too old, or no item n.
+- Tests:
+  - Two processes saving at the same patched millisecond with patched `secrets.choice` returning the same characters first: both saves succeed with different ids, and neither file is overwritten.
+  - **Wipe test:** save digest A (item 1 = feature x) in session S; `shutil.rmtree` the hub folder; save digest B (item 1 = feature y) in session S. Resolving `A.1` is refused, and `B.1` gives y.
+  - Another session's reference is refused; one 24 hours plus one second old is refused.
+  - Pruning keeps the newest 20 when all are old, and removes old ones beyond that.
+  - A hub folder that cannot be written gives `(None, warning)`.
+
+Covers: R7, R7a.
+
+### Task 6: `relay hub` command, text and JSON
+
+Files: `relaylib/commands.py` (parser and `cmd_hub`), `relaylib/hub.py` (`render_text`, `render_json`), `tests/test_hub.py`, `tests/test_commands.py`.
+
+- `relay hub [--json] [--by ...]`:
+  1. `identity.detect` decides the session. In an agent session it registers the session (Task 2); from the owner's terminal there is no registration, and the session is null.
+  2. Then `hub.load`, `items`, `counts`, `save`, and print.
+- **Text output:**
+  - Header: `relay hub · digest <id> · dashboard data 12s old`, or `· built in 34s`. When the save failed, the id is replaced by "not saved: actions need a new digest".
+  - Items: `<n>. <repo>/<slug> · <stage> <status> · waiting 2h`, then indented lines for:
+    - the ask text;
+    - `PR #12 · CI green`;
+    - `actions: merge, review`;
+    - `open this session to answer` when `answer_here` is set.
+  - Session items: `<n>. <label> · <provider> session · <state> · waiting 40m`, then:
+    - the pending tools for a permission wait;
+    - the excerpt, cut to 160 characters;
+    - the answer-here line.
+  - Lines are wrapped at 78 columns with `textwrap`.
+  - Closing line: `Nothing else needs you: 3 features in progress, 2 sessions working.`
+  - With no items, the header is followed by `Nothing needs you right now.` and then the closing line.
+  - Item numbers are printed only when the digest was saved.
+  - Warnings (registration, save) go to stderr.
+- **`--json`:** one object `{"digest": id|null, "source": {...}, "items": [...], "counts": {...}, "warnings": [...]}` on stdout, with `seen` and `repo_path` left out of the printed items. Nothing else goes to stdout.
+- **Tests (fixture snapshot through a patched `hub.load`):**
+  - the text matches an expected block;
+  - the empty case;
+  - the unsaved-digest header with no numbers;
+  - `--json` parses and carries the counts and warnings, including when the hub folder is unwritable;
+  - a run with `CLAUDE_CODE_SESSION_ID` set registers the session, and one with the owner env does not;
+  - the dashboard token from a fake `ui.json` appears in neither output.
+
+Covers: R1, R2, R3, R4, R5, R6.
+
+### Task 7: notes carry their own prefix
+
+Files: `relaylib/notes.py`, `tests/test_notes.py`.
+
+- `notes.send(..., prefix=None)` stores `"prefix"` on the note only when it is given.
+- `line()` and the hook path (`list_for`'s delivery text at `notes.py:244`) use `n.get("prefix") or PREFIX`. `_note` accepts an optional string `prefix`.
+- Existing notes without the field behave exactly as before.
+- Tests: a note with a prefix posts it to a fake inbox socket and delivers it through the hook path; a note without one still shows the dashboard prefix.
+
+Covers: R8 (prefix).
+
+### Task 8: `relay hub note`
+
+Files: `relaylib/commands.py`, `relaylib/hub.py` (`note_target`, `log`), `tests/test_commands.py`, `tests/test_hub.py`.
+
+- `relay hub note <ref> <text> --relayed [--by]`:
+  1. `owner_or_relayed(args, "relay hub note")`; this refuses without `--relayed`, and refuses `--relayed` outside an agent session.
+  2. `hub.resolve(ref, my session, now)`.
+  3. Session item: target its provider and id. Feature item: target its `session`, or refuse "item <n> has no session to send a note to". Refuse with "open this session to answer" when `answer_here` is set.
+  4. Load a fresh snapshot with `hub.load`. The target must still be listed: in `other_sessions`, in `running`, or as the session of a feature row's `answer` ask. Otherwise refuse with "that session is no longer waiting; run relay hub again". If the fresh state is now a permission wait, refuse with the answer-here message.
+  5. Send with `notes.send(provider, sid, text, inbox, prefix=f"Note from the owner, relayed by {relayed_by} from the relay hub:")`. The inbox comes from `snapshot._inbox`, and is None when the session is shown ended or stopped.
+  6. Print "posted to <label>", "queued for <label>'s next prompt", or the not-recorded warning.
+  7. Append a log line.
+- `hub.log(entry)` appends one JSON line to `<relay_home>/hub/log.jsonl` (mode 0o600): `at`, `command`, `ref`, `target`, `action`, `relayed_by`, `result`. It returns a warning on OSError, which is printed to stderr.
+- Tests:
+  - refused without `--relayed`;
+  - refused with `--relayed` and the owner env;
+  - unknown ref;
+  - a feature item with no session;
+  - an answer-here item;
+  - a session no longer listed;
+  - posted to a fake inbox socket, with the hub prefix in the posted line;
+  - queued when not running;
+  - a log line written;
+  - the log folder unwritable gives a warning, and the note is still sent.
+
+Covers: R8, R11, R12.
+
+### Task 9: `relay hub act`
+
+Files: `relaylib/commands.py`, `relaylib/owneractions.py`, `tests/test_commands.py`, `tests/test_owneractions.py`.
+
+- `owneractions.run_override(repo, slug, action, seen, relayed_by=None)` passes `relayed_by` to `apply_override`. When `relayed_by` is set and there is a PR, it posts the same PR comment `cmd_override` posts and returns a warning on failure.
+- `owneractions.merge(repo, slug, seen, relayed_by=None)`, after a successful `gh pr merge`, when `relayed_by` is set:
+  - posts the comment "Merged by the owner, relayed by <relayed_by> from the relay hub" with `gitops.pr_comment` from a temp folder with `-R`, as the merge does;
+  - on failure, the message says the PR is merged and the comment could not be posted.
+- `relay hub act <ref> <action> --relayed [--reviewer] [--by]`:
+  1. `owner_or_relayed`, then resolve.
+  2. Refuse a session item ("item <n> is a session; use relay hub note"), and an action not in the item's `actions`.
+  3. Then:
+     - `go`, `extra-round`, `reset-rounds`, `release`: `run_override(item.repo_path, slug, action, item.seen, relayed_by)`;
+     - `merge`: `merge(..., relayed_by)`;
+     - `review`, `review-spec`, `review-plan`: `reviewjobs.prepare(repo_path, slug, item.seen, args.reviewer, relayed_by, stage=build|spec|plan)` and `job.run()`.
+  4. Print the message, append a log line, and exit non-zero on a refusal or failure.
+- `repo_path` must still be a checkout under `projects_root()` (`snapshot.allowed_repo`).
+- Tests:
+  - A temp repo with a feature at `waiting-owner`, a bare origin and fake gh, plus a saved digest made from its real fingerprint:
+    - `extra-round` is recorded with `relayed_by` in `owner_actions` and pushed;
+    - after another commit moves the feature, the same reference is refused with "changed since you looked";
+    - an action not listed is refused;
+    - a session item is refused.
+  - `merge` on a ready-to-merge fixture (fake gh reporting mergeable and green): fake gh logs `pr merge` and then a `pr comment` with the hub text; with the comment call made to fail, the output says merged and that the comment failed.
+  - `review` with the fake reviewer binary runs and records `relayed_by`.
+  - Refusals without `--relayed` and from the owner env.
+  - A log line per action.
+
+Covers: R9, R10, R11, R12.
+
+### Task 10: skill, install and README
+
+Files: `skills/relay-hub/SKILL.md` (new), `README.md`, `tests/test_skills.py` if it exists, otherwise `tests/test_hub.py`.
+
+- `SKILL.md` frontmatter: `name: relay-hub`; the description says to use it when the owner wants to see, from a phone or anywhere, what needs them across relay projects, and act on it.
+- The body states spec D10's rules, plus:
+  - start with `relay hub`;
+  - use `relay hub --json` to read references;
+  - show items in short form with their numbers;
+  - turn the owner's "merge 2" or "tell 3 to go ahead" into `relay hub act <id>.2 merge --relayed` or `relay hub note <id>.3 "<owner's words>" --relayed`;
+  - run reviews in the background;
+  - on "changed since you looked" or "unknown reference", run `relay hub` again and ask;
+  - report "open this session to answer" items as such;
+  - if a review reports the branch moved, say so (plan clarification 2).
+- `install.sh` already links every `skills/*/` with a SKILL.md, so no change is needed. A test checks the new folder has SKILL.md with `name: relay-hub` and that the text has no em-dash.
+- README: a section "### The hub: relay from your phone" covering:
+  - start a Claude session in any folder;
+  - run `/relay-hub`;
+  - turn on remote control;
+  - ask "what needs me?";
+  - what it can and cannot do (no permission prompts; actions only on your words);
+  - that it lists nothing as waiting for itself.
+
+Covers: R15, R16.
+
+### Task 11: full gate
+
+Run the whole suite and fix anything it finds. Check every requirement R1 to R16 (and R7a) against a test or a file named above. Record the result in `docs/relay/mobile-hub/build-notes.md` with `relay commit`.
+
+Covers: R17.
+
+## Coverage
+
+| Requirement | Tasks |
+|---|---|
+| R1 | 4, 6 |
+| R2 | 4, 6 |
+| R3 | 4, 6 |
+| R4 | 6 |
+| R5 | 6 |
+| R6 | 3, 6 |
+| R7, R7a | 5 |
+| R8 | 7, 8 |
+| R9 | 9 |
+| R10 | 9 |
+| R11 | 8, 9 |
+| R12 | 8, 9 |
+| R13 | 1 |
+| R14 | 2 |
+| R15 | 10 |
+| R16 | 10 |
+| R17 | 1 to 11 |

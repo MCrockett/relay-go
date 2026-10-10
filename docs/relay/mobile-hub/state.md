@@ -2,6 +2,7 @@
 {
   "authors": {
     "idea": "claude",
+    "plan": "claude",
     "spec": "claude"
   },
   "branch": "feat/mobile-hub",
@@ -77,13 +78,14 @@
     }
   },
   "rounds": {
+    "plan": 1,
     "spec": 4
   },
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "drafting",
-  "updated": "2026-10-10T17:20:59-04:00",
+  "status": "in-review",
+  "updated": "2026-10-10T17:22:56-04:00",
   "verdicts": {
     "spec": "GO"
   }
