@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/ci-on-submit",
   "extra_rounds": {},
   "feature": "ci-on-submit",
@@ -29,9 +31,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-10-10T07:26:02-04:00",
+  "updated": "2026-10-10T07:26:24-04:00",
   "verdicts": {}
 }
 ---
