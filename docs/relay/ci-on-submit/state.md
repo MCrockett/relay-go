@@ -2,6 +2,7 @@
 {
   "authors": {
     "idea": "claude",
+    "plan": "claude",
     "spec": "claude"
   },
   "branch": "feat/ci-on-submit",
@@ -70,13 +71,14 @@
     }
   },
   "rounds": {
+    "plan": 1,
     "spec": 3
   },
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "drafting",
-  "updated": "2026-10-10T07:56:16-04:00",
+  "status": "in-review",
+  "updated": "2026-10-10T09:30:10-04:00",
   "verdicts": {
     "spec": "GO"
   }
