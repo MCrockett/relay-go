@@ -1,0 +1,9 @@
+name: probe
+on:
+  pull_request:
+    types: [ready_for_review]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ready_for_review ran
