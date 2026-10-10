@@ -1,7 +1,8 @@
 ---
 {
   "authors": {
-    "idea": "claude"
+    "idea": "claude",
+    "spec": "claude"
   },
   "branch": "feat/ci-on-submit",
   "extra_rounds": {},
@@ -17,6 +18,10 @@
     {
       "action": "owner joined idea",
       "at": "2026-10-10T07:26:02-04:00"
+    },
+    {
+      "action": "owner joined spec",
+      "at": "2026-10-10T07:28:49-04:00"
     }
   ],
   "pr": null,
@@ -28,12 +33,14 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "spec": 1
+  },
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "drafting",
-  "updated": "2026-10-10T07:26:24-04:00",
+  "status": "in-review",
+  "updated": "2026-10-10T07:28:49-04:00",
   "verdicts": {}
 }
 ---
