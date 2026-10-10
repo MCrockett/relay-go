@@ -5,7 +5,7 @@ import re
 import tempfile
 import threading
 
-from . import freshness, gitops, state
+from . import ciskip, config, freshness, gitops, state
 from .errors import RelayError
 
 ACTION_LOCK = threading.Lock()
@@ -118,7 +118,7 @@ def run_override(repo, slug, action, seen):
                 from .commands import apply_override
                 message = apply_override(work, slug, st, action)
                 state.write_state(state.state_path(work, slug), st)
-                gitops.commit_paths_under(work, f"{state.RELAY_DIR}/{slug}", message)
+                ciskip.commit(work, slug, st, config.load(work), message)  # the worktree goes if the push fails
                 gitops.git(work, "push", "origin", f"HEAD:refs/heads/{fresh['branch']}")
                 return {"message": f"{action} recorded for {slug}; now {st['stage']} / {st['status']}"}
             finally:

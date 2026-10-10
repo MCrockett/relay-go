@@ -1841,6 +1841,26 @@ done
         self.assertIn("push failed", self.last_err)
         self.assertTrue(self.marked("relay: submit spec"))
 
+    def published_message(self, slug="tiny"):
+        helpers.sh(self.work, "git", "fetch", "-q", "origin")
+        return helpers.sh(self.work, "git", "log", "-1", "--format=%B", f"origin/{self.st(slug)['branch']}")
+
+    def test_a_dashboard_review_no_go_skips_ci(self):
+        self.built("GO")
+        self.enqueue_codex("NO-GO", ["a - x"])
+        result = self.request()
+        self.assertTrue(result["ok"], result["message"])
+        self.assertIn("NO-GO", self.published_message())
+        self.assertIn("[skip ci]", self.published_message())
+
+    def test_a_dashboard_review_go_runs_ci_under_required_checks(self):
+        self.built("GO", required=True)
+        self.enqueue_codex("GO")
+        result = self.request()
+        self.assertTrue(result["ok"], result["message"])
+        self.assertEqual(self.published()["status"], "ready-to-merge")
+        self.assertNotIn("[skip ci]", self.published_message())
+
     def test_a_failing_decision_never_stops_a_command(self):                      # R10
         self.pr()
         self.to_spec()

@@ -67,6 +67,36 @@ class OwnerActionsTest(unittest.TestCase):
         self.assertEqual(gitops.git(self.work, "status", "--porcelain").stdout, before)
         self.assert_cleaned()
 
+    # ---- ci-skip-bookkeeping R3
+
+    def green_ci(self, required):
+        runs, status, api = (os.path.join(self.tmp, n) for n in ("runs.json", "status.json", "api.json"))
+        helpers.write(runs, '{"total_count": 1, "check_runs": [{"status": "completed", "conclusion": "success"}]}')
+        helpers.write(status, '{"state": "pending", "total_count": 0}')
+        helpers.write(api, json.dumps({"rules/branches/": [{"type": "required_status_checks"}] if required else [],
+                                       "/branches/": {"protection": {}}}))
+        patch = mock.patch.dict(os.environ, {"FAKE_GH_RUNS": runs, "FAKE_GH_STATUS": status, "FAKE_GH_API": api})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def published_message(self):
+        return gitops.git(self.work, "log", "-1", "--format=%B", "origin/feat/demo").stdout
+
+    def test_a_dashboard_override_skips_ci(self):
+        self.green_ci(required=False)
+        owneractions.run_override(self.work, "demo", "go", self.seen())
+        self.assertIn("[skip ci]", self.published_message())
+
+    def test_a_dashboard_go_to_ready_to_merge_runs_ci_under_required_checks(self):
+        self.green_ci(required=True)
+        self.st.update(stage="build", status="waiting-owner", pr=7)
+        self.save()
+        self.publish(self.work)
+        self.pr()
+        owneractions.run_override(self.work, "demo", "go", self.seen())
+        self.assertEqual(self.published()["status"], "ready-to-merge")
+        self.assertNotIn("[skip ci]", self.published_message())
+
     def test_every_fingerprint_change_refuses_override_and_merge(self):
         for field in ("content", "stage", "status", "owner"):
             for action in ("go", "merge"):
