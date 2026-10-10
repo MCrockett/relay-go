@@ -28,7 +28,7 @@ Digest item (saved and `--json`):
 
 ### Task 1: cross-process owner action lock
 
-Files: `relaylib/owneractions.py`, `tests/test_owneractions.py`.
+Files: `relaylib/owneractions.py`, `relaylib/commands.py` (`cmd_override`), `tests/test_owneractions.py`, `tests/test_commands.py`.
 
 - `action_lock()` keeps the existing `threading.Lock` (threads in the dashboard) and also takes `fcntl.flock(fd, LOCK_EX | LOCK_NB)` on `<relay_home>/owner-action.lock`, opened per call. Either failing raises `Conflict("busy: another owner action is running")`. The lock file is created with mode 0o600.
 - `relay override` (`cmd_override`, non-review path) wraps its state change and save in `owneractions.action_lock()`, so it also refuses while the dashboard or a hub acts.
@@ -52,12 +52,12 @@ Covers: R14.
 Files: `relaylib/hub.py`, `tests/test_hub.py`.
 
 - `hub.load(timeout=5)` returns `(data, source)`, where source is `{"from": "dashboard", "age_seconds": a}` or `{"from": "build", "seconds": t}`.
-  - Dashboard path: read `~/.relay/ui.json` through `server._discovery_path()`, check the pid is alive, and `GET /api/snapshot` with the token, using an `http.client.HTTPConnection` with a 5-second timeout. It uses the response only when it is 200, `loading` is false and `data` is not null.
+  - Dashboard path: read `~/.relay/ui.json` through `server._discovery_path()`, check the pid is alive, and `GET /api/snapshot` with the token. The request runs in a daemon thread and the caller waits with `thread.join(timeout)`, so 5 seconds bounds the whole request (connect, headers and body), not each socket operation. If the thread has not finished by then, its result is ignored. The response is used only when it is 200, `loading` is false and `data` is not null.
   - Any failure: `snapshot.build()` timed with `time.monotonic()`.
   - The token is never returned or printed.
 - Tests:
   - A fake dashboard (a `http.server` thread in the test, serving a canned snapshot and checking the token header), with `ui.json` written in the temp RELAY_HOME. `hub.load` returns its data with `from: dashboard`. No git or gh process runs: `subprocess.run`, `gitops.run` and `snapshot.build` are patched to fail the test if called.
-  - A dashboard answering `loading: true`, one that sleeps past the timeout (timeout passed as 0.2 in the test), and a stale `ui.json` with a dead pid each fall back to `build` (patched to return canned data).
+  - A dashboard answering `loading: true`, one that delays its headers past the deadline, one that sends headers at once and then trickles the body a byte at a time past the deadline (deadline passed as 0.3 in the test; each fallback returns within 1 second), and a stale `ui.json` with a dead pid each fall back to `build` (patched to return canned data).
   - The token string does not appear in `repr(hub.load(...))`.
 
 Covers: R6.
@@ -79,10 +79,13 @@ Files: `relaylib/hub.py`, `tests/test_hub.py`.
   - Each `other_sessions` entry becomes a session item.
   - `answer_here` as in the shapes above.
 - Order: `wait_since` ascending; items without it last, ordered by repo then slug for features and label then session id for sessions.
+- Registered hub sessions (`hub.registered()`, Task 2) are left out here too, so a dashboard snapshot cached before this hub registered does not list it.
 - `hub.counts(data, items)`: features listed in `rows` that are not items and not done, and `running` sessions (from `data["running"]`) that are not items.
 - Tests: canned snapshot dicts covering:
   - every inclusion rule, the error item and the order with missing wait times;
   - an `approve` ask setting `answer_here` on a feature item, and a `permission` session item;
+  - a waiting session whose pending tool is `AskUserQuestion` (a question tool, reached through a permission request) is `answer_here`;
+  - a registered hub session present in `other_sessions` of a cached snapshot is left out;
   - `actions` copied unchanged from the filtered row (a ready-to-merge row whose actions lack `merge` gives an item without it);
   - counts.
 
@@ -117,6 +120,7 @@ Files: `relaylib/commands.py` (parser and `cmd_hub`), `relaylib/hub.py` (`render
     - the ask text;
     - `PR #12 · CI green`;
     - `actions: merge, review`;
+    - `session: <label> (<provider>) · <state>` when the item has a session (R2);
     - `open this session to answer` when `answer_here` is set.
   - Session items: `<n>. <label> · <provider> session · <state> · waiting 40m`, then:
     - the pending tools for a permission wait;
@@ -129,7 +133,7 @@ Files: `relaylib/commands.py` (parser and `cmd_hub`), `relaylib/hub.py` (`render
   - Warnings (registration, save) go to stderr.
 - **`--json`:** one object `{"digest": id|null, "source": {...}, "items": [...], "counts": {...}, "warnings": [...]}` on stdout, with `seen` and `repo_path` left out of the printed items. Nothing else goes to stdout.
 - **Tests (fixture snapshot through a patched `hub.load`):**
-  - the text matches an expected block;
+  - the text matches an expected block, including the feature item's session line;
   - the empty case;
   - the unsaved-digest header with no numbers;
   - `--json` parses and carries the counts and warnings, including when the hub folder is unwritable;
@@ -154,17 +158,26 @@ Covers: R8 (prefix).
 Files: `relaylib/commands.py`, `relaylib/hub.py` (`note_target`, `log`), `tests/test_commands.py`, `tests/test_hub.py`.
 
 - `relay hub note <ref> <text> --relayed [--by]`:
-  1. `owner_or_relayed(args, "relay hub note")`; this refuses without `--relayed`, and refuses `--relayed` outside an agent session.
+  1. If `--relayed` is missing, refuse with "relay hub note passes on the owner's words: run it with --relayed from the hub session" (`owner_or_relayed` alone would let the owner's terminal through). Then `owner_or_relayed(args, "relay hub note")`, which refuses `--relayed` outside an agent session.
   2. `hub.resolve(ref, my session, now)`.
   3. Session item: target its provider and id. Feature item: target its `session`, or refuse "item <n> has no session to send a note to". Refuse with "open this session to answer" when `answer_here` is set.
-  4. Load a fresh snapshot with `hub.load`. The target must still be listed: in `other_sessions`, in `running`, or as the session of a feature row's `answer` ask. Otherwise refuse with "that session is no longer waiting; run relay hub again". If the fresh state is now a permission wait, refuse with the answer-here message.
-  5. Send with `notes.send(provider, sid, text, inbox, prefix=f"Note from the owner, relayed by {relayed_by} from the relay hub:")`. The inbox comes from `snapshot._inbox`, and is None when the session is shown ended or stopped.
+  4. Check the target live, not from any snapshot (a dashboard snapshot can be up to 30 seconds old). Read the target's own session record now, from `sessions.record_path(provider, sid)`, validated with `sessions._valid`:
+     - no record, or one that cannot be read: refuse with "that session is no longer known; run relay hub again";
+     - state `permission`: refuse with the answer-here message;
+     - state `waiting`: post to the record's inbox;
+     - state `working`: refuse with "that session is working now; run relay hub again";
+     - state `ended`, or a session `sessions.alive` reports not running: queue with no inbox.
+  5. Send with `notes.send(provider, sid, text, inbox, prefix=f"Note from the owner, relayed by {relayed_by} from the relay hub:")`. `notes.send` applies session-notify's text checks (not empty, at most 2,000 characters).
   6. Print "posted to <label>", "queued for <label>'s next prompt", or the not-recorded warning.
-  7. Append a log line.
+  7. Every attempt that gets past argument parsing is logged, refusals and failures included. The handler wraps steps 1 to 6 in `try`/`finally` and logs `result` as `posted`, `queued`, `posted, not recorded` or `refused: <message>`.
 - `hub.log(entry)` appends one JSON line to `<relay_home>/hub/log.jsonl` (mode 0o600): `at`, `command`, `ref`, `target`, `action`, `relayed_by`, `result`. It returns a warning on OSError, which is printed to stderr.
 - Tests:
-  - refused without `--relayed`;
+  - refused without `--relayed` from an agent env, and from the owner env (the terminal case `owner_or_relayed` alone would allow);
   - refused with `--relayed` and the owner env;
+  - live checks after a cached snapshot: the digest saw the session waiting, then its record changes to `permission` (refused, answer-here), to `working` (refused), is deleted (refused), or becomes `ended` (queued);
+  - empty text and 2,001 characters are refused with session-notify's messages;
+  - posted but not recorded: `os.replace` in `notes` patched to fail after a successful post prints the not-recorded warning (the matching `notes.send` cases are already covered in `tests/test_notes.py`; these tests check the hub command reports them);
+  - a refusal writes a log line with `refused: ...`;
   - unknown ref;
   - a feature item with no session;
   - an answer-here item;
@@ -180,18 +193,18 @@ Covers: R8, R11, R12.
 
 Files: `relaylib/commands.py`, `relaylib/owneractions.py`, `tests/test_commands.py`, `tests/test_owneractions.py`.
 
-- `owneractions.run_override(repo, slug, action, seen, relayed_by=None)` passes `relayed_by` to `apply_override`. When `relayed_by` is set and there is a PR, it posts the same PR comment `cmd_override` posts and returns a warning on failure.
+- `owneractions.run_override(repo, slug, action, seen, relayed_by=None)` passes `relayed_by` to `apply_override`, which records it through `record_owner_action`. It posts no PR comment: spec D11 allows only the merge comment to be published.
 - `owneractions.merge(repo, slug, seen, relayed_by=None)`, after a successful `gh pr merge`, when `relayed_by` is set:
   - posts the comment "Merged by the owner, relayed by <relayed_by> from the relay hub" with `gitops.pr_comment` from a temp folder with `-R`, as the merge does;
   - on failure, the message says the PR is merged and the comment could not be posted.
 - `relay hub act <ref> <action> --relayed [--reviewer] [--by]`:
-  1. `owner_or_relayed`, then resolve.
+  1. If `--relayed` is missing, refuse as in Task 8 step 1; then `owner_or_relayed`, then resolve.
   2. Refuse a session item ("item <n> is a session; use relay hub note"), and an action not in the item's `actions`.
   3. Then:
      - `go`, `extra-round`, `reset-rounds`, `release`: `run_override(item.repo_path, slug, action, item.seen, relayed_by)`;
      - `merge`: `merge(..., relayed_by)`;
      - `review`, `review-spec`, `review-plan`: `reviewjobs.prepare(repo_path, slug, item.seen, args.reviewer, relayed_by, stage=build|spec|plan)` and `job.run()`.
-  4. Print the message, append a log line, and exit non-zero on a refusal or failure.
+  4. Print the message and exit non-zero on a refusal or failure. As in Task 8, the handler logs every attempt in a `finally`: refusals, failures and successes, including a merge that succeeded when the comment failed.
 - `repo_path` must still be a checkout under `projects_root()` (`snapshot.allowed_repo`).
 - Tests:
   - A temp repo with a feature at `waiting-owner`, a bare origin and fake gh, plus a saved digest made from its real fingerprint:
@@ -200,9 +213,11 @@ Files: `relaylib/commands.py`, `relaylib/owneractions.py`, `tests/test_commands.
     - an action not listed is refused;
     - a session item is refused.
   - `merge` on a ready-to-merge fixture (fake gh reporting mergeable and green): fake gh logs `pr merge` and then a `pr comment` with the hub text; with the comment call made to fail, the output says merged and that the comment failed.
-  - `review` with the fake reviewer binary runs and records `relayed_by`.
-  - Refusals without `--relayed` and from the owner env.
-  - A log line per action.
+  - `review` with the fake reviewer binary runs and records `relayed_by`. `review-spec` and `review-plan` items call `reviewjobs.prepare` with stage `spec` and `plan` (prepare patched to record its arguments).
+  - An override records `relayed_by` and the fake gh logs no `pr comment`.
+  - With gh unavailable (fake gh failing `pr view`), `merge` is refused by merge readiness and nothing is merged.
+  - Refusals without `--relayed` from an agent env and from the owner env, and `--relayed` from the owner env.
+  - A log line per attempt, including a refusal. With the log folder unwritable, a successful merge still reports success, plus a warning that the log line failed.
 
 Covers: R9, R10, R11, R12.
 
