@@ -11,6 +11,7 @@ from .errors import RelayError
 
 PR_FIELDS = "number,state,baseRefName,headRefOid,statusCheckRollup"
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
+NOT_STARTED = "The job was not started"  # GitHub's annotation on a job it refused to run (billing)
 WAITING = {"", "PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS"}
 
 # Read-only git commands a snapshot may answer from its memo. Refs can move during a build only by
@@ -340,20 +341,46 @@ def code_sha(root, prefix, ref="HEAD"):
 
 
 def commit_ci_state(root, sha, cancelled="failing"):
-    """CI for one commit: GitHub check runs plus legacy commit statuses."""
+    """CI for one commit: GitHub check runs plus legacy commit statuses. With cancelled="skip" (ci_for_code
+    only) two more answers are possible (ci-on-submit D5): "not-started" when a run GitHub refused to start
+    (billing) is all that stands between the commit and green, and "skipped" when every check run was skipped,
+    as on a draft PR whose workflow skips its jobs."""
     data = gh_json(root, ["api", "--paginate", "--slurp",
                           f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs?per_page=100"])
     pages = data if isinstance(data, list) else [data]
     runs = [r for page in pages for r in page.get("check_runs", [])]
     total = max((page.get("total_count", 0) for page in pages), default=0)
     status = gh_json(root, ["api", f"repos/{{owner}}/{{repo}}/commits/{sha}/status"])
-    checks = [{"status": r.get("status") or "", "conclusion": r.get("conclusion") or ""} for r in runs]
+    refused = [r for r in runs if cancelled == "skip" and _not_started(root, r)]
+    checks = [{"status": r.get("status") or "", "conclusion": r.get("conclusion") or ""}
+              for r in runs if r not in refused]
     if status.get("total_count"):
         checks.append({"state": status.get("state") or ""})
     state = ci_state({"statusCheckRollup": checks}, cancelled)
     if len(runs) < total and state != "failing":
         return "pending"  # GitHub reported more checks than we could read: never call that green
+    if cancelled == "skip" and state in ("green", "cancelled", "none"):
+        if refused:
+            return "not-started"  # outranks cancelled and green, never a real failure or a pending check
+        if runs and not status.get("total_count") and all((r.get("conclusion") or "").upper() == "SKIPPED"
+                                                          for r in runs):
+            return "skipped"
     return state
+
+
+def _not_started(root, run):
+    """D5.1: a failing GitHub Actions run whose annotations say GitHub never started the job. Annotations are
+    read only for such runs; a failed read means a real failure."""
+    if (run.get("status") or "").lower() != "completed" or (run.get("conclusion") or "").lower() != "failure":
+        return False
+    if (run.get("app") or {}).get("slug") != "github-actions" or not (run.get("output") or {}).get("annotations_count"):
+        return False
+    try:
+        notes = gh_json(root, ["api", f"repos/{{owner}}/{{repo}}/check-runs/{run.get('id')}/annotations"])
+    except (RelayError, ValueError):
+        return False
+    return any(isinstance(n, dict) and n.get("annotation_level") == "failure"
+               and (n.get("message") or "").startswith(NOT_STARTED) for n in notes or [])
 
 
 def ci_for_code(root, head, prefix, limit=20):
@@ -362,12 +389,14 @@ def ci_for_code(root, head, prefix, limit=20):
     code commit itself may have no run, and relay's bookkeeping commits re-trigger CI on the head.
     Each candidate is compared with head, so a side branch a merge discarded never counts. A commit carrying
     the skip marker never has a run of its own, so it is passed over without asking GitHub and does not count
-    toward limit (D6); a cancelled run is no result, unless a real failure sits beside it (D8)."""
+    toward limit (D6); a cancelled run is no result, unless a real failure sits beside it (D8). Nor is a run
+    GitHub refused to start, or a commit whose jobs were all skipped (ci-on-submit D5); when refused runs are all
+    it found, the answer is "not-started" (D6)."""
     base = code_sha(root, prefix, head)
     log = git(root, "log", "--format=%H%x00%B%x01", "--ancestry-path", f"{base}..{head}").stdout
     messages = dict(entry.strip("\n").split("\0", 1) for entry in log.split("\x01") if "\0" in entry)
     newer = git(root, "rev-list", "--ancestry-path", f"{base}..{head}").stdout.split()
-    pending, asked = False, 0
+    pending, refused, asked = False, False, 0
     for sha in newer + [base]:
         if asked >= limit:
             break
@@ -382,4 +411,5 @@ def ci_for_code(root, head, prefix, limit=20):
         if state in ("green", "failing"):
             return state
         pending = pending or state == "pending"
-    return "pending" if pending else "none"
+        refused = refused or state == "not-started"
+    return "pending" if pending else "not-started" if refused else "none"

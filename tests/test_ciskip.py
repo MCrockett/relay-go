@@ -69,6 +69,15 @@ class CiSkipTest(unittest.TestCase):
         self.set_runs({})                                                           # ci_for_code is none
         self.assertFalse(self.ok())
 
+    def test_no_marker_when_github_never_started_ci(self):
+        helpers.write(self.files["runs"], json.dumps({self.code: {"total_count": 1, "check_runs": [
+            {"id": 9, "status": "completed", "conclusion": "failure", "app": {"slug": "github-actions"},
+             "output": {"annotations_count": 1}}]}}))
+        self.set_api({"rules/branches/": [], "/branches/": NO_PROTECTION, "check-runs/9/annotations": [
+            {"annotation_level": "failure", "message": "The job was not started because of billing"}]})
+        self.assertEqual(gitops.ci_for_code(self.work, self.code, ciskip.PREFIX), "not-started")
+        self.assertFalse(self.ok())
+
     def test_a_new_branch_compares_with_its_base(self):
         helpers.sh(self.work, "git", "switch", "-q", "-c", "feat/b", "origin/develop")
         self.set_runs({gitops.head_sha(self.work): "success"})
