@@ -37,6 +37,19 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(cfg["limits"]["max_rounds"], 3)                  # repo wins
         self.assertEqual(cfg["limits"]["handoff_context_pct"], 60)
         self.assertTrue(cfg["build"]["require_ci"])
+        self.assertEqual(cfg["build"]["skip_ci"], "auto")
+
+    def test_skip_ci_setting(self):                                       # ci-skip-bookkeeping R4
+        repo = os.path.join(self.tmp, "repo")
+        os.makedirs(os.path.join(repo, "docs", "relay"))
+        path = os.path.join(repo, "docs", "relay", "config.toml")
+        with open(path, "w") as f:
+            f.write('[build]\nskip_ci = "never"\n')
+        self.assertEqual(config.load(repo)["build"]["skip_ci"], "never")
+        with open(path, "w") as f:
+            f.write('[build]\nskip_ci = "sometimes"\n')
+        with self.assertRaisesRegex(RelayError, "config.toml: \\[build\\] skip_ci must be auto or never"):
+            config.load(repo)
 
     def test_reviewer_model(self):
         self.assertEqual(config.reviewer_model(config.load(), "claude").model, "claude-sonnet-5")

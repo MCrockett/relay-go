@@ -927,6 +927,7 @@ done
         self.assertIn("review.claude", self.last_out)
         self.assertIn("codex: out of usage until", self.last_out)
         self.assertIn("effort medium; last round before you: high; release PRs: high", self.last_out)
+        self.assertIn("require_ci True, skip_ci auto", self.last_out)                 # ci-skip-bookkeeping R4
 
     def owner_env(self):
         return mock.patch.dict(os.environ, {k: v for k, v in os.environ.items()

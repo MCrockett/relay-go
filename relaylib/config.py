@@ -32,7 +32,7 @@ DEFAULTS = {
         "budget_stale_hours": 6,
         "timezone": "America/Detroit",
     },
-    "build": {"require_ci": True},
+    "build": {"require_ci": True, "skip_ci": "auto"},  # skip_ci: ci-skip-bookkeeping D3
     "review": {
         # reviewer effort, unless a preference entry names its own (provider:model@effort)
         "effort": "medium",           # every round
@@ -145,6 +145,9 @@ def _merge(base, over):
     return base
 
 
+SKIP_CI = ("auto", "never")
+
+
 def load(repo_root=None, timed=True):
     cfg = copy.deepcopy(DEFAULTS)
     paths = [config_path()]
@@ -158,6 +161,8 @@ def load(repo_root=None, timed=True):
                     _merge(cfg, tomllib.load(f))
                 except tomllib.TOMLDecodeError as e:
                     raise RelayError(f"{path}: {e}")
+            if (cfg.get("build") or {}).get("skip_ci") not in SKIP_CI:
+                raise RelayError(f"{path}: [build] skip_ci must be auto or never")
     if timed:  # a temporary table wins over the owner's and the repo's tables until it ends (models-tab D3)
         from . import reviewtables  # reviewtables imports config at module level
         for author, table in reviewtables.read()[0].items():

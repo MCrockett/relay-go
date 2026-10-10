@@ -803,7 +803,7 @@ def cmd_roles(args):
         print(f"  {provider}: {why if out else 'available'}")
     print()
     print(f"max_rounds {cfg['limits']['max_rounds']}, review timeout {cfg['limits']['review_timeout_min']} min, "
-          f"require_ci {cfg['build']['require_ci']}")
+          f"require_ci {cfg['build']['require_ci']}, skip_ci {cfg['build']['skip_ci']}")
 
 
 def cmd_rule(args):
