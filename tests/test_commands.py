@@ -1,7 +1,7 @@
 import io, json, os, shutil, tempfile, unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
-from relaylib import commands, state
+from relaylib import commands, gitops, state
 from relaylib.errors import RelayError
 from tests import helpers
 
@@ -1731,6 +1731,131 @@ done
             os.chdir(outside)
             self.assertEqual(self.relay("rule", "Where does this go"), 1)
             self.assertIn("--global", self.last_err)
+
+    # ---- ci-skip-bookkeeping R3, R6, R10
+
+    def protection(self, required):
+        path = os.path.join(self.tmp, "api.json")
+        helpers.write(path, json.dumps({"rules/branches/": [{"type": "required_status_checks"}] if required else [],
+                                        "/branches/": {"protection": {}}}))
+        os.environ["FAKE_GH_API"] = path
+
+    def marked(self, subject):
+        """Whether the newest commit whose message contains subject carries the skip marker."""
+        message = helpers.sh(self.work, "git", "log", "-1", "--format=%B", "--fixed-strings", f"--grep={subject}")
+        self.assertIn(subject, message)
+        return "[skip ci]" in message
+
+    def reject_pushes(self):
+        hook = os.path.join(self.origin, "hooks", "pre-receive")
+        helpers.write(hook, "#!/bin/sh\nexit 1\n")
+        os.chmod(hook, 0o755)
+        self.addCleanup(lambda: os.path.exists(hook) and os.remove(hook))
+
+    def built(self, verdict="GO", required=False):
+        self.protection(required)
+        self.small_change()
+        self.pr()
+        self.enqueue_codex(verdict, ["a - x"] if verdict == "NO-GO" else ())
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+
+    def test_build_commits_without_required_checks_are_all_marked(self):
+        self.built("GO")
+        self.assertTrue(self.marked("relay: submit build"))
+        self.assertTrue(self.marked("relay: build GO (codex)"))
+
+    def test_required_checks_leave_only_the_merge_head_unmarked(self):
+        self.built("GO", required=True)
+        self.assertTrue(self.marked("relay: submit build"))
+        self.assertFalse(self.marked("relay: build GO (codex)"))
+        self.assertEqual(self.relay("handoff"), 0, self.last_err)
+        self.assertEqual(self.relay("handoff", "--commit"), 0, self.last_err)   # still ready-to-merge
+        self.assertFalse(self.marked("relay: handoff tiny"))
+
+    def test_required_checks_mark_a_no_go(self):
+        self.built("NO-GO", required=True)
+        self.assertTrue(self.marked("relay: build NO-GO (codex)"))
+
+    def test_unpushed_code_means_no_marker(self):
+        self.protection(False)
+        self.pr()
+        self.to_spec()
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertTrue(self.marked("relay: spec GO (codex)"))                      # code already on origin
+        helpers.write(os.path.join(self.work, "app.py"), "print(3)\n")
+        helpers.sh(self.work, "git", "add", "app.py")
+        helpers.sh(self.work, "git", "commit", "-q", "-m", "unpushed code")
+        helpers.write(os.path.join(self.fdir(), "plan.md"), "# Plan\n")
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertFalse(self.marked("relay: submit plan"))
+
+    def test_a_rejected_push_leaves_the_commit_unmarked(self):
+        self.protection(False)
+        self.pr()
+        self.to_spec()
+        self.reject_pushes()
+        self.enqueue_codex("NO-GO", ["a - x"])
+        self.assertEqual(self.relay("submit"), 0, self.last_err)                    # best-effort push
+        self.assertIn("push failed", self.last_err)
+        self.assertFalse(self.marked("relay: spec NO-GO (codex)"))
+        self.assertFalse(self.marked("relay: submit spec"))
+        self.assertEqual(self.relay("handoff"), 0, self.last_err)
+        self.assertEqual(self.relay("handoff", "--commit"), 1)                      # push="required"
+        self.assertIn("push failed", self.last_err)
+        self.assertFalse(self.marked("relay: handoff demo"))
+
+    def test_a_rejected_push_on_new_and_take(self):
+        self.protection(False)
+        self.pr()
+        self.reject_pushes()
+        self.assertEqual(self.relay("new", "demo", "--idea", "x"), 1)
+        self.assertIn("push failed", self.last_err)
+        self.assertFalse(self.marked("relay: new demo"))
+        os.remove(os.path.join(self.origin, "hooks", "pre-receive"))
+        helpers.sh(self.work, "git", "push", "-q", "-u", "origin", "feat/demo")
+        def change(st, other):
+            helpers.write(os.path.join(state.feature_dir(other, "demo"), "handoff.md"), "Published handoff")
+        self.owner_update(change)
+        self.reject_pushes()
+        self.assertEqual(self.relay("take"), 1)
+        self.assertIn("push failed", self.last_err)
+        message = helpers.sh(self.work, "git", "log", "-1", "--format=%B")
+        self.assertNotIn("[skip ci]", message)
+
+    def test_an_unreachable_origin_keeps_the_marker(self):
+        self.protection(False)
+        self.pr()
+        self.to_spec()
+        real = gitops.push
+
+        def vanish(root, branch):                     # origin goes away after the decision and the commit
+            if os.path.exists(self.origin):
+                os.rename(self.origin, self.origin + ".gone")
+                self.addCleanup(os.rename, self.origin + ".gone", self.origin)
+            return real(root, branch)
+        self.enqueue_codex("NO-GO", ["a - x"])
+        with mock.patch.object(gitops, "push", side_effect=vanish):
+            self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertIn("push failed", self.last_err)
+        self.assertTrue(self.marked("relay: submit spec"))
+
+    def test_a_failing_decision_never_stops_a_command(self):                      # R10
+        self.pr()
+        self.to_spec()
+        path = os.path.join(self.tmp, "api-fails.json")
+        helpers.write(path, json.dumps({"rules/branches/": {"__rc": 1}, "/branches/": {"__rc": 1}}))
+        os.environ["FAKE_GH_API"] = path
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertFalse(self.marked("relay: spec GO (codex)"))
+        self.protection(False)
+        helpers.write(os.path.join(self.fdir(), "plan.md"), "# Plan\n")
+        self.enqueue_codex("GO")
+        with mock.patch("relaylib.ciskip._ref", side_effect=OSError("git broke")):
+            self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertFalse(self.marked("relay: plan GO (codex)"))
 
 if __name__ == "__main__":
     unittest.main()

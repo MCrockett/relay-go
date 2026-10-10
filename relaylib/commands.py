@@ -6,7 +6,7 @@ import os
 import re
 import sys
 
-from . import (availability, config, freshness, gitops, identity, ledger, machine, merged, notify, ownership,
+from . import (availability, ciskip, config, freshness, gitops, identity, ledger, machine, merged, notify, ownership,
                prompts, reviewtables, runner, state, verdict)
 from .errors import RelayError
 from .progress import RoundRecord
@@ -55,9 +55,9 @@ class Ctx:
         if self.branch != self.st["branch"]:
             raise RelayError(f"switch to {self.st['branch']} first (you are on {self.branch})")
         state.write_state(self.path, self.st)
-        gitops.commit_paths_under(self.root, f"{state.RELAY_DIR}/{self.slug}", message)
+        marked = ciskip.commit(self.root, self.slug, self.st, self.cfg, message)
         try:
-            gitops.push(self.root, self.branch)
+            ciskip.push(self.root, self.branch, marked)
         except RelayError as e:
             if push == "required":
                 raise
@@ -247,8 +247,8 @@ def cmd_new(args):
         record_owner_action(st, f"owner approved starting {slug} {what}",
                             None if me.provider == "owner" else f"{me.provider} session {me.session}")
     state.write_state(state.state_path(root, slug), st)
-    gitops.commit_paths_under(root, f"{state.RELAY_DIR}/{slug}", f"relay: new {slug}")
-    gitops.push(root, branch)
+    marked = ciskip.commit(root, slug, st, config.load(root), f"relay: new {slug}")
+    ciskip.push(root, branch, marked)
     rivals = ownership.conflicts(ownership.collect(root), me.session)
     if rivals:  # another session published a claim between our check and our push
         raise RelayError("another session claimed this repo at the same time: "
@@ -304,8 +304,8 @@ def cmd_adopt(args):
     record_owner_action(st, f"owner asked to adopt PR #{info['number']}",
                         None if me.provider == "owner" else f"{me.provider} session {me.session}")
     state.write_state(state.state_path(root, slug), st)
-    gitops.commit_paths_under(root, f"{state.RELAY_DIR}/{slug}", f"relay: adopt PR #{info['number']} as {slug}")
-    gitops.push(root, branch)
+    marked = ciskip.commit(root, slug, st, config.load(root), f"relay: adopt PR #{info['number']} as {slug}")
+    ciskip.push(root, branch, marked)
     print(f"relay: adopted PR #{info['number']} as {slug} at the build stage; you ({me.provider}) own this repo. "
           "Next: wait for CI, then `relay submit` to get the whole PR reviewed.")
 
@@ -677,8 +677,8 @@ def cmd_take(args):
         st = state.read_state(path)
         change(st, state.feature_dir(c.root, slug))
         state.write_state(path, st)
-        gitops.commit_paths_under(c.root, f"{state.RELAY_DIR}/{slug}", message)
-        gitops.push(c.root, branch)
+        marked = ciskip.commit(c.root, slug, st, c.cfg, message)
+        ciskip.push(c.root, branch, marked)
 
     def set_owner(st, _dir):
         st["owner"] = owner_record(me, c.root)
