@@ -116,14 +116,14 @@
     }
   },
   "rounds": {
-    "plan": 2,
+    "plan": 3,
     "spec": 4
   },
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "changes-requested",
-  "updated": "2026-10-10T18:11:54-04:00",
+  "status": "in-review",
+  "updated": "2026-10-10T18:12:06-04:00",
   "verdicts": {
     "plan": "NO-GO",
     "spec": "GO"
