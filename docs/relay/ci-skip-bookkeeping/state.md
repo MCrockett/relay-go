@@ -9,6 +9,18 @@
   "extra_rounds": {},
   "feature": "ci-skip-bookkeeping",
   "history": {
+    "plan": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2"
+        ],
+        "head": "2002d5e625763f7632cad5d90371b8fad2a609f3",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ],
     "spec": [
       {
         "blocking_ids": [
@@ -71,9 +83,10 @@
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "in-review",
-  "updated": "2026-10-09T22:44:52-04:00",
+  "status": "changes-requested",
+  "updated": "2026-10-09T22:45:27-04:00",
   "verdicts": {
+    "plan": "NO-GO",
     "spec": "GO"
   }
 }
