@@ -7,7 +7,7 @@
   },
   "branch": "feat/mobile-hub",
   "extra_rounds": {
-    "plan": 2
+    "plan": 3
   },
   "feature": "mobile-hub",
   "history": {
@@ -153,6 +153,11 @@
       "action": "override extra-round (plan)",
       "at": "2026-10-10T18:21:51-04:00",
       "relayed_by": "claude session 958dee3a-031e-4b49-be5f-09efa15292b1"
+    },
+    {
+      "action": "override extra-round (plan)",
+      "at": "2026-10-10T18:58:52-04:00",
+      "relayed_by": "claude session 958dee3a-031e-4b49-be5f-09efa15292b1"
     }
   ],
   "pr": null,
@@ -176,8 +181,8 @@
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "waiting-owner",
-  "updated": "2026-10-10T18:22:58-04:00",
+  "status": "changes-requested",
+  "updated": "2026-10-10T18:58:52-04:00",
   "verdicts": {
     "plan": "NO-GO",
     "spec": "GO"
