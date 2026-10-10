@@ -18,8 +18,10 @@ def required_checks(root, branches):
     for branch in branches:
         if not _ref(root, f"origin/{branch}"):
             continue
-        rules = gitops.gh_json(root, ["api", f"repos/{{owner}}/{{repo}}/rules/branches/{branch}"])
-        if any(isinstance(r, dict) and r.get("type") == "required_status_checks" for r in rules or []):
+        pages = gitops.gh_json(root, ["api", "--paginate", "--slurp",
+                                      f"repos/{{owner}}/{{repo}}/rules/branches/{branch}?per_page=100"])
+        rules = [r for page in pages or [] for r in (page if isinstance(page, list) else [page])]
+        if any(isinstance(r, dict) and r.get("type") == "required_status_checks" for r in rules):
             return True
         info = gitops.gh_json(root, ["api", f"repos/{{owner}}/{{repo}}/branches/{branch}"])
         checks = ((info or {}).get("protection") or {}).get("required_status_checks") or {}

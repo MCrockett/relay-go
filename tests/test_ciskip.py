@@ -98,6 +98,13 @@ class CiSkipTest(unittest.TestCase):
             for status in ("review", "author", "waiting-owner"):
                 self.assertTrue(self.ok(status), (table, status))
 
+    def test_a_required_check_on_a_later_page_of_rules(self):
+        self.set_api({"rules/branches/": [[{"type": "deletion"}] * 100, RULESET], "/branches/": NO_PROTECTION})
+        self.assertFalse(self.ok("ready-to-merge"))
+        self.assertTrue(self.ok("review"))
+        with open(self.log) as f:
+            self.assertIn("--paginate", f.read())
+
     def test_a_failing_protection_call_means_no_marker(self):
         for table in ({"rules/branches/": {"__rc": 1}, "/branches/": NO_PROTECTION},
                       {"rules/branches/": [], "/branches/": {"__rc": 1}}):
