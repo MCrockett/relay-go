@@ -80,3 +80,58 @@ def register(provider, session_id, records, now=None):
         return None
     except OSError as e:
         return f"could not record this hub session: {e}"
+
+
+# ---------------------------------------------------------------- data (D3)
+
+LOAD_TIMEOUT_S = 5
+
+
+def _dashboard(timeout):
+    """(data, age_seconds) from a running dashboard within `timeout` seconds for the whole request, else None.
+    The token is used for this local request only."""
+    import http.client
+    import threading
+    from .ui import server
+    try:
+        with open(server._discovery_path()) as f:
+            info = json.load(f)
+        if not isinstance(info.get("pid"), int) or info["pid"] <= 0:
+            return None
+        os.kill(info["pid"], 0)
+        port, token = int(info["port"]), str(info["token"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    result = {}
+
+    def fetch():
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+        try:
+            conn.request("GET", "/api/snapshot", headers={"X-Relay-Token": token})
+            response = conn.getresponse()
+            if response.status == 200:
+                result["body"] = json.loads(response.read())
+        except (OSError, ValueError, http.client.HTTPException):
+            pass
+        finally:
+            conn.close()
+
+    worker = threading.Thread(target=fetch, name="relay-hub-dashboard", daemon=True)
+    worker.start()
+    worker.join(timeout)  # bounds connect, headers and body together
+    body = None if worker.is_alive() else result.get("body")
+    if not isinstance(body, dict) or body.get("loading") or not isinstance(body.get("data"), dict):
+        return None
+    age = body.get("age_seconds")
+    return body["data"], (age if isinstance(age, (int, float)) else None)
+
+
+def load(timeout=LOAD_TIMEOUT_S):
+    """(data, source): a running dashboard's snapshot when it answers in time, else one built here (R6)."""
+    found = _dashboard(timeout)
+    if found:
+        return found[0], {"from": "dashboard", "age_seconds": found[1]}
+    from .ui import snapshot
+    started = time.monotonic()
+    data = snapshot.build()
+    return data, {"from": "build", "seconds": time.monotonic() - started}
