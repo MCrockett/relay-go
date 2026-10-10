@@ -172,6 +172,92 @@ class GitopsTest(unittest.TestCase):
             helpers.write(runs, json.dumps({"total_count": 31, "check_runs": [ok] * 30}))
             self.assertEqual(gitops.commit_ci_state(self.work, "abc"), "pending")
 
+
+class SkipMarkerTest(unittest.TestCase):
+    """ci-skip-bookkeeping D1, D6 and D8."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.origin, self.work = helpers.make_repo(self.tmp)
+        self.gh = helpers.fake_bin(self.tmp, "gh", helpers.FAKE_GH)
+        self.status, self.table = os.path.join(self.tmp, "status.json"), os.path.join(self.tmp, "by_sha.json")
+        self.log = os.path.join(self.tmp, "gh.log")
+        helpers.write(self.status, '{"state": "pending", "total_count": 0}')
+        self.n = 0
+
+    def code(self):
+        self.n += 1
+        helpers.write(os.path.join(self.work, "app.py"), f"code {self.n}\n")
+        helpers.sh(self.work, "git", "add", "app.py")
+        helpers.sh(self.work, "git", "commit", "-q", "-m", f"code {self.n}")
+        return gitops.head_sha(self.work)
+
+    def bookkeeping(self, marked):
+        self.n += 1
+        helpers.write(os.path.join(self.work, "docs/relay/a/state.md"), f"x{self.n}")
+        gitops.commit_paths_under(self.work, "docs/relay/a", f"relay: step {self.n}", skip_ci=marked)
+        return gitops.head_sha(self.work)
+
+    def ci(self, runs):
+        helpers.write(self.table, json.dumps(runs))
+        if os.path.exists(self.log):
+            os.remove(self.log)
+        env = {"RELAY_GH_BIN": self.gh, "FAKE_GH_STATUS": self.status, "FAKE_GH_RUNS_BY_SHA": self.table,
+               "FAKE_GH_LOG": self.log}
+        with mock.patch.dict(os.environ, env):
+            return gitops.ci_for_code(self.work, gitops.head_sha(self.work), "docs/relay/a/")
+
+    def asked(self):
+        with open(self.log) as f:
+            return f.read()
+
+    @staticmethod
+    def runs(*conclusions):
+        return {"total_count": len(conclusions), "check_runs": [
+            {"status": "in_progress", "conclusion": None} if c == "pending" else {"status": "completed",
+                                                                                   "conclusion": c}
+            for c in conclusions]}
+
+    def test_marker_is_the_body_and_the_subject_is_unchanged(self):
+        self.bookkeeping(True)
+        self.assertEqual(helpers.sh(self.work, "git", "log", "-1", "--format=%B").strip(),
+                         f"relay: step {self.n}\n\n[skip ci]")
+        self.bookkeeping(False)
+        self.assertEqual(helpers.sh(self.work, "git", "log", "-1", "--format=%B").strip(), f"relay: step {self.n}")
+
+    def test_marked_commits_do_not_use_up_the_limit(self):
+        code = self.code()
+        marked = [self.bookkeeping(True) for _ in range(25)]
+        self.assertEqual(self.ci({code: self.runs("success")}), "green")
+        for sha in marked:
+            self.assertNotIn(sha, self.asked())
+
+    def test_evidence_on_an_unmarked_bookkeeping_commit_under_marked_ones(self):
+        self.code()
+        tested = self.bookkeeping(False)
+        for _ in range(25):
+            self.bookkeeping(True)
+        self.assertEqual(self.ci({tested: self.runs("success")}), "green")
+
+    def test_a_newer_failure_wins_over_an_older_green(self):
+        code = self.code()
+        tested = self.bookkeeping(False)
+        self.bookkeeping(True)
+        self.assertEqual(self.ci({code: self.runs("success"), tested: self.runs("failure")}), "failing")
+
+    def test_cancelled_checks(self):
+        code = self.code()
+        newest = self.bookkeeping(False)
+        self.assertEqual(self.ci({code: self.runs("success"), newest: self.runs("cancelled")}), "green")
+        self.assertEqual(self.ci({code: self.runs("success"), newest: self.runs("failure", "cancelled")}), "failing")
+        self.assertEqual(self.ci({code: self.runs("pending"), newest: self.runs("cancelled")}), "pending")
+        self.assertEqual(self.ci({newest: self.runs("cancelled")}), "none")
+
+    def test_ci_state_still_calls_cancelled_failing(self):
+        self.assertEqual(gitops.ci_state({"statusCheckRollup": [{"status": "COMPLETED", "conclusion": "CANCELLED"}]}),
+                         "failing")
+
 if __name__ == "__main__":
     unittest.main()
 

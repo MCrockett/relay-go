@@ -149,13 +149,23 @@ def changed_paths_under(root, prefix):
     return paths
 
 
-def commit_paths_under(root, prefix, message):
+SKIP_CI = "[skip ci]"
+
+
+def commit_paths_under(root, prefix, message, skip_ci=False):
+    """Commit what changed under prefix. skip_ci adds the body line GitHub reads to start no workflow
+    (ci-skip-bookkeeping D1); the subject stays as given."""
     paths = changed_paths_under(root, prefix)
     if not paths:
         return False
     git(root, "add", "-A", "--", *paths)
-    git(root, "commit", "-q", "-m", message, "--", *paths)
+    git(root, "commit", "-q", "-m", message, *(("-m", SKIP_CI) if skip_ci else ()), "--", *paths)
     return True
+
+
+def marked(message):
+    """True when a line of the commit message is relay's skip marker."""
+    return any(line.strip() == SKIP_CI for line in message.splitlines())
 
 
 def network_env(root):
@@ -301,8 +311,10 @@ def pr_info(root, pr=None):
     return info
 
 
-def ci_state(info):
-    """green, pending, failing or none. Any failing check wins over pending ones."""
+def ci_state(info, cancelled="failing"):
+    """green, pending, failing or none. Any failing check wins over pending ones. With cancelled="skip", a
+    cancelled check is neither green nor failing: the answer is "cancelled" unless a real failure or a
+    pending check outranks it (ci-skip-bookkeeping D8)."""
     checks = info.get("statusCheckRollup") or []
     if not checks:
         return "none"
@@ -312,8 +324,11 @@ def ci_state(info):
             seen.add("pending")
             continue
         result = (check.get("conclusion") or check.get("state") or "").upper()
+        if result == "CANCELLED" and cancelled == "skip":
+            seen.add("cancelled")
+            continue
         seen.add("green" if result in GREEN else "pending" if result in WAITING else "failing")
-    for worst in ("failing", "pending"):
+    for worst in ("failing", "pending", "cancelled"):
         if worst in seen:
             return worst
     return "green"
@@ -324,7 +339,7 @@ def code_sha(root, prefix, ref="HEAD"):
     return git(root, "log", "-1", "--format=%H", ref, "--", ".", f":(exclude,icase){prefix}").stdout.strip()
 
 
-def commit_ci_state(root, sha):
+def commit_ci_state(root, sha, cancelled="failing"):
     """CI for one commit: GitHub check runs plus legacy commit statuses."""
     data = gh_json(root, ["api", "--paginate", "--slurp",
                           f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs?per_page=100"])
@@ -335,7 +350,7 @@ def commit_ci_state(root, sha):
     checks = [{"status": r.get("status") or "", "conclusion": r.get("conclusion") or ""} for r in runs]
     if status.get("total_count"):
         checks.append({"state": status.get("state") or ""})
-    state = ci_state({"statusCheckRollup": checks})
+    state = ci_state({"statusCheckRollup": checks}, cancelled)
     if len(runs) < total and state != "failing":
         return "pending"  # GitHub reported more checks than we could read: never call that green
     return state
@@ -345,16 +360,25 @@ def ci_for_code(root, head, prefix, limit=20):
     """CI evidence for the code at head: the newest completed result (green or failing) on any commit
     whose code is identical to head's outside prefix. GitHub runs push CI only on the pushed tip, so the
     code commit itself may have no run, and relay's bookkeeping commits re-trigger CI on the head.
-    Each candidate is compared with head, so a side branch a merge discarded never counts."""
+    Each candidate is compared with head, so a side branch a merge discarded never counts. A commit carrying
+    the skip marker never has a run of its own, so it is passed over without asking GitHub and does not count
+    toward limit (D6); a cancelled run is no result, unless a real failure sits beside it (D8)."""
     base = code_sha(root, prefix, head)
+    log = git(root, "log", "--format=%H%x00%B%x01", "--ancestry-path", f"{base}..{head}").stdout
+    messages = dict(entry.strip("\n").split("\0", 1) for entry in log.split("\x01") if "\0" in entry)
     newer = git(root, "rev-list", "--ancestry-path", f"{base}..{head}").stdout.split()
-    pending = False
-    for sha in (newer + [base])[:limit]:
+    pending, asked = False, 0
+    for sha in newer + [base]:
+        if asked >= limit:
+            break
+        if marked(messages.get(sha, "")):
+            continue
         same_code = sha == head or git(root, "diff", "--quiet", sha, head, "--", ".",
                                         f":(exclude,icase){prefix}", check=False).returncode == 0
         if not same_code:
             continue
-        state = commit_ci_state(root, sha)
+        asked += 1
+        state = commit_ci_state(root, sha, cancelled="skip")
         if state in ("green", "failing"):
             return state
         pending = pending or state == "pending"
