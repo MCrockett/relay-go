@@ -166,6 +166,9 @@ class OwnerActionsTest(unittest.TestCase):
         with mock.patch("relaylib.gitops.ci_for_code", return_value="pending"):
             with self.assertRaisesRegex(RelayError, "CI"):
                 owneractions.merge(self.work, "demo", self.seen())
+        with mock.patch("relaylib.gitops.ci_for_code", return_value="not-started"):    # ci-on-submit R9
+            with self.assertRaisesRegex(RelayError, "billing"):
+                owneractions.merge(self.work, "demo", self.seen())
         with mock.patch("relaylib.freshness.check", return_value=(False, "stale GO")):
             with self.assertRaisesRegex(RelayError, "stale"):
                 owneractions.merge(self.work, "demo", self.seen())

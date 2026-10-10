@@ -56,12 +56,19 @@ class Ctx:
             raise RelayError(f"switch to {self.st['branch']} first (you are on {self.branch})")
         state.write_state(self.path, self.st)
         marked = ciskip.commit(self.root, self.slug, self.st, self.cfg, message)
+        self.published = False
         try:
             ciskip.push(self.root, self.branch, marked)
+            self.published = True
         except RelayError as e:
             if push == "required":
                 raise
             print(f"relay: warning: {e}", file=sys.stderr)
+
+    def after_publish(self, action):
+        """Run action now if the last save reached origin; otherwise drop it (ci-on-submit R6)."""
+        if getattr(self, "published", False):
+            action()
 
 
 def fast_forward(root, branch):
@@ -111,25 +118,91 @@ def write_md(path, meta, body, unique=True):
     return path
 
 
-def require_pr_ready(c):
-    """The build gate (spec section 2), one rule for submit and every build review: the PR is open,
-    it has all of HEAD's code, and the newest completed CI result for that code is green
-    (gitops.ci_for_code explains why that result can sit on a bookkeeping commit)."""
+class CiFailing(RelayError):
+    """The build gate refused because CI failed for the PR head's code (ci-on-submit R5)."""
+
+    def __init__(self, message, pr):
+        super().__init__(message)
+        self.pr = pr
+
+
+def require_pr_open(c):
+    """The PR is open and has all of HEAD's code. Returns the PR info and the bookkeeping prefix."""
     info = gitops.pr_info(c.root, c.st.get("pr"))
     if info.get("state") != "OPEN":
-        raise RelayError("open a PR for this branch first (gh pr create --base develop --fill)")
+        raise RelayError("open a PR for this branch first (gh pr create --base develop --fill --draft)")
     prefix = freshness.bookkeeping_prefix(c.st)
     diff = gitops.git(c.root, "diff", "--quiet", info.get("headRefOid") or "", "HEAD", "--", ".",
                       f":(exclude,icase){prefix}", check=False)
     if diff.returncode != 0:
         raise RelayError("HEAD has code the PR does not have; push it first")
+    return info, prefix
+
+
+def not_started_message(c, head):
+    return (f"GitHub did not start CI for the code at {head[:8]} (a billing or spending-limit problem). Fix it "
+            f"under Settings, Billing and plans, then rerun it (`gh run list --branch {c.st['branch']}` finds the "
+            "run, `gh run rerun <id>` restarts it), or run `relay submit` again.")
+
+
+def require_pr_ready(c):
+    """The build gate (spec section 2), one rule for submit and every build review: the PR is open,
+    it has all of HEAD's code, and the newest completed CI result for that code is green
+    (gitops.ci_for_code explains why that result can sit on a bookkeeping commit)."""
+    info, prefix = require_pr_open(c)
     head = info.get("headRefOid") or ""
     ci = gitops.ci_for_code(c.root, head, prefix)
     if ci == "none" and c.cfg["build"]["require_ci"]:
         raise RelayError("this PR has no CI checks; add CI, or set [build] require_ci = false in docs/relay/config.toml")
-    if ci in ("pending", "failing"):
-        raise RelayError(f"CI is {ci} for the code at {head[:8]}; wait for green")
+    if ci == "not-started":
+        raise RelayError(not_started_message(c, head))
+    if ci == "failing":
+        raise CiFailing(f"CI is failing for the code at {head[:8]}; wait for green", info.get("number"))
+    if ci == "pending":
+        raise RelayError(f"CI is pending for the code at {head[:8]}; wait for green")
     return info
+
+
+def to_draft(root, pr):
+    """ci-on-submit D3: turn the PR back into a draft, so fix pushes start no CI. A failure is one warning."""
+    try:
+        gitops.pr_ready(root, pr, undo=True)
+        return True
+    except RelayError as e:
+        print(f"relay: warning: could not turn PR #{pr} back into a draft: {e}", file=sys.stderr)
+        return False
+
+
+def ready_draft(c):
+    """ci-on-submit D2 and D4, before the build gate at submit: a draft PR is marked ready, which starts one CI run
+    on its head. When the code already passed, the head is marked first so that run is not started at all.
+    Nothing in state.md changes here, so a failed submit can always be run again."""
+    info, prefix = require_pr_open(c)
+    if not info.get("isDraft"):
+        return
+    number, head = info["number"], info.get("headRefOid") or ""
+    ci = gitops.ci_for_code(c.root, head, prefix)
+    if ci == "green":
+        sha = ciskip.mark_head(c.root, c.st, c.cfg)
+        if sha:
+            ciskip.push(c.root, c.branch, sha)
+        mark_ready(c.root, number)
+        return
+    if ci == "none" and not c.cfg["build"]["require_ci"]:
+        mark_ready(c.root, number)
+        return
+    mark_ready(c.root, number)
+    note = (" The last run on this code was not started by GitHub (billing); if billing is still blocked, fix it "
+            "first." if ci == "not-started" else "")
+    raise RelayError(f"PR #{number} is now ready for review and CI has started for {head[:8]}. Wait for it "
+                     f"(`gh pr checks {number} --watch`), then run `relay submit` again.{note}")
+
+
+def mark_ready(root, number):
+    try:
+        gitops.pr_ready(root, number)
+    except RelayError as e:
+        raise RelayError(f"could not mark PR #{number} ready: {e}") from e
 
 
 def check_same_provider(env, args):
@@ -322,7 +395,12 @@ def cmd_submit(args):
         return review_current(c, args)
     stage = c.st["stage"]
     if stage == "build" and c.st["status"] in ("drafting", "changes-requested"):
-        c.st["pr"] = require_pr_ready(c)["number"]
+        ready_draft(c)
+        try:
+            c.st["pr"] = require_pr_ready(c)["number"]
+        except CiFailing as e:
+            to_draft(c.root, e.pr)
+            raise
     action = machine.submit(c.st, me.provider)
     if me.provider == "owner":
         record_owner_action(c.st, f"owner submitted {stage}")
@@ -333,6 +411,26 @@ def cmd_submit(args):
         print(f"relay: {stage} recorded; now at {c.st['stage']}")
         return 0
     return review_current(c, args)
+
+
+def cmd_commit(args):
+    """ci-on-submit D7a: commit and push the agent's own edits under the feature's relay folder, with the skip
+    marker when ci-skip-bookkeeping D2 allows it. Nothing outside that folder is committed or touched."""
+    message = (args.message or "").strip()
+    if not message:
+        raise RelayError("give a commit message: relay commit \"docs: ...\"")
+    c = Ctx(args)
+    c.sync()
+    me = identity.detect(c.env, args.by)
+    ownership.check_can_write(c.root, me.session)
+    folder = f"{state.RELAY_DIR}/{c.slug}"
+    if not gitops.changed_paths_under(c.root, folder):
+        raise RelayError(f"nothing to commit under {folder}/")
+    marked = ciskip.commit(c.root, c.slug, c.st, c.cfg, message)
+    ciskip.push(c.root, c.branch, marked)
+    print(f"relay: committed and pushed {folder}/" + (" (marked [skip ci]: GitHub already has CI for this code)"
+                                                     if marked else ""))
+    return 0
 
 
 def cmd_review(args):
@@ -506,6 +604,9 @@ def review_current(c, args, candidates=None, discard_errors=False, announce=True
               f"{state.RELAY_DIR}/{c.slug}/reviews/{stage}-stuck.md")
         return 0
     c.save(f"relay: {stage} NO-GO ({reviewer})")
+    if stage == "build" and st["status"] == "changes-requested" and st.get("pr"):
+        pr = st["pr"]
+        c.after_publish(lambda: to_draft(c.root, pr))  # fix pushes start no CI (ci-on-submit D3)
     print(f"relay: {stage} NO-GO ({len(v.blocking)} blocking; {reason}). Fix the findings in the newest "
           f"{state.RELAY_DIR}/{c.slug}/reviews/{label}.{provider}*.md, then `relay submit`.")
     return 0
@@ -945,6 +1046,10 @@ def build_parser():
                         help="agents only, with --same-provider: the owner asked for it in this conversation")
         if name == "submit":
             sp.add_argument("--with-owner", action="store_true", help="the owner took part in this stage")
+    cm = add("commit", cmd_commit, "commit and push your edits under docs/relay/<slug>/, skipping CI when it can")
+    cm.add_argument("message")
+    cm.add_argument("--feature")
+    cm.add_argument("--by")
     o = add("override", cmd_override, "owner-only decisions, run in your own terminal")
     o.add_argument("action", choices=["go", "extra-round", "reset-rounds", "release", "review"])
     o.add_argument("--reviewer", help="review only: provider:model[@effort] from the review preference table")

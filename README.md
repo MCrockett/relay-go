@@ -52,6 +52,33 @@ In a repo whose merge branch requires status checks, a PR whose newest commit sk
 - Merge with a merge commit, as the dashboard does. A squash or rebase merge copies commit messages into the base branch, and the marker then skips the CI run after the merge.
 - To start CI by hand, make a new commit and push it: `git commit --allow-empty -m "chore: run CI"` and `git push`. Setting `skip_ci = "never"` only stops future markers; it starts nothing for a commit that already has one.
 
+### CI once per submit
+
+A build PR runs CI once per `relay submit`, on the final commit, not on every push.
+
+- The agent opens the PR as a draft. A repo set up for this (below) skips its CI jobs on a draft, and skipped jobs are not billed.
+- `relay submit` marks the draft ready, which starts one run on the head. If that code already passed CI, relay first adds an empty `relay: mark PR ready` commit with the skip marker, so marking it ready starts nothing.
+- A build NO-GO, or failing CI at submit, turns the PR back into a draft, so the fix pushes start no CI either.
+- `relay commit "docs: ..."` commits and pushes the agent's own edits under `docs/relay/<slug>/`, with the skip marker when CI has nothing new to test.
+
+relay ignores two kinds of result when it looks for CI on the code: a job GitHub refused to start (it fails in about two seconds with the annotation "The job was not started", for example when the spending limit is reached), and a commit whose jobs were all skipped (a draft). It looks past them to an older run on the same code. If a refused run is all there is, `relay submit` and the dashboard say so and point at billing, rather than reporting a code failure.
+
+A repo needs this in its workflow for drafts to skip CI; without it nothing breaks, the draft just runs CI as before:
+
+    on:
+      pull_request:
+        types: [opened, synchronize, reopened, ready_for_review]
+      push:
+        branches: [main]
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    jobs:
+      test:
+        if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+
+In a repo with required status checks, the commit that records the GO still runs CI once, so the checks report on the commit you merge.
+
 ## What reaches you
 
 - A macOS notification when a feature needs you: ready to merge, a review stopped, a review failed, or a handoff was pushed. Turn it off with `[notify] enabled = false` in `~/.relay/config.toml`.

@@ -258,6 +258,111 @@ class SkipMarkerTest(unittest.TestCase):
         self.assertEqual(gitops.ci_state({"statusCheckRollup": [{"status": "COMPLETED", "conclusion": "CANCELLED"}]}),
                          "failing")
 
+
+class PrReadyTest(unittest.TestCase):
+    """ci-on-submit R2."""
+
+    def test_fields_and_calls(self):
+        self.assertIn("isDraft", gitops.PR_FIELDS.split(","))
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        gh, log, api = helpers.fake_bin(tmp, "gh", helpers.FAKE_GH), os.path.join(tmp, "gh.log"), os.path.join(tmp, "a")
+        helpers.write(api, json.dumps({"pr ready": {}}))
+        with mock.patch.dict(os.environ, {"RELAY_GH_BIN": gh, "FAKE_GH_LOG": log, "FAKE_GH_API": api}):
+            gitops.pr_ready(tmp, 7)
+            gitops.pr_ready(tmp, 7, undo=True)
+            with open(log) as f:
+                self.assertEqual(f.read().splitlines(), ["pr ready 7", "pr ready 7 --undo"])
+            helpers.write(api, json.dumps({"pr ready": {"__rc": 1}}))
+            with self.assertRaisesRegex(RelayError, "HTTP 500"):
+                gitops.pr_ready(tmp, 7)
+
+
+NOT_STARTED = ("The job was not started because recent account payments have failed or your spending limit needs to "
+               "be increased. Please check the 'Billing & plans' section in your settings")
+
+
+class NotStartedSkippedTest(unittest.TestCase):
+    """ci-on-submit D5 and D6: runs GitHub never started, and commits whose jobs were all skipped."""
+
+    setUp, code, bookkeeping, asked = (SkipMarkerTest.setUp, SkipMarkerTest.code, SkipMarkerTest.bookkeeping,
+                                       SkipMarkerTest.asked)
+
+    def ci(self, runs, api=None, cancelled="skip", sha=None):
+        helpers.write(self.table, json.dumps(runs))
+        api_path = os.path.join(self.tmp, "api.json")
+        helpers.write(api_path, json.dumps(api or {}))
+        if os.path.exists(self.log):
+            os.remove(self.log)
+        env = {"RELAY_GH_BIN": self.gh, "FAKE_GH_STATUS": self.status, "FAKE_GH_RUNS_BY_SHA": self.table,
+               "FAKE_GH_LOG": self.log, "FAKE_GH_API": api_path}
+        with mock.patch.dict(os.environ, env):
+            if sha:
+                return gitops.commit_ci_state(self.work, sha, cancelled)
+            return gitops.ci_for_code(self.work, gitops.head_sha(self.work), "docs/relay/a/")
+
+    @staticmethod
+    def run_(conclusion, ident=1, app="github-actions", notes=0):
+        if conclusion == "pending":
+            return {"id": ident, "status": "in_progress", "conclusion": None, "app": {"slug": app},
+                    "output": {"annotations_count": 0}}
+        return {"id": ident, "status": "completed", "conclusion": conclusion, "app": {"slug": app},
+                "output": {"annotations_count": notes}}
+
+    def runs(self, *runs):
+        return {"total_count": len(runs), "check_runs": list(runs)}
+
+    def refused(self, ident=1):
+        return self.run_("failure", ident, notes=2)
+
+    @staticmethod
+    def notes(*ids, message=NOT_STARTED):
+        return {f"check-runs/{i}/annotations": [{"annotation_level": "failure", "message": message},
+                                                 {"annotation_level": "notice", "message": "label moves"}]
+                for i in ids}
+
+    def test_one_commit(self):
+        sha = self.code()
+        refused = {sha: self.runs(self.refused(1), self.refused(2))}
+        self.assertEqual(self.ci(refused, self.notes(1, 2), sha=sha), "not-started")
+        self.assertEqual(self.ci(refused, self.notes(1, 2), cancelled="failing", sha=sha), "failing")
+        real = {sha: self.runs(self.refused(1), self.run_("failure", 2))}
+        self.assertEqual(self.ci(real, self.notes(1), sha=sha), "failing")
+        other = self.notes(1, message="Process completed with exit code 1.")
+        self.assertEqual(self.ci({sha: self.runs(self.refused(1))}, other, sha=sha), "failing")
+        self.assertEqual(self.ci({sha: self.runs(self.refused(1))}, {"check-runs/1/annotations": {"__rc": 1}},
+                                 sha=sha), "failing")
+        skipped = {sha: self.runs(self.run_("skipped", 1), self.run_("skipped", 2))}
+        self.assertEqual(self.ci(skipped, sha=sha), "skipped")
+        self.assertEqual(self.ci(skipped, cancelled="failing", sha=sha), "green")
+        mixed = {sha: self.runs(self.run_("skipped", 1), self.run_("success", 2))}
+        self.assertEqual(self.ci(mixed, sha=sha), "green")
+        helpers.write(self.status, '{"state": "failure", "total_count": 1}')
+        self.assertEqual(self.ci(skipped, sha=sha), "failing")
+
+    def test_annotations_are_read_only_for_failing_actions_runs_with_annotations(self):
+        sha = self.code()
+        runs = {sha: self.runs(self.run_("success", 1, notes=3), self.run_("failure", 2),
+                               self.run_("failure", 3, app="other-ci", notes=1), self.refused(4))}
+        self.ci(runs, self.notes(4), sha=sha)
+        asked = self.asked()
+        self.assertIn("check-runs/4/annotations", asked)
+        for ident in (1, 2, 3):
+            self.assertNotIn(f"check-runs/{ident}/annotations", asked)
+
+    def test_ci_for_code(self):
+        code = self.code()
+        head = self.bookkeeping(False)  # the burned-web case: a refused run on a docs-only head
+        self.assertEqual(self.ci({code: self.runs(self.run_("success")), head: self.runs(self.refused(1))},
+                                 self.notes(1)), "green")
+        self.assertEqual(self.ci({code: self.runs(self.run_("success")), head: self.runs(self.run_("skipped"))}),
+                         "green")
+        self.assertEqual(self.ci({head: self.runs(self.run_("skipped"))}), "none")
+        self.assertEqual(self.ci({head: self.runs(self.refused(1))}, self.notes(1)), "not-started")
+        self.assertEqual(self.ci({head: self.runs(self.refused(1)), code: self.runs(self.run_("pending", 2))},
+                                 self.notes(1)), "pending")
+
+
 if __name__ == "__main__":
     unittest.main()
 

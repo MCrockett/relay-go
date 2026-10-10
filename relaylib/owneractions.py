@@ -153,6 +153,9 @@ def merge_readiness(repo, st, seen):
                   f":(exclude,icase){prefix}", check=False).returncode:
         raise RelayError("PR code differs from the published revision")
     ci = gitops.ci_for_code(repo, seen["commit"], prefix)
+    if ci == "not-started":
+        raise RelayError("GitHub did not start CI for this code (a billing or spending-limit problem); fix it under "
+                         "Settings, Billing and plans, rerun CI, then merge")
     if ci != "green":
         raise RelayError(f"CI is {ci}; wait for green")
     return info

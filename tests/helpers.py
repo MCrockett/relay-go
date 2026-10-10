@@ -91,6 +91,12 @@ if api:
             sys.exit(table[hit]["__rc"])
         sys.stdout.write(json.dumps(table[hit]))
         sys.exit(0)
+if args.startswith("pr ready") and os.path.exists(os.environ.get("FAKE_GH_JSON") or ""):
+    info = json.load(open(os.environ["FAKE_GH_JSON"]))  # GitHub flips the draft flag
+    if isinstance(info, dict):
+        info["isDraft"] = "--undo" in args
+        open(os.environ["FAKE_GH_JSON"], "w").write(json.dumps(info))
+    sys.exit(0)
 if args.startswith("pr list"):
     if os.environ.get("FAKE_GH_PR_LIST_FAILS"):
         sys.stderr.write("gh: could not reach GitHub\\n")

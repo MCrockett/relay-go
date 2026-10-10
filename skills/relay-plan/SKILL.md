@@ -9,7 +9,8 @@ description: Use when a relay feature is at the plan stage, to write docs/relay/
 2. Method: if the superpowers writing-plans skill is available, use its method and task format, but save to `docs/relay/<slug>/plan.md` and skip its execution handoff. Without it: write ordered tasks, each small enough for one test cycle.
 3. Every task names the files it touches, the test that proves it, and the spec requirement numbers it covers (`Covers: R2, R5`). Every spec requirement must be covered by at least one task.
 4. Run `relay submit`, and handle GO, NO-GO, waiting-on-owner and review errors exactly as in the relay-spec skill. On GO the stage moves to build; continue with the relay-build skill.
-5. Codex only: if your sandbox blocks the Claude review's network access, request approval to run `relay submit` outside the sandbox.
+5. `relay submit` commits the plan for you. To publish an edit under `docs/relay/<slug>/` at any other time, use `relay commit "docs: ..."`, not `git commit`: it commits only that folder and skips CI when the code has not changed.
+6. Codex only: if your sandbox blocks the Claude review's network access, request approval to run `relay submit` outside the sandbox.
 
 Around 60% of your context window: `relay handoff`, fill it in, `relay handoff --commit`, stop. The handoff covers every feature you hold in this repo, so stop all work here.
 
