@@ -2156,6 +2156,59 @@ done
         self.assertFalse(stopped.run()["ok"])
         self.assertEqual(self.gh_calls(), [])
 
+    # ---- ci-on-submit R14: relay commit
+
+    def plan_edit(self, text="# Plan\nA note.\n"):
+        helpers.write(os.path.join(self.fdir("tiny"), "plan.md"), text)
+
+    def origin_message(self):
+        return helpers.sh(self.origin, "git", "log", "-1", "--format=%B", self.st("tiny")["branch"])
+
+    def test_relay_commit_marks_a_plan_edit_when_origin_has_the_tested_code(self):
+        self.built("GO")
+        self.plan_edit()
+        self.assertEqual(self.relay("commit", "docs: plan note"), 0, self.last_err)
+        self.assertEqual(self.origin_message().strip(), "docs: plan note\n\n[skip ci]")
+        self.assertEqual(helpers.sh(self.work, "git", "status", "--short").strip(), "")
+
+    def test_relay_commit_leaves_the_marker_off_with_untested_code(self):
+        self.built("GO")
+        helpers.write(os.path.join(self.work, "app.py"), "print(7)\n")
+        helpers.sh(self.work, "git", "commit", "-qam", "unpushed code")
+        self.plan_edit()
+        self.assertEqual(self.relay("commit", "docs: plan note"), 0, self.last_err)
+        self.assertNotIn("[skip ci]", self.origin_message())
+
+    def test_relay_commit_touches_nothing_outside_the_folder(self):
+        self.built("GO")
+        helpers.write(os.path.join(self.work, "staged.txt"), "s")
+        helpers.sh(self.work, "git", "add", "staged.txt")
+        helpers.write(os.path.join(self.work, "app.py"), "print(8)\n")
+        self.plan_edit()
+        self.assertEqual(self.relay("commit", "docs: plan note"), 0, self.last_err)
+        status = helpers.sh(self.work, "git", "status", "--short").splitlines()
+        self.assertEqual(sorted(status), [" M app.py", "A  staged.txt"])
+        self.assertEqual(helpers.sh(self.work, "git", "show", "--stat", "--format=", "HEAD").count("|"), 1)
+
+    def test_relay_commit_refusals(self):
+        self.built("GO")
+        self.assertEqual(self.relay("commit", "  "), 1)
+        self.assertIn("give a commit message", self.last_err)
+        self.assertEqual(self.relay("commit", "docs: nothing"), 1)
+        self.assertIn("nothing to commit under docs/relay/tiny/", self.last_err)
+        self.plan_edit()
+        os.environ["RELAY_SESSION"] = "someone-else"
+        self.assertEqual(self.relay("commit", "docs: plan note"), 1)
+        self.assertNotIn("docs: plan note", helpers.sh(self.work, "git", "log", "--format=%s"))
+
+    def test_relay_commit_with_a_rejected_push(self):
+        self.built("GO")
+        self.plan_edit()
+        self.reject_pushes()
+        self.assertEqual(self.relay("commit", "docs: plan note"), 1)
+        self.assertIn("push failed", self.last_err)
+        self.assertFalse(self.marked("docs: plan note"))                            # unmarked (D7)
+
 if __name__ == "__main__":
     unittest.main()
 

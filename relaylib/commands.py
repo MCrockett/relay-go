@@ -413,6 +413,26 @@ def cmd_submit(args):
     return review_current(c, args)
 
 
+def cmd_commit(args):
+    """ci-on-submit D7a: commit and push the agent's own edits under the feature's relay folder, with the skip
+    marker when ci-skip-bookkeeping D2 allows it. Nothing outside that folder is committed or touched."""
+    message = (args.message or "").strip()
+    if not message:
+        raise RelayError("give a commit message: relay commit \"docs: ...\"")
+    c = Ctx(args)
+    c.sync()
+    me = identity.detect(c.env, args.by)
+    ownership.check_can_write(c.root, me.session)
+    folder = f"{state.RELAY_DIR}/{c.slug}"
+    if not gitops.changed_paths_under(c.root, folder):
+        raise RelayError(f"nothing to commit under {folder}/")
+    marked = ciskip.commit(c.root, c.slug, c.st, c.cfg, message)
+    ciskip.push(c.root, c.branch, marked)
+    print(f"relay: committed and pushed {folder}/" + (" (marked [skip ci]: GitHub already has CI for this code)"
+                                                     if marked else ""))
+    return 0
+
+
 def cmd_review(args):
     check_same_provider(dict(os.environ), args)
     c = Ctx(args)
@@ -1026,6 +1046,10 @@ def build_parser():
                         help="agents only, with --same-provider: the owner asked for it in this conversation")
         if name == "submit":
             sp.add_argument("--with-owner", action="store_true", help="the owner took part in this stage")
+    cm = add("commit", cmd_commit, "commit and push your edits under docs/relay/<slug>/, skipping CI when it can")
+    cm.add_argument("message")
+    cm.add_argument("--feature")
+    cm.add_argument("--by")
     o = add("override", cmd_override, "owner-only decisions, run in your own terminal")
     o.add_argument("action", choices=["go", "extra-round", "reset-rounds", "release", "review"])
     o.add_argument("--reviewer", help="review only: provider:model[@effort] from the review preference table")
