@@ -56,12 +56,19 @@ class Ctx:
             raise RelayError(f"switch to {self.st['branch']} first (you are on {self.branch})")
         state.write_state(self.path, self.st)
         marked = ciskip.commit(self.root, self.slug, self.st, self.cfg, message)
+        self.published = False
         try:
             ciskip.push(self.root, self.branch, marked)
+            self.published = True
         except RelayError as e:
             if push == "required":
                 raise
             print(f"relay: warning: {e}", file=sys.stderr)
+
+    def after_publish(self, action):
+        """Run action now if the last save reached origin; otherwise drop it (ci-on-submit R6)."""
+        if getattr(self, "published", False):
+            action()
 
 
 def fast_forward(root, branch):
@@ -577,6 +584,9 @@ def review_current(c, args, candidates=None, discard_errors=False, announce=True
               f"{state.RELAY_DIR}/{c.slug}/reviews/{stage}-stuck.md")
         return 0
     c.save(f"relay: {stage} NO-GO ({reviewer})")
+    if stage == "build" and st["status"] == "changes-requested" and st.get("pr"):
+        pr = st["pr"]
+        c.after_publish(lambda: to_draft(c.root, pr))  # fix pushes start no CI (ci-on-submit D3)
     print(f"relay: {stage} NO-GO ({len(v.blocking)} blocking; {reason}). Fix the findings in the newest "
           f"{state.RELAY_DIR}/{c.slug}/reviews/{label}.{provider}*.md, then `relay submit`.")
     return 0

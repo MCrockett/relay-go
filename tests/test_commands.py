@@ -2054,6 +2054,108 @@ done
         warnings = [line for line in self.last_err.splitlines() if "could not turn PR #7 back into a draft" in line]
         self.assertEqual(len(warnings), 1)
 
+    # ---- ci-on-submit R6, R7: back to draft after a build NO-GO
+
+    def origin_subject(self):
+        return helpers.sh(self.origin, "git", "log", "-1", "--format=%s", self.st("tiny")["branch"]).strip()
+
+    def watch_undo(self):
+        seen, real = [], gitops.pr_ready
+
+        def ready(root, pr, undo=False):
+            seen.append((undo, self.origin_subject()))
+            return real(root, pr, undo)
+        patch = mock.patch.object(gitops, "pr_ready", side_effect=ready)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return seen
+
+    def test_a_build_no_go_turns_the_pr_back_into_a_draft_after_it_is_published(self):
+        os.environ["FAKE_GH_LOG"] = os.path.join(self.tmp, "gh.log")
+        seen = self.watch_undo()
+        self.built("NO-GO")
+        self.assertEqual(seen, [(True, "relay: build NO-GO (codex)")])
+        self.assertEqual(self.st("tiny")["status"], "changes-requested")
+        self.assertTrue(json.load(open(self.gh_json))["isDraft"])
+
+    def test_a_build_no_go_from_relay_review(self):
+        os.environ["FAKE_GH_LOG"] = os.path.join(self.tmp, "gh.log")
+        self.built("GO")
+        helpers.write(os.path.join(self.work, "app.py"), "print(9)\n")
+        helpers.sh(self.work, "git", "commit", "-qam", "more")
+        helpers.sh(self.work, "git", "push", "-q")
+        self.pr()
+        seen = self.watch_undo()
+        self.enqueue_codex("NO-GO", ["id: R2-1 a - x [introduced-by-revision]"])
+        self.assertEqual(self.relay("review"), 0, self.last_err)
+        self.assertEqual(seen, [(True, "relay: build NO-GO (codex)")])
+
+    def test_no_draft_for_a_stalled_no_go_or_an_earlier_stage(self):
+        os.environ["FAKE_GH_LOG"] = os.path.join(self.tmp, "gh.log")
+        self.built("NO-GO")
+        self.enqueue_codex("NO-GO", ["id: R1-1 a - x", "id: R2-2 b - y [introduced-by-revision]"],
+                           [("R1-1", "unresolved")])                                # unresolved after a fix: stalls
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertEqual(self.st("tiny")["status"], "waiting-owner")
+        self.assertEqual(self.gh_calls(), ["pr ready 7 --undo", "pr ready 7"])       # no second undo
+        self.pr()
+        self.to_spec()
+        self.enqueue_codex("NO-GO", ["a - x"])
+        self.assertEqual(self.relay("submit", "--feature", "demo"), 0, self.last_err)
+        self.assertEqual(self.gh_calls(), ["pr ready 7 --undo", "pr ready 7"])
+
+    def test_no_draft_when_the_no_go_was_not_published(self):
+        os.environ["FAKE_GH_LOG"] = os.path.join(self.tmp, "gh.log")
+        self.protection(False)
+        self.small_change()
+        self.pr()
+        real = gitops.push
+
+        def fail_after_submit(root, branch):
+            if "NO-GO" in helpers.sh(root, "git", "log", "-1", "--format=%s"):
+                raise RelayError("push failed, so this change is not published: offline")
+            return real(root, branch)
+        self.enqueue_codex("NO-GO", ["a - x"])
+        with mock.patch.object(gitops, "push", side_effect=fail_after_submit):
+            self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertIn("push failed", self.last_err)
+        self.assertEqual(self.gh_calls(), [])
+
+    def test_a_failing_undo_after_a_no_go_is_one_warning(self):
+        os.environ["FAKE_GH_LOG"] = os.path.join(self.tmp, "gh.log")
+        self.gh_api(**{"pr_ready_7_--undo": {"__rc": 1}})
+        self.small_change()
+        self.pr()
+        self.enqueue_codex("NO-GO", ["a - x"])
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertEqual(self.st("tiny")["status"], "changes-requested")
+        self.assertEqual(sum("could not turn PR #7 back into a draft" in line
+                             for line in self.last_err.splitlines()), 1)
+
+    def test_a_dashboard_no_go_turns_the_pr_back_into_a_draft_after_the_lease_push(self):
+        os.environ["FAKE_GH_LOG"] = os.path.join(self.tmp, "gh.log")
+        self.built("GO")
+        seen = self.watch_undo()
+        self.enqueue_codex("NO-GO", ["a - x"])
+        result = self.request()
+        self.assertTrue(result["ok"], result["message"])
+        self.assertEqual(seen, [(True, "relay: build NO-GO (codex)")])
+
+    def test_a_discarded_dashboard_review_turns_nothing_into_a_draft(self):
+        from relaylib import owneractions, reviewjobs
+        os.environ["FAKE_GH_LOG"] = os.path.join(self.tmp, "gh.log")
+        self.built("GO")
+        job = reviewjobs.prepare(self.work, "tiny", owneractions.fingerprint(self.work, "tiny"), None, None)
+        helpers.sh(self.work, "git", "commit", "-q", "--allow-empty", "-m", "the session pushes meanwhile")
+        helpers.sh(self.work, "git", "push", "-q")
+        self.enqueue_codex("NO-GO", ["a - x"])
+        self.assertFalse(job.run()["ok"])
+        stopped = reviewjobs.prepare(self.work, "tiny", owneractions.fingerprint(self.work, "tiny"), None, None)
+        stopped.stopped = True
+        self.enqueue_codex("NO-GO", ["a - x"])
+        self.assertFalse(stopped.run()["ok"])
+        self.assertEqual(self.gh_calls(), [])
+
 if __name__ == "__main__":
     unittest.main()
 

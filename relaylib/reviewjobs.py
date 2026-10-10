@@ -142,11 +142,16 @@ class WorkCtx:
         self.st = state.read_state(self.path)
         self.dir = state.feature_dir(root, slug)
         self.saved = False
+        self.pending = []
 
     def save(self, message, push="best"):
         state.write_state(self.path, self.st)
         ciskip.commit(self.root, self.slug, self.st, self.cfg, message)  # the job's lease push publishes it
         self.saved = True
+
+    def after_publish(self, action):
+        """Held until the job's lease push succeeds; a discarded review runs none (ci-on-submit R6)."""
+        self.pending.append(action)
 
 
 @dataclasses.dataclass
@@ -276,6 +281,8 @@ def _run(job):
                 owneractions.ACTION_LOCK.release()
             if push.returncode:
                 raise RelayError("the branch moved during the review; nothing was published. Request again.")
+            for action in c.pending:
+                action()
             last, before = done[-1], (f"{done[0]} GO, then " if len(done) > 1 else "")
             if job.stage != "build" and c.st["verdicts"].get(last) == "GO":
                 message = f"{job.slug}: {' and '.join(done)} GO from {who}; back at {c.st['stage']}, {c.st['status']}."
