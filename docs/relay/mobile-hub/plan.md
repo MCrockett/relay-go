@@ -28,11 +28,13 @@ Digest item (saved and `--json`):
 
 ### Task 1: cross-process owner action lock
 
-Files: `relaylib/owneractions.py`, `relaylib/commands.py` (`cmd_override`), `tests/test_owneractions.py`, `tests/test_commands.py`.
+Files: `relaylib/owneractions.py`, `relaylib/commands.py` (`cmd_override`), `relaylib/reviewjobs.py`, `tests/test_owneractions.py`, `tests/test_commands.py`, `tests/test_reviewjobs.py`.
 
 - `action_lock()` keeps the existing `threading.Lock` (threads in the dashboard) and also takes `fcntl.flock(fd, LOCK_EX | LOCK_NB)` on `<relay_home>/owner-action.lock`, opened per call. Either failing raises `Conflict("busy: another owner action is running")`. The lock file is created with mode 0o600.
+- `action_lock(wait=0)` gains a wait in seconds. With `wait > 0` it retries both locks (thread lock with `acquire(timeout=...)`, then `LOCK_NB` flock polled every 0.1 seconds) until the deadline before refusing.
+- Review publication in `reviewjobs` (`reviewjobs.py:273`, which today takes `owneractions.ACTION_LOCK.acquire(timeout=60)` directly) uses `owneractions.action_lock(wait=60)` instead, so a review's push is under the cross-process lock too. Its refusal message stays "another owner action kept the lock; nothing was published. Request again." Dashboard shutdown (`reviewjobs.py:330`) keeps taking the in-process `ACTION_LOCK` only: it coordinates the dashboard's own review threads, which run in that process.
 - `relay override` (`cmd_override`, non-review path) wraps its state change and save in `owneractions.action_lock()`, so it also refuses while the dashboard or a hub acts.
-- Test: a child process (`subprocess` running `python3.11 -c` that imports `relaylib.owneractions`, enters `action_lock()`, prints "held" and sleeps until stdin closes) holds the lock; the parent's `action_lock()` raises `Conflict` with "busy"; after the child exits, the parent acquires it. A second test shows `relay override go` from an owner terminal is refused with "busy" while the child holds it.
+- Test: a child process (`subprocess` running `python3.11 -c` that imports `relaylib.owneractions`, enters `action_lock()`, prints "held" and sleeps until stdin closes) holds the lock; the parent's `action_lock()` raises `Conflict` with "busy"; after the child exits, the parent acquires it. A second test shows `relay override go` from an owner terminal is refused with "busy" while the child holds it. A third runs a review job (fake reviewer) to its publish step while the child holds the file lock, with the wait patched to 0.3 seconds: the job publishes nothing and reports "another owner action kept the lock", and the branch on origin is unchanged; with the child gone, the same publish goes through. A fourth shows `action_lock(wait=1)` succeeds when the child releases after 0.3 seconds.
 
 Covers: R13.
 
@@ -166,6 +168,7 @@ Files: `relaylib/commands.py`, `relaylib/hub.py` (`note_target`, `log`), `tests/
      - **Still listed (D5), computed now.** Never from `hub.load` or any dashboard cache. `hub.listed_now(provider, sid)` reads `sessions.read_records()` at the moment of sending and applies the same rules the snapshot uses, all local reads with no git or gh call:
        - `othersessions.listed(records, set(), root, config.load(), now)`, with an empty claimed set so feature sessions count too;
        - `leftoff.running(records, {}, root, sessions.alive(records), now, leftoff.codex_turns(...))`.
+       - for a feature item, the feature's own session, checked fresh: `owneractions.fingerprint(item.repo_path, slug, fetch=False)` (the local origin ref, no network) must still name the target as the feature's owner session, and the feature must not be done. This path has no age limit, like the feature's ask; `othersessions.listed` drops waits older than `other_sessions_hours`, but a feature's own session stays deliverable as long as the feature claims it.
        The target must be in one of them. Otherwise refuse with "that session is no longer listed; run relay hub again". This is the eligibility rule `snapshot.send_note` applies (`_listed`), extended to feature sessions and evaluated fresh.
      - **Its state now.** A dashboard snapshot can be up to 30 seconds old, so the permission and running checks also read the target's own session record from `sessions.record_path(provider, sid)`, validated with `sessions._valid`:
        - no record, or one that cannot be read: refuse with "that session is no longer known; run relay hub again";
@@ -180,6 +183,7 @@ Files: `relaylib/commands.py`, `relaylib/hub.py` (`note_target`, `log`), `tests/
   - refused without `--relayed` from an agent env, and from the owner env (the terminal case `owner_or_relayed` alone would allow);
   - refused with `--relayed` and the owner env;
   - live checks after a cached snapshot: the digest saw the session waiting, then its record changes to `permission` (refused, answer-here), to `working` while it is still in `running` (posted to its inbox), is deleted (refused), or becomes `ended` (queued);
+  - a feature item's session waiting for 25 hours, still the feature's owner, is posted to; an unclaimed session waiting equally long is refused; after the feature's owner changes (a `relay take` commit on origin), the old session is refused;
   - a session whose record is still valid and waiting but has aged out (its `since` past `other_sessions_hours`, and not running) is refused as no longer listed, even while a fake dashboard's cached snapshot still lists it in `other_sessions` (`hub.load` patched to return that cached data, to prove it is not consulted);
   - empty text and 2,001 characters are refused with session-notify's messages;
   - posted but not recorded: `os.replace` in `notes` patched to fail after a successful post prints the not-recorded warning (the matching `notes.send` cases are already covered in `tests/test_notes.py`; these tests check the hub command reports them);
