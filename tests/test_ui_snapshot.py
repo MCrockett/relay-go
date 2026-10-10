@@ -179,6 +179,21 @@ class SnapshotTest(unittest.TestCase):
         lists = [c for c in spy.call_args_list if c.args[0][:3] == ["git", "worktree", "list"]]
         self.assertEqual(len(lists), len({os.path.realpath(c.args[1]) for c in lists}))
 
+    def test_a_ci_run_github_never_started_is_not_green(self):                    # ci-on-submit R9
+        self.st.update(stage="build", status="ready-to-merge", pr=7)
+        self.save()
+        head = helpers.sh(self.work, "git", "rev-parse", "HEAD").strip()
+        reply = {"state": "OPEN", "number": 7, "baseRefName": "develop", "headRefOid": head, "statusCheckRollup": []}
+        with mock.patch("relaylib.gitops.gh_json", return_value=reply), \
+                mock.patch("relaylib.gitops.ci_for_code", return_value="not-started"), \
+                mock.patch("relaylib.freshness.check", return_value=(True, "")):
+            detail = snapshot.feature(self.work, "demo")
+        self.assertEqual(detail["ci"], "not-started")
+        self.assertNotIn("merge", detail["actions"])
+        self.assertIn("billing", detail["action_reasons"]["merge"])
+        with open(os.path.join(os.path.dirname(snapshot.__file__), "page.html")) as f:
+            self.assertIn("not started by GitHub (billing)", f.read())
+
     def test_request_review_is_offered_for_an_open_ready_build_and_hidden_while_one_runs(self):
         self.st.update(stage="build", status="ready-to-merge", pr=7)
         self.save()
