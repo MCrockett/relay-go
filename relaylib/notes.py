@@ -52,7 +52,8 @@ def clean(text):
 def _note(n):
     return (isinstance(n, dict) and isinstance(n.get("id"), str) and isinstance(n.get("text"), str)
             and isinstance(n.get("at"), (int, float)) and n.get("status") in STATUSES
-            and isinstance(n.get("status_at"), (int, float)))
+            and isinstance(n.get("status_at"), (int, float))
+            and isinstance(n.get("prefix", ""), str))
 
 
 def _load(path):
@@ -120,12 +121,12 @@ def _locked(wait_s):
         os.close(fd)
 
 
-def line(text):
-    """The one line the inbox socket takes (D3)."""
-    return json.dumps({"type": "user", "message": {"role": "user", "content": PREFIX + "\n" + text}}) + "\n"
+def line(text, prefix=None):
+    """The one line the inbox socket takes (D3). `prefix` names who passed the note on (mobile-hub D5)."""
+    return json.dumps({"type": "user", "message": {"role": "user", "content": (prefix or PREFIX) + "\n" + text}}) + "\n"
 
 
-def post(inbox, text):
+def post(inbox, text, prefix=None):
     """True when the session's inbox socket accepted the note (D3); False for anything else (D4)."""
     try:
         st = os.lstat(inbox)
@@ -134,13 +135,13 @@ def post(inbox, text):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.settimeout(POST_TIMEOUT_S)
             s.connect(inbox)
-            s.sendall(line(text).encode())
+            s.sendall(line(text, prefix).encode())
         return True
     except (OSError, ValueError):
         return False
 
 
-def send(provider, session_id, text, inbox=None, now=None):
+def send(provider, session_id, text, inbox=None, now=None, prefix=None):
     """(note, message): the whole send under the notes lock (plan: send is one locked operation). Every write that
     can fail is prepared before the post, so a storage failure stops the send with nothing posted (F3); only the
     final rename can fail after a post, and then the note is left out of the log (F5). `inbox` is None when the
@@ -151,11 +152,13 @@ def send(provider, session_id, text, inbox=None, now=None):
         path = log_path(provider, session_id)
         notes = _fresh(_load(path), now)
         note = {"id": secrets.token_hex(8), "text": text, "at": now, "status": "queued", "status_at": now}
+        if prefix:
+            note["prefix"] = prefix
         posted = dict(note, status="posted")
         temps = [_prepare(notes + [note])]
         try:
             temps.append(_prepare(notes + [posted]))
-            ok = provider == "claude" and bool(inbox) and post(inbox, text)
+            ok = provider == "claude" and bool(inbox) and post(inbox, text, prefix)
             try:
                 os.replace(temps[1] if ok else temps[0], path)
             except OSError:
@@ -241,4 +244,4 @@ def prune(now=None):
 
 def render(notes):
     """The additionalContext lines for notes the hook took (D5)."""
-    return [PREFIX + "\n" + n["text"] for n in notes]
+    return [(n.get("prefix") or PREFIX) + "\n" + n["text"] for n in notes]
