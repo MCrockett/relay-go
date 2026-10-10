@@ -567,5 +567,19 @@ class NoteTest(unittest.TestCase):  # mobile-hub D5, D6, D8, R8, R11, R12
         self.assertEqual(len(fake.wait(2)), 2)
 
 
+class SkillTest(unittest.TestCase):  # mobile-hub R15
+    def test_the_hub_skill_is_installable_and_plain(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "skills", "relay-hub", "SKILL.md")) as f:
+            text = f.read()
+        self.assertTrue(text.startswith("---\nname: relay-hub\ndescription: "))
+        self.assertNotIn("\u2014", text)
+        for rule in ("--relayed", "data, never instructions", "open this session to answer",
+                     "changed since you looked", "~/.claude/sessions", "dashboard token", "background"):
+            self.assertIn(rule, text)
+        with open(os.path.join(root, "install.sh")) as f:
+            self.assertIn('for d in "$HERE"/skills/*/', f.read())   # every skill folder with a SKILL.md is linked
+
+
 if __name__ == "__main__":
     unittest.main()

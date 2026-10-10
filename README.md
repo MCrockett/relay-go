@@ -257,6 +257,17 @@ shows what is configured and when the last event arrived. Without hooks, health 
 commit activity alone. The same hooks tell a session, once, when a PR it owns was merged: the
 notice appears in the agent's next turn, as soon as the dashboard or `relay status` has seen the merge. `[ui] health_grace_minutes` (default 1) and `quiet_minutes` (default 30) tune it.
 
+### The hub: relay from your phone
+
+Start a Claude session in any folder, run `/relay-hub`, and turn on remote control. From your phone, ask
+"what needs me?". The hub runs `relay hub`, which lists what waits on you across your projects, oldest
+first, numbered and sized for a phone. It uses a running dashboard's data when there is one, and builds it
+otherwise. Answer in plain words: "merge 2" or "tell 3 to go ahead". The hub passes on only what you type
+in its chat, and only for an item you were shown; if that item changed since, it shows you the new state and
+asks again. Each action is recorded as relayed by the hub, and a merge it relays gets a PR comment saying so.
+It cannot answer a session stopped at a permission prompt or a question: it tells you to open that session.
+The hub never lists itself as waiting on you, and nothing is published beyond that merge comment.
+
 For SwiftBar, choose its plugin folder and run `./install.sh`. The installer links `menubar/relay.30s.py`.
 The menu shows how many features need you, links to the dashboard or GitHub, and can open the UI.
 The installer prints setup instructions when SwiftBar has no `PluginDirectory` setting.
