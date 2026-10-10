@@ -42,6 +42,16 @@ A PR opened before relay can join it: on the PR's branch, `relay adopt <slug> [-
 
 Reviews continue while they make progress, up to 4 rounds. "Partly fixed" counts as progress. A stage stops and waits on you (with a `reviews/<stage>-stuck.md` summary) only when blocking findings rise, when the count stays the same and a finding the author already tried to fix is marked unresolved, or at round 4. A review you request (Request review, Re-review spec or plan) is independent: its NO-GO goes back to the author for at least one more round, even at round 4, and is not compared with earlier reviewers' findings.
 
+## CI on relay's commits
+
+relay's own commits (`relay: submit build`, `relay: build GO (codex)` and the like) change only `docs/relay/`, yet each push used to start your repo's whole CI. relay now adds a `[skip ci]` line to the body of such a commit when CI has nothing new to test: origin already has the same code, and GitHub already has a CI result for it. relay's build gate, its review and the dashboard's Merge button read the result from the commit with that code, so nothing waits on the skipped run. A push that carries new code always starts CI.
+
+In a repo whose merge branch requires status checks, a PR whose newest commit skipped CI could never merge. There, relay leaves the marker off any commit after which the feature is ready to merge (the build GO, or your `go` override), so the commit you merge on runs CI and the required checks report.
+
+- Turn it off for a project with `[build] skip_ci = "never"` in its `docs/relay/config.toml` (the default is `"auto"`). `relay roles` shows the setting.
+- Merge with a merge commit, as the dashboard does. A squash or rebase merge copies commit messages into the base branch, and the marker then skips the CI run after the merge.
+- To start CI by hand, make a new commit and push it: `git commit --allow-empty -m "chore: run CI"` and `git push`. Setting `skip_ci = "never"` only stops future markers; it starts nothing for a commit that already has one.
+
 ## What reaches you
 
 - A macOS notification when a feature needs you: ready to merge, a review stopped, a review failed, or a handoff was pushed. Turn it off with `[notify] enabled = false` in `~/.relay/config.toml`.
