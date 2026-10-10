@@ -1,7 +1,8 @@
 ---
 {
   "authors": {
-    "idea": "claude"
+    "idea": "claude",
+    "spec": "claude"
   },
   "branch": "feat/mobile-hub",
   "extra_rounds": {},
@@ -17,6 +18,10 @@
     {
       "action": "owner joined idea",
       "at": "2026-10-10T13:19:25-04:00"
+    },
+    {
+      "action": "owner joined spec",
+      "at": "2026-10-10T17:15:05-04:00"
     }
   ],
   "pr": null,
@@ -28,12 +33,14 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "spec": 1
+  },
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "drafting",
-  "updated": "2026-10-10T13:19:37-04:00",
+  "status": "in-review",
+  "updated": "2026-10-10T17:15:05-04:00",
   "verdicts": {}
 }
 ---
