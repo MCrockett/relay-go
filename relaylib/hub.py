@@ -5,10 +5,14 @@ import contextlib
 import fcntl
 import json
 import os
+import re
+import secrets
+import string
 import tempfile
 import time
 
 from .config import relay_home
+from .errors import RelayError
 
 
 def folder():
@@ -211,3 +215,104 @@ def counts(data, found, hubs=None):
     running = [e for e in data.get("running") or [] if (e.get("provider"), e.get("session_id")) not in sessions
                and (e.get("provider"), e.get("session_id")) not in hubs]
     return {"features": len(features), "sessions": len(running)}
+
+
+# ---------------------------------------------------------------- saved digests (D4)
+
+ALPHABET = string.digits + string.ascii_lowercase
+KEEP_S, KEEP_MIN = 86400, 20
+REF = re.compile(r"([0-9a-z]{5,20})\.([1-9][0-9]{0,3})")
+
+
+def _digests():
+    return os.path.join(folder(), "digests")
+
+
+def _base36(n):
+    out = ""
+    while True:
+        n, r = divmod(n, 36)
+        out = ALPHABET[r] + out
+        if not n:
+            return out
+
+
+def new_id(now_ms):
+    """Creation time in milliseconds plus 4 random characters: never repeats, even after ~/.relay/hub is wiped."""
+    return _base36(int(now_ms)) + "".join(secrets.choice(ALPHABET) for _ in range(4))
+
+
+def save(found, source, session, now=None):
+    """(id, None) once the digest is on disk under a name no other digest has, else (None, warning)."""
+    now = time.time() if now is None else now
+    temp = None
+    try:
+        os.makedirs(_digests(), exist_ok=True)
+        fd, temp = tempfile.mkstemp(prefix=".digest-", dir=_digests())
+        for _ in range(5):
+            digest_id = new_id(now * 1000)
+            with os.fdopen(os.dup(fd), "w") as f:
+                f.seek(0)
+                f.truncate()
+                os.fchmod(f.fileno(), 0o600)
+                json.dump({"id": digest_id, "created_at": now, "session": session, "source": source,
+                           "items": found}, f)
+            try:
+                os.link(temp, os.path.join(_digests(), digest_id + ".json"))  # fails if the name exists
+            except FileExistsError:
+                continue
+            os.close(fd)
+            _prune(now)
+            return digest_id, None
+        os.close(fd)
+        return None, "could not save the digest: no free id"
+    except OSError as e:
+        return None, f"could not save the digest: {e}"
+    finally:
+        if temp:
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
+
+
+def _prune(now):
+    saved = []
+    for name in os.listdir(_digests()):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(_digests(), name)
+        try:
+            with open(path) as f:
+                at = json.load(f)["created_at"]
+        except (OSError, ValueError, KeyError, TypeError):
+            at = 0
+        saved.append((at, path))
+    saved.sort(reverse=True)
+    for at, path in saved[KEEP_MIN:]:
+        if now - at > KEEP_S:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+def resolve(ref, session, now=None):
+    """The saved item `<digest id>.<n>` refers to, for the session that printed that digest within 24 hours
+    (D4, R7a). Anything else is an unknown reference."""
+    now = time.time() if now is None else now
+    unknown = RelayError(f"unknown reference {ref}: run relay hub for a fresh digest")
+    m = REF.fullmatch(ref or "")
+    if not m:
+        raise unknown
+    try:
+        with open(os.path.join(_digests(), m.group(1) + ".json")) as f:
+            digest = json.load(f)
+        if digest["session"] != session or not 0 <= now - digest["created_at"] <= KEEP_S:
+            raise unknown
+        found = [i for i in digest["items"] if i.get("n") == int(m.group(2))]
+    except (OSError, ValueError, KeyError, TypeError):
+        raise unknown
+    if len(found) != 1:
+        raise unknown
+    return found[0]

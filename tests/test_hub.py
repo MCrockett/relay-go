@@ -209,5 +209,86 @@ class ItemsTest(HubHome):  # mobile-hub D2, D8, R1 to R3
         self.assertEqual(hub.counts(self.data(), found)["sessions"], 1)
 
 
+S = {"provider": "claude", "session_id": "S"}
+SRC = {"from": "build", "seconds": 1.0}
+
+
+def feat(n, slug):
+    return {"n": n, "kind": "feature", "slug": slug}
+
+
+class DigestStoreTest(HubHome):  # mobile-hub D4, R7, R7a
+    def test_save_and_resolve(self):
+        digest, warning = hub.save([feat(1, "x"), feat(2, "y")], SRC, S, now=1000.0)
+        self.assertIsNone(warning)
+        self.assertEqual(hub.resolve(f"{digest}.2", S, now=1001.0)["slug"], "y")
+        mode = os.stat(os.path.join(hub.folder(), "digests", digest + ".json")).st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+        self.assertEqual([n for n in os.listdir(os.path.join(hub.folder(), "digests"))], [digest + ".json"])
+
+    def test_the_same_millisecond_and_random_characters_never_overwrite(self):
+        draws = iter("aaaa" "aaaa" "bbbb")
+        with mock.patch("secrets.choice", lambda alphabet: next(draws)):
+            first, _ = hub.save([feat(1, "x")], SRC, S, now=1000.0)
+            second, _ = hub.save([feat(1, "y")], SRC, S, now=1000.0)
+        self.assertNotEqual(first, second)
+        self.assertEqual(hub.resolve(f"{first}.1", S, now=1000.0)["slug"], "x")
+        self.assertEqual(hub.resolve(f"{second}.1", S, now=1000.0)["slug"], "y")
+
+    def test_concurrent_saves_get_different_ids(self):
+        ids = []
+        threads = [threading.Thread(target=lambda: ids.append(hub.save([feat(1, "x")], SRC, S, now=1000.0)[0]))
+                   for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len(set(ids)), 10)
+        self.assertNotIn(None, ids)
+
+    def test_an_old_reference_is_refused_after_the_folder_is_wiped(self):
+        a, _ = hub.save([feat(1, "x")], SRC, S, now=1000.0)
+        shutil.rmtree(hub.folder())
+        b, _ = hub.save([feat(1, "y")], SRC, S, now=1000.5)
+        with self.assertRaisesRegex(hub.RelayError, "unknown reference"):
+            hub.resolve(f"{a}.1", S, now=1001.0)
+        self.assertEqual(hub.resolve(f"{b}.1", S, now=1001.0)["slug"], "y")
+
+    def test_unknown_references(self):
+        digest, _ = hub.save([feat(1, "x")], SRC, S, now=1000.0)
+        bad = os.path.join(hub.folder(), "digests", "zzzzzzzz.json")
+        with open(bad, "w") as f:
+            f.write("{not json")
+        refs = ["abc", "abc.", ".1", "abc.x", f"{digest}.0", f"{digest}.2", "zzzzzzzz.1", None, f"{digest}.1 "]
+        for ref in refs:
+            with self.subTest(ref=ref), self.assertRaisesRegex(hub.RelayError, "unknown reference"):
+                hub.resolve(ref, S, now=1001.0)
+        with self.assertRaisesRegex(hub.RelayError, "unknown reference"):
+            hub.resolve(f"{digest}.1", {"provider": "claude", "session_id": "other"}, now=1001.0)
+        with self.assertRaisesRegex(hub.RelayError, "unknown reference"):
+            hub.resolve(f"{digest}.1", None, now=1001.0)
+        with self.assertRaisesRegex(hub.RelayError, "unknown reference"):
+            hub.resolve(f"{digest}.1", S, now=1000.0 + 86401)
+        self.assertEqual(hub.resolve(f"{digest}.1", S, now=1000.0 + 86400)["slug"], "x")
+
+    def test_pruning_keeps_the_newest_twenty(self):
+        ids = [hub.save([feat(1, str(i))], SRC, S, now=1000.0 + i)[0] for i in range(25)]
+        left = sorted(os.listdir(os.path.join(hub.folder(), "digests")))
+        self.assertEqual(len(left), 25)                               # none older than 24 hours yet
+        hub.save([feat(1, "late")], SRC, S, now=1000.0 + 86400 + 30)
+        left = os.listdir(os.path.join(hub.folder(), "digests"))
+        self.assertEqual(len(left), 20)
+        self.assertNotIn(ids[0] + ".json", left)
+        self.assertIn(ids[-1] + ".json", left)
+
+    def test_an_unwritable_folder_gives_a_warning(self):
+        os.makedirs(os.path.join(hub.folder(), "digests"))
+        os.chmod(os.path.join(hub.folder(), "digests"), 0o500)
+        self.addCleanup(os.chmod, os.path.join(hub.folder(), "digests"), 0o700)
+        digest, warning = hub.save([feat(1, "x")], SRC, S)
+        self.assertIsNone(digest)
+        self.assertIn("could not save the digest", warning)
+
+
 if __name__ == "__main__":
     unittest.main()
