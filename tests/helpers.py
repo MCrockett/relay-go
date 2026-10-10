@@ -81,6 +81,16 @@ if os.environ.get("FAKE_GH_LOG"):
         log.write(args + "\\n")
 sha = re.search(r"commits/([0-9a-f]+)/", args)
 by_sha = os.environ.get("FAKE_GH_RUNS_BY_SHA")
+api = os.environ.get("FAKE_GH_API")  # {path substring: response, or {"__rc": 1}}; the longest match wins
+if api:
+    table = json.load(open(api))
+    hit = next((k for k in sorted(table, key=len, reverse=True) if k in args), None)
+    if hit is not None:
+        if isinstance(table[hit], dict) and table[hit].get("__rc"):
+            sys.stderr.write("gh: HTTP 500\\n")
+            sys.exit(table[hit]["__rc"])
+        sys.stdout.write(json.dumps(table[hit]))
+        sys.exit(0)
 if args.startswith("pr list"):
     if os.environ.get("FAKE_GH_PR_LIST_FAILS"):
         sys.stderr.write("gh: could not reach GitHub\\n")

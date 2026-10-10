@@ -10,7 +10,7 @@ import tempfile
 import threading
 import time
 
-from . import availability, config, gitops, machine, notify, owneractions, runner, state, usage
+from . import availability, ciskip, config, gitops, machine, notify, owneractions, runner, state, usage
 from .config import relay_home
 from .errors import RelayError
 
@@ -145,7 +145,7 @@ class WorkCtx:
 
     def save(self, message, push="best"):
         state.write_state(self.path, self.st)
-        gitops.commit_paths_under(self.root, f"{state.RELAY_DIR}/{self.slug}", message)
+        ciskip.commit(self.root, self.slug, self.st, self.cfg, message)  # the job's lease push publishes it
         self.saved = True
 
 

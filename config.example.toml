@@ -36,3 +36,4 @@ enabled = true  # macOS notification when a feature needs you (ready to merge, s
 
 [build]
 require_ci = true  # a repo without CI sets this to false in its docs/relay/config.toml
+skip_ci = "auto"   # "never" keeps CI running on relay's own commits; see README, CI on relay's commits
