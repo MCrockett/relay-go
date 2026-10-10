@@ -7,7 +7,21 @@
   "branch": "feat/mobile-hub",
   "extra_rounds": {},
   "feature": "mobile-hub",
-  "history": {},
+  "history": {
+    "spec": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2",
+          "R1-3"
+        ],
+        "head": "fa760933ef25d4b73f7bae621a2c792beb0a517b",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ]
+  },
   "owner": {
     "provider": "claude",
     "session": "958dee3a-031e-4b49-be5f-09efa15292b1",
@@ -28,6 +42,7 @@
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
+  "review_notes": {},
   "reviewed": {
     "build": null,
     "plan": null,
@@ -39,9 +54,11 @@
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "in-review",
-  "updated": "2026-10-10T17:15:05-04:00",
-  "verdicts": {}
+  "status": "changes-requested",
+  "updated": "2026-10-10T17:15:47-04:00",
+  "verdicts": {
+    "spec": "NO-GO"
+  }
 }
 ---
 
