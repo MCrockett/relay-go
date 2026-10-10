@@ -50,6 +50,17 @@ class ListedTest(Homes):
         self.assertEqual((entry["pending_tools"], entry["excerpt"], entry["label"]), (["Bash", "Edit"], None,
                                                                                        "Unknown folder"))
 
+    def test_a_registered_hub_session_is_not_listed(self):  # mobile-hub D9, R14
+        from relaylib import hub
+        p = mock.patch.dict(os.environ, {"RELAY_HOME": os.path.join(self.tmp, "relayhome")})
+        p.start()
+        self.addCleanup(p.stop)
+        self.claude_said("HUB", "Here is what needs you.")
+        self.claude_said("S1", "I still need the key path.")
+        records = [record("HUB"), record("S1")]
+        self.assertIsNone(hub.register("claude", "HUB", records))
+        self.assertEqual([e["session_id"] for e in self.listed(records)], ["S1"])
+
     def test_sessions_that_are_not_listed(self):
         for sid in ("grace", "old", "ended", "working", "claimed"):
             self.claude_said(sid, "hello")
