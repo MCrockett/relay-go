@@ -32,6 +32,17 @@
         },
         "round": 2,
         "verdict": "NO-GO"
+      },
+      {
+        "blocking_ids": [
+          "R2-1"
+        ],
+        "head": "0b96a000bcb7397819abba8f6feda2824c8fd23f",
+        "prior": {
+          "R2-1": "partial"
+        },
+        "round": 3,
+        "verdict": "NO-GO"
       }
     ]
   },
@@ -67,8 +78,8 @@
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "in-review",
-  "updated": "2026-10-10T17:18:46-04:00",
+  "status": "changes-requested",
+  "updated": "2026-10-10T17:19:29-04:00",
   "verdicts": {
     "spec": "NO-GO"
   }
