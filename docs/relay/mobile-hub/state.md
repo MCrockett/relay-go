@@ -40,6 +40,21 @@
         },
         "round": 2,
         "verdict": "NO-GO"
+      },
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R3-1"
+        ],
+        "head": "fbfa8e59f6142da2cf74b8d76c3613f9403e3b89",
+        "prior": {
+          "R1-1": "partial",
+          "R1-2": "resolved",
+          "R1-3": "resolved",
+          "R1-4": "resolved"
+        },
+        "round": 3,
+        "verdict": "NO-GO"
       }
     ],
     "spec": [
@@ -122,8 +137,8 @@
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "in-review",
-  "updated": "2026-10-10T18:12:06-04:00",
+  "status": "changes-requested",
+  "updated": "2026-10-10T18:12:54-04:00",
   "verdicts": {
     "plan": "NO-GO",
     "spec": "GO"
