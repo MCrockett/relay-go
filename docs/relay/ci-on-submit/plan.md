@@ -39,14 +39,13 @@
   - `owneractions.merge_readiness` already refuses anything but `green`; its message for `not-started` names billing.
   - The dashboard CI column shows `not started`, styled like `failing`.
   - `ciskip.EVIDENCE` stays `green`, `failing`, `pending`, so `not-started` allows no marker (R9).
-- **Precedence at a draft submit (review note 1).** `ready_draft` reads `ci_for_code` for the PR head before anything else. With `not-started` it raises the D6 message and does not mark the PR ready: a new run would hit the same billing block. Once billing is fixed, the next submit marks it ready and the `ready_for_review` run starts by itself, so no rerun is needed.
+- **Precedence between the draft message and the D6 message (spec review note 1).** On a draft, `not-started` is "anything else" in D2: relay marks the PR ready, which fires a fresh `ready_for_review` run, and stops with the "CI has started" message, adding one sentence: "The last run on this code was not started by GitHub (billing); if billing is still blocked, fix it first." The D6 message belongs to a PR that is already ready: `require_pr_ready` raises it when the newest result is still `not-started`, and the owner then fixes billing and runs `gh run rerun`. A rerun replaces the latest check runs for that commit, so the next submit sees the rerun's result.
 - **`ready_draft(c)`, step by step,** for build submit with status `drafting` or `changes-requested`. It runs after the PR-open and HEAD-pushed checks, which move from `require_pr_ready` into a small `require_pr_open(c)` that both use:
   1. `info = pr_info`; if `not info["isDraft"]`, return (the normal gate follows).
   2. `ci = ci_for_code(head's code)`.
-  3. `not-started`: raise the D6 message.
-  4. `green`: `sha = ciskip.mark_head(...)`; if a commit was made, `ciskip.push(root, branch, sha)` (a failed push raises, after D7's unmark). Then `pr_ready`. Return; the normal gate then sees green.
-  5. `none` with `require_ci` false: `pr_ready`, return.
-  6. Anything else: `pr_ready`, then raise "PR #N is now ready for review and CI has started for <sha8>. Wait for it (`gh pr checks N --watch`), then run `relay submit` again."
+  3. `green`: `sha = ciskip.mark_head(...)`; if a commit was made, `ciskip.push(root, branch, sha)` (a failed push raises, after D7's unmark). Then `pr_ready`. Return; the normal gate then sees green.
+  4. `none` with `require_ci` false: `pr_ready`, return.
+  5. Anything else (`none`, `pending`, `failing`, `not-started`): `pr_ready`, then raise "PR #N is now ready for review and CI has started for <sha8>. Wait for it (`gh pr checks N --watch`), then run `relay submit` again."
   A `pr_ready` failure raises "could not mark PR #N ready: <gh stderr>". Nothing in `state.md` changes before `pr_ready` succeeds (R4).
 - **`ciskip.mark_head(root, st, cfg)`.** Returns None, without a commit, when HEAD's message is already marked (`gitops.marked`) or `marker_ok(root, st["branch"], st["pr"], cfg, st["status"])` is False. Otherwise it makes the empty commit without touching the index or working tree: `git commit-tree HEAD^{tree} -p HEAD -m "relay: mark PR ready" -m "[skip ci]"`, then `git update-ref HEAD <new> <old>`. Staged changes stay staged. Returns the new sha.
 - **Retries (R15 and review note 2).**
@@ -59,7 +58,7 @@
 - **Back to draft after a NO-GO (R6).** `review_current`'s NO-GO path, for `stage == "build"` only, after `c.save(...)` and only when `st["status"] == "changes-requested"` (not the stall path), calls `c.after_publish(lambda: to_draft(c.root, st["pr"]))`.
   - `Ctx.save` records whether its push succeeded (`self.published`). `Ctx.after_publish(fn)` runs `fn` at once when the last save was published, else does nothing (the NO-GO is not on origin yet; the next save that publishes is a later command, which handles its own state).
   - `WorkCtx.after_publish(fn)` appends to `self.pending`. `reviewjobs._run` runs `job`'s `c.pending` after the lease push succeeds, and never when the review is discarded (branch moved, stopped).
-- **`relay commit "<message>"` (R14).** `cmd_commit(args)`: a blank message is refused ("give a commit message"); `Ctx(args)`, `c.sync()`, `ownership.check_can_write`; `marked = ciskip.commit(c.root, c.slug, c.st, c.cfg, message)`; nothing changed under `docs/relay/<slug>/` refuses ("nothing to commit under docs/relay/<slug>/"); then `ciskip.push(c.root, c.branch, marked)`, a failed push raises. `commit_paths_under` already commits only its paths (pathspec commit), so other staged changes stay staged. It does not touch `state.md` beyond what the agent changed.
+- **`relay commit "<message>"` (R14).** `cmd_commit(args)`: a blank message is refused ("give a commit message"); `Ctx(args)`, `c.sync()`, `ownership.check_can_write`; if `gitops.changed_paths_under(c.root, f"docs/relay/{c.slug}")` is empty it refuses ("nothing to commit under docs/relay/<slug>/") before committing, since `ciskip.commit` returns None both for no change and for an unmarked commit; `marked = ciskip.commit(c.root, c.slug, c.st, c.cfg, message)`; then `ciskip.push(c.root, c.branch, marked)`, a failed push raises. `commit_paths_under` already commits only its paths (pathspec commit), so other staged changes stay staged. It does not touch `state.md` beyond what the agent changed.
 - **Fake gh additions (`tests/helpers.py`).** The `FAKE_GH_API` table already answers any argument string by its longest matching key, so tests use keys `pr ready`, `pr ready 7 --undo`, `annotations` and `pr view`. No new variable is needed: `FAKE_GH_LOG` already records every call, in order. Where a test needs `pr ready` to flip `isDraft`, it rewrites the table between calls.
 
 ## Review Focus
@@ -73,10 +72,11 @@
 
 ### Task 1: CI evidence learns not-started and all-skipped
 
-**Files:** `relaylib/gitops.py`, `tests/test_gitops.py`
+**Files:** `relaylib/gitops.py`, `tests/test_gitops.py`, `tests/test_ciskip.py`
 
 1. Tests first, in a new `NotStartedSkippedTest`:
    - a failing check run with a not-started annotation reads `not-started` with `cancelled="skip"` and `failing` by default;
+   - `ciskip.marker_ok` is False when `ci_for_code` gives `not-started` (an explicit test in `tests/test_ciskip.py`);
    - a failing run without annotations, and one whose annotations call fails, read `failing`, and only failing `github-actions` runs with annotations cause an annotations call (from `FAKE_GH_LOG`);
    - a real failure beside a not-started run reads `failing`;
    - all-skipped reads `skipped` with `cancelled="skip"` and `green` by default; skipped plus success reads `green`; all-skipped plus a legacy status reads by the status;
@@ -113,7 +113,9 @@ Covers: R3 (part), R15 (part)
    - draft, green on the code: one `relay: mark PR ready` commit (marked) is pushed, then `pr ready`, then the submit commit and the review, in one call; the `pr ready` call comes after the push (log order);
    - draft, green, head already marked (after a NO-GO commit): no `relay: mark PR ready` commit;
    - draft, `none`, `require_ci = false`: `pr ready`, then the submit goes on;
-   - draft, `not-started`: the D6 message, no `pr ready` call, nothing recorded;
+   - draft, `not-started`: `pr ready` is called and submit stops with the "CI has started" message plus the billing sentence, nothing recorded;
+   - billing recovery: a ready PR whose head's only run is not-started gets the D6 message; after the fake table replaces that commit's runs with a green rerun (the not-started run no longer latest), the next submit goes through the normal gate and reviews;
+   - GitHub marked the PR ready but `pr ready` reported failure: the first submit fails with the R4 message; the table then reports `isDraft` false, and the next submit calls no `pr ready`, makes no `relay: mark PR ready` commit, and goes through the normal gate to the review;
    - `pr ready` failing: the error names the PR and gh's message; status, rounds and history unchanged; a second submit makes no second `relay: mark PR ready` commit and calls `pr ready` again;
    - the mark-ready push rejected (pre-receive hook): submit fails, the commit is unmarked (D7), nothing recorded;
    - the mark-ready push reached origin but the command reported failure (simulate with a push wrapper that pushes then exits 1): the next submit adds no commit and calls `pr ready`;
@@ -141,7 +143,7 @@ Covers: R6, R7, R13
 
 **Files:** `relaylib/commands.py`, `tests/test_commands.py`
 
-1. Tests: a plan edit with green CI on origin's code is committed marked and pushed; with code origin lacks, unmarked; a staged change outside `docs/relay/<slug>/` stays staged and uncommitted; a blank message and nothing to commit are refused; another session's feature is refused; a rejected push raises and unmarks.
+1. Tests: a plan edit with green CI on origin's code is committed marked and pushed; with code origin lacks, unmarked; a staged change and an unstaged change outside `docs/relay/<slug>/` both stay exactly as they were (staged, and unstaged), uncommitted; a blank message and nothing to commit are refused; another session's feature is refused; a rejected push raises and unmarks.
 2. Implement `cmd_commit` and its parser entry (`relay commit MESSAGE [--feature] [--by]`).
 
 Covers: R14, R13
@@ -160,7 +162,7 @@ Covers: R9
 **Files:** `skills/relay-build/SKILL.md`, `skills/relay-plan/SKILL.md`
 
 1. relay-build step 3: `gh pr create --base develop --fill --draft`, falling back to no `--draft` if GitHub refuses; no "wait for CI" before the first submit. Step 4: if submit says CI started, wait with `gh pr checks <n> --watch`, then submit again; after a NO-GO the PR is back in draft, so fix pushes start no CI. Both skills: commit edits under `docs/relay/<slug>/` with `relay commit "<message>"`, not `git commit`.
-2. Check: plain English, no em-dashes (`grep -n "—"` finds nothing).
+2. Checks: `grep -n -- "--draft" skills/relay-build/SKILL.md`, `grep -n "gh pr checks" skills/relay-build/SKILL.md` and `grep -n "relay commit" skills/relay-build/SKILL.md skills/relay-plan/SKILL.md` each find a line; "Wait for CI to finish green" no longer appears before the first submit; `grep -n "—" skills/*/SKILL.md` finds nothing.
 
 Covers: R1, R14
 
@@ -168,12 +170,14 @@ Covers: R1, R14
 
 **Files:** `.github/workflows/test.yml`, `README.md`
 
-1. Workflow per R11. Check it parses: `python3.11 -c` reading it is not possible without a YAML library, so check by eye and by the PR's own CI run.
-2. README "CI on relay's commits" section: the draft flow, the not-started and all-skipped rules, `relay commit`, and the workflow snippet from R11 for other repos.
+1. Workflow per R11. There is no YAML library in the standard library, so check the content with `grep`: `ready_for_review`, `!github.event.pull_request.draft`, `branches: [main]` under push, `cancel-in-progress`; and the PR's own CI run proves it parses (Task 10).
+2. README "CI on relay's commits" section: the draft flow, the not-started and all-skipped rules, `relay commit`, and the workflow snippet from R11 for other repos. Check: `grep -n "relay commit\|ready_for_review\|not started\|skipped" README.md` finds the new text; no em-dashes.
 
 Covers: R11, R12
 
 ### Task 10: Full suite and live check
+
+**Files:** none changed except `docs/relay/ci-on-submit/plan.md` (Build notes).
 
 1. `python3.11 -m unittest discover -s tests -t . -v` passes.
 2. On this feature's own PR (opened as a draft): pushes while draft start no billed run (the job shows as skipped), and `relay submit` marks it ready and starts one run. Record what happened in Build notes.
