@@ -11,6 +11,17 @@
   },
   "feature": "ci-on-submit",
   "history": {
+    "plan": [
+      {
+        "blocking_ids": [
+          "R1-1"
+        ],
+        "head": "fb92fb4b9e1ee148d2de624b6e282285214f2ef8",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ],
     "spec": [
       {
         "blocking_ids": [
@@ -77,9 +88,10 @@
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "in-review",
-  "updated": "2026-10-10T09:30:10-04:00",
+  "status": "changes-requested",
+  "updated": "2026-10-10T09:31:12-04:00",
   "verdicts": {
+    "plan": "NO-GO",
     "spec": "GO"
   }
 }
