@@ -68,7 +68,7 @@
     }
   ],
   "pr": null,
-  "refresh": false,
+  "refresh": true,
   "repo": "relay-go",
   "retried": false,
   "review_notes": {},
@@ -92,9 +92,9 @@
   },
   "skipped": [],
   "small": false,
-  "stage": "build",
-  "status": "drafting",
-  "updated": "2026-10-10T09:32:43-04:00",
+  "stage": "plan",
+  "status": "in-review",
+  "updated": "2026-10-10T11:57:38-04:00",
   "verdicts": {
     "plan": "GO",
     "spec": "GO"
