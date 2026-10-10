@@ -135,3 +135,79 @@ def load(timeout=LOAD_TIMEOUT_S):
     started = time.monotonic()
     data = snapshot.build()
     return data, {"from": "build", "seconds": time.monotonic() - started}
+
+
+# ---------------------------------------------------------------- items (D2)
+
+QUESTION_TOOLS = {"AskUserQuestion"}  # a question tool waits through a permission request (D8)
+
+
+def _feature_wanted(row):
+    flags = row.get("flags") or []
+    return bool(row.get("waiting_on_owner") or row.get("status") in ("waiting-owner", "ready-to-merge")
+                or any(f.startswith(("stale", "fallback GO")) for f in flags))
+
+
+def _feature_session(row):
+    for ask in row.get("asks") or []:
+        if ask.get("kind") in ("answer", "approve") and ask.get("session"):
+            provider, _, sid = ask["session"].partition(":")
+            return {"provider": provider, "session_id": sid, "label": row.get("repo") or row.get("feature"),
+                    "state": "permission" if ask["kind"] == "approve" else "waiting"}
+    return None
+
+
+def _feature_item(row):
+    if row.get("error"):
+        return {"kind": "error", "repo": row.get("repo") or os.path.basename(row.get("checkout") or ""),
+                "slug": row.get("feature"), "error": row["error"], "wait_since": None, "actions": []}
+    info = row.get("pr_info") or {}
+    session = _feature_session(row)
+    return {"kind": "feature", "repo": row.get("repo"), "repo_path": row.get("repo_path"), "slug": row.get("feature"),
+            "stage": row.get("stage"), "status": row.get("status"),
+            "asks": [{"kind": a.get("kind"), "text": a.get("text")} for a in row.get("asks") or []],
+            "flags": [f for f in row.get("flags") or [] if f.startswith(("stale", "fallback GO"))],
+            "wait_since": row.get("wait_since"), "pr": row.get("pr"), "pr_state": info.get("state"),
+            "ci": row.get("ci"), "actions": list(row.get("actions") or []), "session": session,
+            "answer_here": bool(session and session["state"] == "permission"), "seen": row.get("seen")}
+
+
+def _session_item(entry):
+    tools = list(entry.get("pending_tools") or [])
+    return {"kind": "session", "provider": entry.get("provider"), "session_id": entry.get("session_id"),
+            "label": entry.get("label"), "state": entry.get("state"), "pending_tools": tools,
+            "wait_since": entry.get("since"), "excerpt": (entry.get("excerpt") or {}).get("text"),
+            "answer_here": entry.get("state") == "permission" or bool(QUESTION_TOOLS & set(tools))}
+
+
+def _order(item):
+    at = item.get("wait_since")
+    name = (item.get("repo") or "", item.get("slug") or "") if item["kind"] != "session" else \
+        (item.get("label") or "", item.get("session_id") or "")
+    return (at is None, at or 0) + name
+
+
+def items(data, hubs=None):
+    """The digest's items, oldest wait first, numbered from 1 (D2, R1 to R3). Hub sessions are left out even
+    when a snapshot cached before they registered lists them."""
+    hubs = registered() if hubs is None else hubs
+    out = [_feature_item(r) for r in data.get("rows") or [] if r.get("error") or _feature_wanted(r)]
+    out += [_session_item(e) for e in data.get("other_sessions") or []
+            if (e.get("provider"), e.get("session_id")) not in hubs]
+    out.sort(key=_order)
+    for n, item in enumerate(out, 1):
+        item["n"] = n
+    return out
+
+
+def counts(data, found, hubs=None):
+    """What needs nothing: features in progress and sessions working, beyond the items."""
+    hubs = registered() if hubs is None else hubs
+    listed = {(i.get("repo"), i.get("slug")) for i in found if i["kind"] != "session"}
+    sessions = {(i.get("provider"), i.get("session_id")) for i in found if i["kind"] == "session"}
+    sessions |= {(i["session"]["provider"], i["session"]["session_id"]) for i in found if i.get("session")}
+    features = [r for r in data.get("rows") or [] if (r.get("repo"), r.get("feature")) not in listed
+                and "done" not in (r.get("stage"), r.get("status"))]
+    running = [e for e in data.get("running") or [] if (e.get("provider"), e.get("session_id")) not in sessions
+               and (e.get("provider"), e.get("session_id")) not in hubs]
+    return {"features": len(features), "sessions": len(running)}

@@ -145,5 +145,69 @@ class LoadTest(HubHome):  # mobile-hub D3, R6
             self.assertEqual(hub.load(timeout=0.3)[1]["from"], "build")
 
 
+def row(slug, repo="bottomsup", status="drafting", wait=None, asks=(), flags=(), actions=(), **extra):
+    r = {"repo": repo, "feature": slug, "stage": "build", "status": status, "flags": list(flags),
+         "asks": list(asks), "wait_since": wait, "waiting_on_owner": bool(asks), "actions": list(actions),
+         "pr": 12, "pr_info": {"state": "OPEN"}, "ci": "green", "seen": {"commit": "c" + slug},
+         "repo_path": "/p/" + repo}
+    r.update(extra)
+    return r
+
+
+def other(sid, state="waiting", since=None, tools=(), label="proteindiary", provider="codex"):
+    return {"provider": provider, "session_id": sid, "label": label, "state": state, "since": since,
+            "pending_tools": list(tools), "excerpt": {"source": "agent", "text": f"{sid} says hi"}}
+
+
+class ItemsTest(HubHome):  # mobile-hub D2, D8, R1 to R3
+    def data(self):
+        return {"rows": [
+            row("merge", status="ready-to-merge", wait=300, asks=[{"kind": "merge", "text": "Merge PR #12"}],
+                actions=["merge", "review"]),
+            row("stale", status="ready-to-merge", flags=["stale spec GO: re-review before going on"],
+                actions=["review"]),
+            row("decide", repo="idlekeeper", status="waiting-owner", wait=100,
+                asks=[{"kind": "decide", "text": "Decide: build review stopped"}], actions=["go", "extra-round"]),
+            row("perm", repo="isitev", wait=200,
+                asks=[{"kind": "approve", "text": "Approve Bash in the claude session", "session": "claude:P1"}]),
+            row("busy"),
+            row("gone", stage="done", status="done"),
+            {"repo": "broken", "feature": "?", "error": "could not read state", "checkout": "/p/broken"},
+            row("unready", status="ready-to-merge", wait=50, asks=[{"kind": "merge", "text": "Merge PR #12"}],
+                actions=["review"]),
+        ], "other_sessions": [other("Q1", since=150), other("PERM", "permission", since=400, tools=["Bash"]),
+                              other("ASK", "permission", since=None, tools=["AskUserQuestion"]),
+                              other("HUB", since=10, provider="claude")],
+            "running": [{"provider": "claude", "session_id": "R1"}, {"provider": "claude", "session_id": "P1"},
+                        {"provider": "claude", "session_id": "HUB"}]}
+
+    def test_inclusion_order_sessions_and_actions(self):
+        found = hub.items(self.data(), hubs={("claude", "HUB")})
+        self.assertEqual([(i["n"], i.get("slug") or i.get("session_id")) for i in found],
+                         [(1, "unready"), (2, "decide"), (3, "Q1"), (4, "perm"), (5, "merge"), (6, "PERM"),
+                          (7, "stale"), (8, "?"), (9, "ASK")])
+        by = {i.get("slug") or i.get("session_id"): i for i in found}
+        self.assertEqual(by["unready"]["actions"], ["review"])            # the dashboard's filtered list, unchanged
+        self.assertEqual(by["merge"]["actions"], ["merge", "review"])
+        self.assertEqual(by["perm"]["session"], {"provider": "claude", "session_id": "P1", "label": "isitev",
+                                                 "state": "permission"})
+        self.assertTrue(by["perm"]["answer_here"])
+        self.assertIsNone(by["decide"]["session"])
+        self.assertFalse(by["decide"]["answer_here"])
+        self.assertTrue(by["PERM"]["answer_here"])
+        self.assertTrue(by["ASK"]["answer_here"])
+        self.assertFalse(by["Q1"]["answer_here"])
+        self.assertEqual(by["?"]["kind"], "error")
+        self.assertEqual((by["merge"]["pr"], by["merge"]["pr_state"], by["merge"]["ci"]), (12, "OPEN", "green"))
+        self.assertEqual(by["merge"]["seen"], {"commit": "cmerge"})
+        self.assertEqual(hub.counts(self.data(), found, hubs={("claude", "HUB")}), {"features": 1, "sessions": 1})
+
+    def test_a_registered_hub_is_left_out_of_a_cached_snapshot(self):
+        hub.register("claude", "HUB", [rec("HUB")])
+        found = hub.items(self.data())
+        self.assertNotIn("HUB", [i.get("session_id") for i in found])
+        self.assertEqual(hub.counts(self.data(), found)["sessions"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
