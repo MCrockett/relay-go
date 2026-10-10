@@ -163,7 +163,10 @@ Files: `relaylib/commands.py`, `relaylib/hub.py` (`note_target`, `log`), `tests/
   2. `hub.resolve(ref, my session, now)`.
   3. Session item: target its provider and id. Feature item: target its `session`, or refuse "item <n> has no session to send a note to". Refuse with "open this session to answer" when `answer_here` is set.
   4. Two checks, both current:
-     - **Still listed (D5).** Load the snapshot with `hub.load` and require the target among `other_sessions`, `running`, or the session of a feature row's `answer` or `approve` ask. Otherwise refuse with "that session is no longer listed; run relay hub again". This is the same eligibility rule `snapshot.send_note` applies (`_listed`), extended to feature sessions.
+     - **Still listed (D5), computed now.** Never from `hub.load` or any dashboard cache. `hub.listed_now(provider, sid)` reads `sessions.read_records()` at the moment of sending and applies the same rules the snapshot uses, all local reads with no git or gh call:
+       - `othersessions.listed(records, set(), root, config.load(), now)`, with an empty claimed set so feature sessions count too;
+       - `leftoff.running(records, {}, root, sessions.alive(records), now, leftoff.codex_turns(...))`.
+       The target must be in one of them. Otherwise refuse with "that session is no longer listed; run relay hub again". This is the eligibility rule `snapshot.send_note` applies (`_listed`), extended to feature sessions and evaluated fresh.
      - **Its state now.** A dashboard snapshot can be up to 30 seconds old, so the permission and running checks also read the target's own session record from `sessions.record_path(provider, sid)`, validated with `sessions._valid`:
        - no record, or one that cannot be read: refuse with "that session is no longer known; run relay hub again";
        - state `permission`: refuse with the answer-here message;
@@ -177,7 +180,7 @@ Files: `relaylib/commands.py`, `relaylib/hub.py` (`note_target`, `log`), `tests/
   - refused without `--relayed` from an agent env, and from the owner env (the terminal case `owner_or_relayed` alone would allow);
   - refused with `--relayed` and the owner env;
   - live checks after a cached snapshot: the digest saw the session waiting, then its record changes to `permission` (refused, answer-here), to `working` while it is still in `running` (posted to its inbox), is deleted (refused), or becomes `ended` (queued);
-  - a session whose record is still valid and waiting but has aged out of the fresh snapshot's lists (past `other_sessions_hours`, so in neither `other_sessions` nor `running`) is refused as no longer listed;
+  - a session whose record is still valid and waiting but has aged out (its `since` past `other_sessions_hours`, and not running) is refused as no longer listed, even while a fake dashboard's cached snapshot still lists it in `other_sessions` (`hub.load` patched to return that cached data, to prove it is not consulted);
   - empty text and 2,001 characters are refused with session-notify's messages;
   - posted but not recorded: `os.replace` in `notes` patched to fail after a successful post prints the not-recorded warning (the matching `notes.send` cases are already covered in `tests/test_notes.py`; these tests check the hub command reports them);
   - a refusal writes a log line with `refused: ...`;
