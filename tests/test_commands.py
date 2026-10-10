@@ -1295,6 +1295,19 @@ done
         self.assertTrue(result["ok"], result["message"])
         self.assertEqual(self.published()["status"], "ready-to-merge")
 
+    def test_a_hub_review_runs_and_records_who_relayed_it(self):  # mobile-hub R9
+        from relaylib import hub, owneractions
+        availability = self.fallback_build_go()
+        availability.record_out("codex", until=0)
+        os.environ["RELAY_ROOT"] = self.tmp
+        item = {"n": 1, "kind": "feature", "repo": "work", "repo_path": self.work, "slug": "tiny",
+                "actions": ["review"], "seen": owneractions.fingerprint(self.work, "tiny"), "session": None}
+        digest, _ = hub.save([item], {"from": "build", "seconds": 1}, {"provider": "claude", "session_id": "s1"})
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("hub", "act", f"{digest}.1", "review", "--relayed"), 0, self.last_err)
+        self.assertIn("build GO from codex", self.last_out)
+        self.assertEqual(self.published()["owner_actions"][-1]["relayed_by"], "claude session s1")
+
     def test_a_branch_that_moved_during_the_review_is_not_overwritten(self):
         from relaylib import owneractions, reviewjobs
         availability = self.fallback_build_go()

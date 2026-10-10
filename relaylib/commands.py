@@ -813,6 +813,49 @@ def cmd_hub_note(args):
         _hub_logged(entry, result)
 
 
+HUB_REVIEWS = {"review": "build", "review-spec": "spec", "review-plan": "plan"}
+
+
+def cmd_hub_act(args):
+    from . import hub, owneractions, reviewjobs
+    from .ui import snapshot
+    entry = {"command": "act", "ref": args.ref, "target": None, "action": args.action, "relayed_by": None}
+    result = "failed"
+    try:
+        relayed_by = entry["relayed_by"] = _hub_relayed(args, "relay hub act")
+        item = hub.resolve(args.ref, _hub_session(dict(os.environ), args.by))
+        if item["kind"] == "session":
+            raise RelayError(f"item {item['n']} is a session; use relay hub note")
+        if item["kind"] != "feature":
+            raise RelayError(f"item {item['n']} has no feature to act on")
+        entry["target"] = f"{item['repo']}/{item['slug']}"
+        if args.action not in item.get("actions") or []:
+            offered = ", ".join(item.get("actions") or []) or "none"
+            raise RelayError(f"{args.action} was not offered for item {item['n']} (offered: {offered})")
+        repo = snapshot.allowed_repo(item["repo_path"])
+        if args.action in HUB_REVIEWS:
+            job = reviewjobs.prepare(repo, item["slug"], item["seen"], args.reviewer, relayed_by,
+                                     stage=HUB_REVIEWS[args.action])
+            print(f"relay: {reviewjobs.spec_id(job.spec)} is reviewing {item['slug']}. This can take minutes.")
+            done = job.run()
+            if not done["ok"]:
+                raise RelayError(done["message"])
+        elif args.action == "merge":
+            done = owneractions.merge(repo, item["slug"], item["seen"], relayed_by)
+        else:
+            done = owneractions.run_override(repo, item["slug"], args.action, item["seen"], relayed_by)
+        result = "done" + ("; " + done["warning"] if done.get("warning") else "")
+        print(f"relay: {done['message']}")
+        if done.get("warning"):
+            print(f"relay: warning: {done['warning']}", file=sys.stderr)
+        return 0
+    except RelayError as e:
+        result = f"refused: {e}"
+        raise
+    finally:
+        _hub_logged(entry, result)
+
+
 # ---------------------------------------------------------------- ownership handoff
 
 def cmd_take(args):

@@ -9,7 +9,7 @@ from relaylib.errors import RelayError
 from tests import helpers
 
 
-class OwnerActionsTest(unittest.TestCase):
+class OwnerFixture(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -52,6 +52,16 @@ class OwnerActionsTest(unittest.TestCase):
 
     def assert_cleaned(self):
         self.assertEqual([os.path.realpath(p) for p in gitops.worktrees(self.work)], [os.path.realpath(self.work)])
+
+    def ready(self):
+        self.st.update(stage="build", status="ready-to-merge", pr=7)
+        self.st["reviewed"]["build"] = freshness.snapshot(self.work, self.st, "origin/develop")
+        self.save()
+        self.publish(self.work)
+        self.pr()
+
+
+class OwnerActionsTest(OwnerFixture):
 
     def test_override_and_release_do_not_touch_session_checkout(self):
         head = gitops.head_sha(self.work)
@@ -179,13 +189,6 @@ class OwnerActionsTest(unittest.TestCase):
             owneractions.run_override(self.work, "demo", "go", seen)
         self.assert_cleaned()
 
-    def ready(self):
-        self.st.update(stage="build", status="ready-to-merge", pr=7)
-        self.st["reviewed"]["build"] = freshness.snapshot(self.work, self.st, "origin/develop")
-        self.save()
-        self.publish(self.work)
-        self.pr()
-
     def test_merge_checks_pr_head_freshness_confirmation_and_ci(self):
         self.ready()
         seen = self.seen()
@@ -224,6 +227,136 @@ class OwnerActionsTest(unittest.TestCase):
         self.assertEqual(ci.call_args.args[1], seen["commit"])
         with open(self.log) as f:
             self.assertIn("pr merge 7 -R owner/project", f.read())
+
+
+class HubActTest(OwnerFixture):  # mobile-hub D5, D6, R9 to R12
+    HUB = {"provider": "claude", "session_id": "hub1"}
+
+    def setUp(self):
+        super().setUp()
+        from relaylib import identity
+        env = dict.fromkeys(identity.AGENT_MARKERS, "")
+        env.update(RELAY_ROOT=self.tmp, CLAUDECODE="1", RELAY_PROVIDER="claude", RELAY_SESSION="hub1",
+                   RELAY_HOME=os.path.join(self.tmp, "relayhome"))
+        patch = mock.patch.dict(os.environ, env)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def digest(self, actions, kind="feature"):
+        from relaylib import hub
+        item = {"n": 1, "kind": kind, "repo": "work", "repo_path": self.work, "slug": "demo", "actions": actions,
+                "seen": self.seen(), "session": None, "answer_here": False}
+        digest, _ = hub.save([item], {"from": "build", "seconds": 1}, self.HUB)
+        return f"{digest}.1"
+
+    def act(self, *argv, env=None):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        from relaylib import commands
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, env or {}), redirect_stdout(out), redirect_stderr(err):
+            rc = commands.main(["hub", "act", *argv])
+        self.out, self.err = out.getvalue(), err.getvalue()
+        return rc
+
+    def gh_log(self):
+        if not os.path.exists(self.log):
+            return ""
+        with open(self.log) as f:
+            return f.read()
+
+    def logged(self):
+        from relaylib import hub
+        with open(os.path.join(hub.folder(), "log.jsonl")) as f:
+            return [json.loads(line) for line in f]
+
+    def test_an_override_records_who_relayed_it_and_posts_no_comment(self):
+        ref = self.digest(["go", "extra-round"])
+        self.assertEqual(self.act(ref, "extra-round", "--relayed"), 0, self.err)
+        last = self.published()["owner_actions"][-1]
+        self.assertEqual((last["action"], last["relayed_by"]), ("override extra-round (spec)", "claude session hub1"))
+        self.assertNotIn("pr comment", self.gh_log())
+        self.assertEqual(self.act(ref, "go", "--relayed"), 1)              # the feature moved since that digest
+        self.assertIn("changed since you looked", self.err)
+        self.assertEqual([l["result"].split(":")[0] for l in self.logged()], ["done", "refused"])
+        self.assertEqual(self.logged()[0]["target"], "work/demo")
+
+    def test_refusals(self):
+        ref = self.digest(["go"])
+        self.assertEqual(self.act(ref, "merge", "--relayed"), 1)
+        self.assertIn("merge was not offered for item 1 (offered: go)", self.err)
+        self.assertEqual(self.act(self.digest(["go"], kind="session"), "go", "--relayed"), 1)
+        self.assertIn("is a session; use relay hub note", self.err)
+        self.assertEqual(self.act(ref, "go"), 1)
+        self.assertIn("run it with --relayed", self.err)
+        from relaylib import identity
+        owner = dict.fromkeys(identity.AGENT_MARKERS + ("RELAY_SESSION",), "")
+        self.assertEqual(self.act(ref, "go", env=owner), 1)
+        self.assertIn("run it with --relayed", self.err)
+        self.assertEqual(self.act(ref, "go", "--relayed", env=owner), 1)
+        self.assertIn("in your own terminal", self.err)
+        self.assertEqual(self.published()["stage"], "spec")
+        self.assertEqual(len(self.logged()), 5)
+        self.assertTrue(all(l["result"].startswith("refused: ") for l in self.logged()))
+
+    def test_a_hub_merge_comments_after_merging(self):
+        self.ready()
+        ref = self.digest(["merge"])
+        with mock.patch("relaylib.gitops.ci_for_code", return_value="green"), \
+                mock.patch("relaylib.owneractions.github_repo", return_value="owner/project"):
+            self.assertEqual(self.act(ref, "merge", "--relayed"), 0, self.err)
+        lines = self.gh_log().splitlines()
+        merged = next(i for i, l in enumerate(lines) if l.startswith("pr merge 7"))
+        self.assertEqual(lines[merged + 1], "pr comment 7 -R owner/project --body Merged by the owner, relayed by "
+                                            "claude session hub1 from the relay hub")
+        self.assertEqual(self.err, "")
+
+    def test_a_failed_comment_does_not_hide_the_merge_nor_does_a_failed_log(self):
+        from relaylib import hub
+        self.ready()
+        ref = self.digest(["merge"])
+        api = os.path.join(self.tmp, "api.json")
+        helpers.write(api, json.dumps({"pr comment": {"__rc": 1}}))
+        os.makedirs(hub.folder(), exist_ok=True)
+        helpers.write(os.path.join(hub.folder(), "log.jsonl"), "")
+        os.chmod(os.path.join(hub.folder(), "log.jsonl"), 0o400)
+        with mock.patch("relaylib.gitops.ci_for_code", return_value="green"), \
+                mock.patch("relaylib.owneractions.github_repo", return_value="owner/project"), \
+                mock.patch.dict(os.environ, {"FAKE_GH_API": api}):
+            self.assertEqual(self.act(ref, "merge", "--relayed"), 0, self.err)
+        self.assertIn("pr merge 7", self.gh_log())
+        self.assertIn("PR #7 is merged, but the comment recording who relayed it could not be posted", self.err)
+        self.assertIn("could not write the hub log", self.err)
+
+    def test_merge_is_refused_when_github_is_unknown(self):
+        self.ready()
+        ref = self.digest(["merge"])
+        api = os.path.join(self.tmp, "api.json")
+        helpers.write(api, json.dumps({"pr view": {"__rc": 1}}))
+        with mock.patch.dict(os.environ, {"FAKE_GH_API": api}):
+            self.assertEqual(self.act(ref, "merge", "--relayed"), 1)
+        self.assertNotIn("pr merge", self.gh_log())
+
+    def test_reviews_go_to_their_own_stage(self):
+        from relaylib import reviewjobs
+        calls = []
+
+        class Job:
+            spec = {"provider": "codex", "model": "m"}
+
+            def run(self):
+                return {"ok": True, "message": "spec GO from codex"}
+
+        def prepare(repo, slug, seen, reviewer, relayed_by, stage):
+            calls.append((stage, relayed_by))
+            return Job()
+        for action in ("review", "review-spec", "review-plan"):
+            ref = self.digest([action])
+            with mock.patch.object(reviewjobs, "prepare", prepare), \
+                    mock.patch.object(reviewjobs, "spec_id", return_value="codex:m"):
+                self.assertEqual(self.act(ref, action, "--relayed"), 0, self.err)
+        self.assertEqual(calls, [("build", "claude session hub1"), ("spec", "claude session hub1"),
+                                 ("plan", "claude session hub1")])
 
 
 class ReviewActionTest(unittest.TestCase):

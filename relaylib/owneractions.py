@@ -132,7 +132,7 @@ def _validate(repo, slug, action, seen):
     return fresh, st
 
 
-def run_override(repo, slug, action, seen):
+def run_override(repo, slug, action, seen, relayed_by=None):
     if action not in ("go", "extra-round", "reset-rounds", "release"):
         raise RelayError("unknown override")
     with action_lock():
@@ -144,7 +144,7 @@ def run_override(repo, slug, action, seen):
                 gitops.git(repo, "worktree", "add", "--detach", work, fresh["commit"])
                 created = True
                 from .commands import apply_override
-                message = apply_override(work, slug, st, action)
+                message = apply_override(work, slug, st, action, relayed_by)  # recorded, no PR comment (D11)
                 state.write_state(state.state_path(work, slug), st)
                 ciskip.commit(work, slug, st, config.load(work), message)  # the worktree goes if the push fails
                 gitops.git(work, "push", "origin", f"HEAD:refs/heads/{fresh['branch']}")
@@ -189,7 +189,9 @@ def merge_readiness(repo, st, seen):
     return info
 
 
-def merge(repo, slug, seen):
+def merge(repo, slug, seen, relayed_by=None):
+    """Merge a ready PR. With relayed_by (a hub), a PR comment records who passed the decision on: the merge
+    deletes the branch, so the feature's state cannot (mobile-hub D6)."""
     with action_lock():
         fresh, st = _validate(repo, slug, "merge", seen)
         info = merge_readiness(repo, st, fresh)
@@ -198,4 +200,17 @@ def merge(repo, slug, seen):
             result = gitops.run([os.environ.get("RELAY_GH_BIN", "gh"), "pr", "merge", str(info["number"]),
                                  "-R", remote, "--merge", "--match-head-commit", seen["pr_head"],
                                  "--delete-branch"], outside, timeout=gitops.GH_TIMEOUT_S)
-        return {"message": (result.stdout or result.stderr).strip() or f"Merged PR #{info['number']}"}
+            done = {"message": (result.stdout or result.stderr).strip() or f"Merged PR #{info['number']}"}
+            if relayed_by:
+                try:
+                    note = gitops.run([os.environ.get("RELAY_GH_BIN", "gh"), "pr", "comment", str(info["number"]),
+                                       "-R", remote, "--body",
+                                       f"Merged by the owner, relayed by {relayed_by} from the relay hub"],
+                                      outside, check=False, timeout=gitops.GH_TIMEOUT_S)
+                    why = ((note.stderr or "").strip() or f"exit {note.returncode}") if note.returncode else None
+                except (RelayError, OSError) as e:
+                    why = str(e)
+                if why:
+                    done["warning"] = (f"PR #{info['number']} is merged, but the comment recording who relayed "
+                                       f"it could not be posted: {why}")
+        return done
