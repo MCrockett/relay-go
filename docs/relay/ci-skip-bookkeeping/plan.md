@@ -142,7 +142,7 @@ Files: `relaylib/commands.py` (`Ctx.save`, `cmd_new`, `cmd_adopt`, `cmd_take`), 
   - in a repo whose base has a required check: the build `relay submit` commit is marked, the build GO commit is not, a NO-GO commit is, a `relay handoff` while `ready-to-merge` is not;
   - in a repo without required checks, the build GO commit is marked;
   - with origin rejecting pushes (`pre-receive` hook): `Ctx.save` with a best-effort push, and with `push="required"` (an override), leaves the local commit unmarked and reports the push failure as today. The same holds for `relay new` and `relay take`;
-  - with origin unreachable: the commit keeps its marker (D7 cannot tell whether the push landed) and the push failure is reported as today;
+  - with origin made unreachable after the decision and the commit (a patched `gitops.push`, or `ciskip.unmark`'s `ls-remote`, sees the renamed origin; the command's initial fetch and `marker_ok` see it reachable): the commit keeps its marker (D7 cannot tell whether the push landed) and the push failure is reported as today;
   - R10 at the command level: with the fake `gh` failing every `api` call, and separately with a patched git failure inside `ciskip`, `relay submit` succeeds and its commit carries no marker.
 - [ ] Implement: each site computes `marker_ok`, passes `skip_ci`, and on a failed push calls `ciskip.unmark` before warning or raising. Run `tests.test_commands`; commit.
 
@@ -179,11 +179,12 @@ Covers: R8, R9.
 
 - [ ] Run the full suite: `python3.11 -m unittest discover -s tests -t . -v`.
 - [ ] Push, open the PR, and wait for CI.
-- [ ] On this PR (public repo, so free). The results go in the Build notes section of `docs/relay/ci-skip-bookkeeping/plan.md`. The probes are empty commits (`git commit --allow-empty`), so they touch no files:
-  - push an empty commit `chore: CI probe, marked` with body `[skip ci]` and confirm with `gh run list --branch feat/ci-skip-bookkeeping` that no workflow run starts;
-  - push an empty commit `chore: CI probe, unmarked` and confirm runs start. GitHub sees it as a new head, which is what the probe needs;
-  - make a marked empty commit and then an unmarked one, push both in one push, and record whether the push and PR workflows start (F7).
-  The branch's head is unmarked before `relay submit`.
+- [ ] On this PR (public repo, so free). The results go in the Build notes section of `docs/relay/ci-skip-bookkeeping/plan.md`. The probe file is `tests/fixtures/ci-probe.txt`, outside `docs/relay/`. It is added by one probe and removed by another, so the PR's net diff is unchanged.
+  - Marked probe: an empty commit `chore: CI probe, marked` with body `[skip ci]`, pushed alone. Confirm with `gh run list --branch feat/ci-skip-bookkeeping` that no run starts.
+  - Code probe: a commit `test: CI probe adds a fixture` that adds `tests/fixtures/ci-probe.txt` (one line), unmarked, pushed alone. Confirm a run starts.
+  - Mixed probe (F7): a marked empty commit, then an unmarked commit `test: CI probe removes the fixture` that deletes `tests/fixtures/ci-probe.txt`, pushed together in one push. Record whether the PR workflow starts.
+  - Limitation, recorded separately: this repo's `test.yml` runs push workflows only on `develop` and `main`. So these probes observe the `pull_request` workflow only, and the absence of a push run on the feature branch says nothing about the marker. Push-workflow behaviour for a marked push (and F7's push half) stays as documented by GitHub, not observed here.
+  - The branch's head is unmarked before `relay submit`.
 
 ## Build notes
 
