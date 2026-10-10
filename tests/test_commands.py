@@ -1877,6 +1877,183 @@ done
             self.assertEqual(self.relay("submit"), 0, self.last_err)
         self.assertFalse(self.marked("relay: plan GO (codex)"))
 
+    # ---- ci-on-submit R3, R4, R5, R7, R9, R15
+
+    SKIPPED = ({"status": "completed", "conclusion": "skipped"},)
+    REFUSED = ({"id": 9, "status": "completed", "conclusion": "failure", "app": {"slug": "github-actions"},
+                "output": {"annotations_count": 1}},)
+    BILLING = [{"annotation_level": "failure", "message": "The job was not started because of billing"}]
+
+    def gh_api(self, **extra):
+        table = {"rules/branches/": [], "/branches/": {"protection": {}}}
+        table.update({k.replace("_", " "): v for k, v in extra.items()})
+        path = os.path.join(self.tmp, "api.json")
+        helpers.write(path, json.dumps(table))
+        os.environ["FAKE_GH_API"] = path
+
+    def draft(self, runs=({"status": "completed", "conclusion": "success"},), **api):
+        self.gh_api(**api)
+        os.environ["FAKE_GH_LOG"] = os.path.join(self.tmp, "gh.log")
+        self.small_change()
+        self.pr(runs, isDraft=True)
+
+    def gh_calls(self, prefix="pr ready"):
+        path = os.environ["FAKE_GH_LOG"]
+        if not os.path.exists(path):
+            return []
+        with open(path) as f:
+            return [line for line in f.read().splitlines() if line.startswith(prefix)]
+
+    def count(self, subject):
+        return helpers.sh(self.work, "git", "log", "--format=%s").splitlines().count(subject)
+
+    def unchanged(self, head):
+        st = self.st("tiny")
+        self.assertEqual((st["status"], st["rounds"].get("build", 0)), ("drafting", 0))
+        self.assertNotIn("submit build", helpers.sh(self.work, "git", "log", "--format=%s", f"{head}..HEAD"))
+
+    def test_a_draft_without_results_is_marked_ready_and_waits(self):
+        self.draft(self.SKIPPED)
+        head = self.head()
+        self.assertEqual(self.relay("submit"), 1)
+        self.assertIn("PR #7 is now ready for review and CI has started", self.last_err)
+        self.assertIn("gh pr checks 7 --watch", self.last_err)
+        self.assertEqual(self.gh_calls(), ["pr ready 7"])
+        self.assertEqual(self.head(), head)
+        self.unchanged(head)
+
+    def test_a_draft_with_green_code_marks_the_head_then_ready_then_reviews(self):
+        self.draft()
+        seen = []
+        real = gitops.pr_ready
+
+        def ready(root, pr, undo=False):
+            seen.append(helpers.sh(self.work, "git", "ls-remote", "origin", "refs/heads/" + self.st("tiny")["branch"]).split()[0])
+            return real(root, pr, undo)
+        self.enqueue_codex("GO")
+        with mock.patch.object(gitops, "pr_ready", side_effect=ready):
+            self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertEqual(self.st("tiny")["status"], "ready-to-merge")
+        self.assertTrue(self.marked("relay: mark PR ready"))
+        mark = helpers.sh(self.work, "git", "log", "-1", "--format=%H", "--grep=relay: mark PR ready").strip()
+        self.assertEqual(seen, [mark])                                              # pushed before ready
+        self.assertEqual(self.count("relay: mark PR ready"), 1)
+
+    def test_a_draft_whose_head_is_already_marked_gets_no_extra_commit(self):
+        self.draft()
+        helpers.sh(self.work, "git", "commit", "-q", "--allow-empty", "-m", "relay: earlier", "-m", "[skip ci]")
+        helpers.sh(self.work, "git", "push", "-q")
+        self.pr(isDraft=True)
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertEqual(self.count("relay: mark PR ready"), 0)
+        self.assertEqual(self.gh_calls(), ["pr ready 7"])
+
+    def test_a_draft_without_ci_when_ci_is_not_required(self):
+        self.draft(())
+        helpers.write(os.path.join(self.work, "docs/relay/config.toml"), "[build]\nrequire_ci = false\n")
+        helpers.sh(self.work, "git", "add", "docs/relay/config.toml")
+        helpers.sh(self.work, "git", "commit", "-q", "-m", "config")
+        helpers.sh(self.work, "git", "push", "-q")
+        self.pr((), isDraft=True)
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertEqual(self.gh_calls(), ["pr ready 7"])
+        self.assertEqual(self.st("tiny")["status"], "ready-to-merge")
+
+    def test_a_draft_whose_last_run_github_refused(self):
+        self.draft(self.REFUSED, **{"check-runs/9/annotations": self.BILLING})
+        head = self.head()
+        self.assertEqual(self.relay("submit"), 1)
+        self.assertIn("CI has started", self.last_err)
+        self.assertIn("not started by GitHub (billing)", self.last_err)
+        self.assertEqual(self.gh_calls(), ["pr ready 7"])
+        self.unchanged(head)
+
+    def test_billing_recovery_on_a_ready_pr(self):
+        self.draft(self.REFUSED, **{"check-runs/9/annotations": self.BILLING})
+        self.pr(self.REFUSED, isDraft=False)
+        self.assertEqual(self.relay("submit"), 1)
+        self.assertIn("GitHub did not start CI", self.last_err)
+        self.assertIn("Billing and plans", self.last_err)
+        self.assertEqual(self.gh_calls(), [])
+        self.pr(isDraft=False)                                                      # the rerun passed
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertEqual(self.st("tiny")["status"], "ready-to-merge")
+
+    def test_a_failed_ready_records_nothing_and_retries(self):
+        self.draft(**{"pr_ready": {"__rc": 1}})
+        head = self.head()
+        self.assertEqual(self.relay("submit"), 1)
+        self.assertIn("could not mark PR #7 ready", self.last_err)
+        self.assertIn("HTTP 500", self.last_err)
+        self.unchanged(head)
+        self.assertEqual(self.count("relay: mark PR ready"), 1)
+        self.assertEqual(self.relay("submit"), 1)
+        self.assertEqual(self.count("relay: mark PR ready"), 1)                     # no second commit
+        self.assertEqual(self.gh_calls(), ["pr ready 7", "pr ready 7"])
+        self.unchanged(head)
+
+    def test_github_marked_it_ready_but_the_reply_was_lost(self):
+        self.draft(**{"pr_ready": {"__rc": 1}})
+        self.assertEqual(self.relay("submit"), 1)
+        self.gh_api()
+        self.pr(isDraft=False)
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertEqual(self.gh_calls(), ["pr ready 7"])
+        self.assertEqual(self.count("relay: mark PR ready"), 1)
+        self.assertEqual(self.st("tiny")["status"], "ready-to-merge")
+
+    def test_a_rejected_mark_ready_push(self):
+        self.draft()
+        head = self.head()
+        self.reject_pushes()
+        self.assertEqual(self.relay("submit"), 1)
+        self.assertIn("push failed", self.last_err)
+        self.assertFalse(self.marked("relay: mark PR ready"))                        # unmarked (D7)
+        self.assertEqual(self.gh_calls(), [])
+        self.unchanged(head)
+
+    def test_a_mark_ready_push_that_landed_but_reported_failure(self):
+        self.draft()
+        real = gitops.push
+
+        def landed(root, branch):
+            real(root, branch)
+            raise RelayError("push failed, so this change is not published: connection reset")
+        with mock.patch.object(gitops, "push", side_effect=landed):
+            self.assertEqual(self.relay("submit"), 1)
+        self.assertTrue(self.marked("relay: mark PR ready"))                         # origin has it: kept
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertEqual(self.count("relay: mark PR ready"), 1)
+        self.assertEqual(self.gh_calls(), ["pr ready 7"])
+
+    def test_a_ready_pr_is_not_touched(self):
+        self.draft()
+        self.pr(isDraft=False)
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertEqual(self.gh_calls(), [])
+        self.assertEqual(self.count("relay: mark PR ready"), 0)
+
+    def test_failing_ci_at_submit_turns_the_pr_back_into_a_draft(self):
+        failing = ({"status": "completed", "conclusion": "failure"},)
+        self.draft(failing)
+        self.pr(failing, isDraft=False)
+        self.assertEqual(self.relay("submit"), 1)
+        self.assertIn("CI is failing", self.last_err)
+        self.assertEqual(self.gh_calls(), ["pr ready 7 --undo"])
+        self.assertTrue(json.load(open(self.gh_json))["isDraft"])
+        self.gh_api(**{"pr_ready_7_--undo": {"__rc": 1}})
+        self.pr(failing, isDraft=False)
+        self.assertEqual(self.relay("submit"), 1)
+        self.assertIn("CI is failing", self.last_err)
+        warnings = [line for line in self.last_err.splitlines() if "could not turn PR #7 back into a draft" in line]
+        self.assertEqual(len(warnings), 1)
+
 if __name__ == "__main__":
     unittest.main()
 

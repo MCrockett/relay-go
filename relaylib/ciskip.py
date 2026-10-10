@@ -88,7 +88,7 @@ def unmark(root, branch, sha):
             return False
         message = gitops.git(root, "log", "-1", "--format=%B", sha).stdout
         kept = "\n".join(line for line in message.splitlines() if line.strip() != gitops.SKIP_CI).strip()
-        gitops.git(root, "commit", "--amend", "--only", "-q", "-m", kept)
+        gitops.git(root, "commit", "--amend", "--only", "--allow-empty", "-q", "-m", kept)
         return True
     except Exception:
         return False
