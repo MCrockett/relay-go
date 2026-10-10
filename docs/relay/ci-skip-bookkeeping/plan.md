@@ -188,4 +188,12 @@ Covers: R8, R9.
 
 ## Build notes
 
-(Filled in during Task 8.)
+R9 manual checks on PR #16, 2026-10-09. Runs were listed with `gh run list --branch feat/ci-skip-bookkeeping`.
+
+- Marked probe `6996e5b` (`chore: CI probe, marked`, body `[skip ci]`, pushed alone): no workflow run started.
+- Code probe `b4e5b1e` (`test: CI probe adds a fixture`, adds `tests/fixtures/ci-probe.txt`, unmarked, pushed alone): a `pull_request` run started.
+- Mixed probe: marked `8c4e163`, then unmarked `6a01b24` (`test: CI probe removes the fixture`), pushed together. A `pull_request` run started for `6a01b24`: a marked commit inside the push does not stop the PR workflow when the head is unmarked, as the spec expected (F7).
+- Limitation: this repo's `test.yml` runs push workflows only on `develop` and `main`. So these probes observed the `pull_request` workflow only. Push-workflow behaviour for a push carrying a marked commit is not observed here; D7 keeps relay from making such pushes either way.
+- Net diff of the probes: none (the fixture is added and removed). The branch head after the probes is unmarked.
+
+Deviation from the plan's file list: the dashboard review tests (Task 6) live in `tests/test_commands.py`, next to the existing owner-requested review tests and their fixture, rather than in `tests/test_reviewjobs.py`. The dashboard override tests are in `tests/test_owneractions.py` as planned. `config.example.toml` also documents `skip_ci`.
