@@ -734,9 +734,11 @@ def cmd_override(args):
         print(f"relay: {result['message']}")
         return 0
     st, stage = c.st, c.st["stage"]
-    message = apply_override(c.root, c.slug, st, args.action, relayed_by)
-    note = f" (relayed by {relayed_by})" if relayed_by else ""
-    c.save(message, push="required")
+    from . import owneractions
+    with owneractions.action_lock():  # one owner action at a time, with the dashboard and the hub (mobile-hub D7)
+        message = apply_override(c.root, c.slug, st, args.action, relayed_by)
+        note = f" (relayed by {relayed_by})" if relayed_by else ""
+        c.save(message, push="required")
     if relayed_by and st.get("pr"):  # make a relayed decision visible where the owner merges
         try:
             gitops.pr_comment(c.root, st["pr"], f"relay: owner decision `override {args.action}` on {stage}, "

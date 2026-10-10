@@ -1,9 +1,11 @@
 """Owner actions bound to published revisions, isolated from session worktrees."""
 import contextlib
+import fcntl
 import os
 import re
 import tempfile
 import threading
+import time
 
 from . import ciskip, config, freshness, gitops, state
 from .errors import RelayError
@@ -83,12 +85,38 @@ def applicable(st):
     return actions
 
 
+BUSY = "busy: another owner action is running"
+
+
+def _lock_path():
+    return os.path.join(config.relay_home(), "owner-action.lock")
+
+
 @contextlib.contextmanager
-def action_lock():
-    if not ACTION_LOCK.acquire(blocking=False):
-        raise Conflict("busy: another owner action is running")
+def action_lock(wait=0, busy=BUSY):
+    """One owner action at a time across processes (mobile-hub D7): the thread lock covers the dashboard's own
+    threads, the flock every relay process. `wait` seconds of retrying before refusing with `busy`."""
+    deadline = time.monotonic() + wait
+    if not (ACTION_LOCK.acquire(timeout=wait) if wait > 0 else ACTION_LOCK.acquire(blocking=False)):
+        raise Conflict(busy)
     try:
-        yield
+        os.makedirs(config.relay_home(), exist_ok=True)
+        fd = os.open(_lock_path(), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise Conflict(busy)
+                    time.sleep(0.1)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
     finally:
         ACTION_LOCK.release()
 

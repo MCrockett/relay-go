@@ -18,6 +18,8 @@ LOADED_AT = time.time()  # the dashboard shows jobs since its server started (R1
 _JOBS, _JOBS_LOCK = {}, threading.Lock()  # running background jobs: thread -> Job
 _STOPPING = threading.Event()  # set by shutdown: no new jobs, and nothing publishes after it
 STOPPED = "the dashboard stopped during the review; nothing was published"
+KEPT_LOCK = "another owner action kept the lock; nothing was published. Request again."
+PUBLISH_WAIT_S = 60
 
 
 def spec_id(spec):
@@ -270,15 +272,12 @@ def _run(job):
                 if c.st["verdicts"].get(stage) != "GO":
                     break
             branch = job.seen["branch"]
-            if not owneractions.ACTION_LOCK.acquire(timeout=60):  # held only to publish, never while reviewing
-                raise RelayError("another owner action kept the lock; nothing was published. Request again.")
-            try:
+            # held only to publish, never while reviewing; across processes (mobile-hub D7)
+            with owneractions.action_lock(wait=PUBLISH_WAIT_S, busy=KEPT_LOCK):
                 if job.stopped or _STOPPING.is_set():  # a review that finished during shutdown publishes nothing
                     raise RelayError(STOPPED)
                 push = gitops.network_git(work, "push", f"--force-with-lease=refs/heads/{branch}:{job.seen['commit']}",
                                           "origin", f"HEAD:refs/heads/{branch}")
-            finally:
-                owneractions.ACTION_LOCK.release()
             if push.returncode:
                 raise RelayError("the branch moved during the review; nothing was published. Request again.")
             for action in c.pending:

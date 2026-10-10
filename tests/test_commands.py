@@ -287,6 +287,23 @@ class CommandsTest(unittest.TestCase):
         st = self.st()
         self.assertEqual((st["stage"], st["owner_actions"][-1]["action"]), ("plan", "override go (spec)"))
 
+    def test_override_is_refused_while_another_process_holds_the_action_lock(self):
+        self.to_spec()
+        self.enqueue_codex("NO-GO", ["a - x"])
+        self.relay("submit")
+        self.enqueue_codex("NO-GO", ["id: R1-1 a - x"], [("R1-1", "unresolved")])
+        self.relay("submit")
+        for k in ("RELAY_PROVIDER", "RELAY_SESSION", "CLAUDECODE"):
+            del os.environ[k]
+        child = helpers.hold_action_lock()
+        try:
+            self.assertEqual(self.relay("override", "go"), 1)
+        finally:
+            helpers.release(child)
+        self.assertIn("busy", self.last_err)
+        self.assertEqual(self.st()["stage"], "spec")
+        self.assertEqual(self.relay("override", "go"), 0, self.last_err)
+
     def test_second_session_blocked_until_handoff(self):
         self.to_spec()
         other = helpers.clone(self.origin, os.path.join(self.tmp, "other"))
@@ -1242,6 +1259,28 @@ done
         self.assertFalse(result["ok"])
         self.assertIn("review failed", result["message"])
         self.assertEqual(self.published(), before)
+
+    def test_a_review_publishes_nothing_while_another_process_holds_the_action_lock(self):
+        from relaylib import reviewjobs
+        availability = self.fallback_build_go()
+        availability.record_out("codex", until=0)
+        before = self.published()
+        self.enqueue_codex("GO")
+        from relaylib import owneractions
+        job = reviewjobs.prepare(self.work, "tiny", owneractions.fingerprint(self.work, "tiny"))
+        child = helpers.hold_action_lock()                  # taken after the check, before the publish
+        try:
+            with mock.patch.object(reviewjobs, "PUBLISH_WAIT_S", 0.3):
+                result = job.run()
+        finally:
+            helpers.release(child)
+        self.assertFalse(result["ok"])
+        self.assertIn("another owner action kept the lock", result["message"])
+        self.assertEqual(self.published(), before)
+        self.enqueue_codex("GO")
+        result = self.request()
+        self.assertTrue(result["ok"], result["message"])
+        self.assertEqual(self.published()["status"], "ready-to-merge")
 
     def test_a_branch_that_moved_during_the_review_is_not_overwritten(self):
         from relaylib import owneractions, reviewjobs

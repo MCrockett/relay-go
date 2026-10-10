@@ -132,6 +132,36 @@ class OwnerActionsTest(unittest.TestCase):
         with self.assertRaisesRegex(RelayError, "not available"):
             owneractions.run_override(self.work, "demo", "release", self.seen())
 
+    # ---- mobile-hub D7, R13
+
+    def test_the_action_lock_is_shared_across_processes(self):
+        child = helpers.hold_action_lock()
+        try:
+            with self.assertRaisesRegex(owneractions.Conflict, "busy"):
+                with owneractions.action_lock():
+                    pass
+            with self.assertRaisesRegex(owneractions.Conflict, "busy"):
+                owneractions.run_override(self.work, "demo", "go", self.seen())
+        finally:
+            helpers.release(child)
+        with owneractions.action_lock():
+            pass
+        self.assertEqual(oct(os.stat(owneractions._lock_path()).st_mode & 0o777), "0o600")
+
+    def test_a_waiting_action_lock_gets_the_lock_once_the_other_process_lets_go(self):
+        import threading
+        child = helpers.hold_action_lock()
+        threading.Timer(0.3, helpers.release, [child]).start()
+        with owneractions.action_lock(wait=3):
+            pass
+        child2 = helpers.hold_action_lock()
+        try:
+            with self.assertRaisesRegex(owneractions.Conflict, "kept it"):
+                with owneractions.action_lock(wait=0.3, busy="kept it"):
+                    pass
+        finally:
+            helpers.release(child2)
+
     def test_creation_and_push_failures_leave_no_worktree(self):
         real_git = gitops.git
         for failure in ("worktree", "push"):
