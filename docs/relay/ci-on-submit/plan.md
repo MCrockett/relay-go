@@ -185,3 +185,10 @@ Covers: R11, R12
 Covers: R13 (all), R11 (live)
 
 ## Build notes
+
+- 2026-10-10, live check on PR #18 (Task 10):
+  - Opening the PR as a draft started a `pull_request` run whose `unit` job was skipped (head `7f48ed9`), with no billed minutes.
+  - The first `relay submit` (this branch's relay) marked the PR ready, recorded nothing, and printed the "CI has started" message. The `ready_for_review` run on `7f48ed9` passed in 3m29s.
+  - This note was committed with `relay commit`. It should carry `[skip ci]` and start no run, because origin already has the code and it passed.
+- The full suite passed locally: 703 tests.
+- Found during the build: `ciskip.unmark` could not amend the empty `relay: mark PR ready` commit, because git refuses to amend a commit into an empty one. It now passes `--allow-empty`, and the rejected-push test covers it.
