@@ -78,6 +78,17 @@
         },
         "round": 5,
         "verdict": "NO-GO"
+      },
+      {
+        "blocking_ids": [
+          "R6-1"
+        ],
+        "head": "116b559e5d3040645b725706c87bc651783fb65e",
+        "prior": {
+          "R5-1": "resolved"
+        },
+        "round": 6,
+        "verdict": "NO-GO"
       }
     ],
     "spec": [
@@ -165,8 +176,8 @@
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "in-review",
-  "updated": "2026-10-10T18:22:04-04:00",
+  "status": "waiting-owner",
+  "updated": "2026-10-10T18:22:58-04:00",
   "verdicts": {
     "plan": "NO-GO",
     "spec": "GO"
