@@ -57,7 +57,7 @@ Files: `relaylib/hub.py`, `tests/test_hub.py`.
   - The token is never returned or printed.
 - Tests:
   - A fake dashboard (a `http.server` thread in the test, serving a canned snapshot and checking the token header), with `ui.json` written in the temp RELAY_HOME. `hub.load` returns its data with `from: dashboard`. No git or gh process runs: `subprocess.run`, `gitops.run` and `snapshot.build` are patched to fail the test if called.
-  - A dashboard answering `loading: true`, one that delays its headers past the deadline, one that sends headers at once and then trickles the body a byte at a time past the deadline (deadline passed as 0.3 in the test; each fallback returns within 1 second), and a stale `ui.json` with a dead pid each fall back to `build` (patched to return canned data).
+  - A dashboard answering HTTP 500, one answering 403 (wrong token), one answering `loading: true`, one that delays its headers past the deadline, one that sends headers at once and then trickles the body a byte at a time past the deadline (deadline passed as 0.3 in the test; each fallback returns within 1 second), and a stale `ui.json` with a dead pid each fall back to `build` (patched to return canned data).
   - The token string does not appear in `repr(hub.load(...))`.
 
 Covers: R6.
@@ -101,6 +101,7 @@ Files: `relaylib/hub.py`, `tests/test_hub.py`.
 - Tests:
   - Two processes saving at the same patched millisecond with patched `secrets.choice` returning the same characters first: both saves succeed with different ids, and neither file is overwritten.
   - **Wipe test:** save digest A (item 1 = feature x) in session S; `shutil.rmtree` the hub folder; save digest B (item 1 = feature y) in session S. Resolving `A.1` is refused, and `B.1` gives y.
+  - Malformed references (`abc`, `abc.`, `.1`, `abc.x`, `abc.0`), a digest file holding invalid JSON, and an item number past the end are each refused as unknown.
   - Another session's reference is refused; one 24 hours plus one second old is refused.
   - Pruning keeps the newest 20 when all are old, and removes old ones beyond that.
   - A hub folder that cannot be written gives `(None, warning)`.
@@ -161,12 +162,13 @@ Files: `relaylib/commands.py`, `relaylib/hub.py` (`note_target`, `log`), `tests/
   1. If `--relayed` is missing, refuse with "relay hub note passes on the owner's words: run it with --relayed from the hub session" (`owner_or_relayed` alone would let the owner's terminal through). Then `owner_or_relayed(args, "relay hub note")`, which refuses `--relayed` outside an agent session.
   2. `hub.resolve(ref, my session, now)`.
   3. Session item: target its provider and id. Feature item: target its `session`, or refuse "item <n> has no session to send a note to". Refuse with "open this session to answer" when `answer_here` is set.
-  4. Check the target live, not from any snapshot (a dashboard snapshot can be up to 30 seconds old). Read the target's own session record now, from `sessions.record_path(provider, sid)`, validated with `sessions._valid`:
-     - no record, or one that cannot be read: refuse with "that session is no longer known; run relay hub again";
-     - state `permission`: refuse with the answer-here message;
-     - state `waiting`: post to the record's inbox;
-     - state `working`: refuse with "that session is working now; run relay hub again";
-     - state `ended`, or a session `sessions.alive` reports not running: queue with no inbox.
+  4. Two checks, both current:
+     - **Still listed (D5).** Load the snapshot with `hub.load` and require the target among `other_sessions`, `running`, or the session of a feature row's `answer` or `approve` ask. Otherwise refuse with "that session is no longer listed; run relay hub again". This is the same eligibility rule `snapshot.send_note` applies (`_listed`), extended to feature sessions.
+     - **Its state now.** A dashboard snapshot can be up to 30 seconds old, so the permission and running checks also read the target's own session record from `sessions.record_path(provider, sid)`, validated with `sessions._valid`:
+       - no record, or one that cannot be read: refuse with "that session is no longer known; run relay hub again";
+       - state `permission`: refuse with the answer-here message;
+       - state `waiting` or `working`: post to the record's inbox; a working session gets the note as it does from the dashboard;
+       - state `ended`, or a session `sessions.alive` reports not running: queue with no inbox.
   5. Send with `notes.send(provider, sid, text, inbox, prefix=f"Note from the owner, relayed by {relayed_by} from the relay hub:")`. `notes.send` applies session-notify's text checks (not empty, at most 2,000 characters).
   6. Print "posted to <label>", "queued for <label>'s next prompt", or the not-recorded warning.
   7. Every attempt that gets past argument parsing is logged, refusals and failures included. The handler wraps steps 1 to 6 in `try`/`finally` and logs `result` as `posted`, `queued`, `posted, not recorded` or `refused: <message>`.
@@ -174,7 +176,8 @@ Files: `relaylib/commands.py`, `relaylib/hub.py` (`note_target`, `log`), `tests/
 - Tests:
   - refused without `--relayed` from an agent env, and from the owner env (the terminal case `owner_or_relayed` alone would allow);
   - refused with `--relayed` and the owner env;
-  - live checks after a cached snapshot: the digest saw the session waiting, then its record changes to `permission` (refused, answer-here), to `working` (refused), is deleted (refused), or becomes `ended` (queued);
+  - live checks after a cached snapshot: the digest saw the session waiting, then its record changes to `permission` (refused, answer-here), to `working` while it is still in `running` (posted to its inbox), is deleted (refused), or becomes `ended` (queued);
+  - a session whose record is still valid and waiting but has aged out of the fresh snapshot's lists (past `other_sessions_hours`, so in neither `other_sessions` nor `running`) is refused as no longer listed;
   - empty text and 2,001 characters are refused with session-notify's messages;
   - posted but not recorded: `os.replace` in `notes` patched to fail after a successful post prints the not-recorded warning (the matching `notes.send` cases are already covered in `tests/test_notes.py`; these tests check the hub command reports them);
   - a refusal writes a log line with `refused: ...`;
