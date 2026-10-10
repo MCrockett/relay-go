@@ -30,11 +30,9 @@
   2. find the ref: `origin/<branch>` if it exists, else `origin/<base>`, where base is the PR's `baseRefName` when `pr` is set, else `develop`; none exists means False;
   3. code equality with that ref;
   4. `ci_for_code(root, "HEAD", prefix)` in `green`, `failing` or `pending`;
-  5. only when `status == "ready-to-merge"`, `required_checks`. Any required check means False.
-
-  For any other status, required checks do not matter (D10), so no API calls are made for them.
+  5. `required_checks`, for every status. A failed call means False whatever the status (D4, D9). A successful answer with a required check means False only when `status == "ready-to-merge"` (D10).
 - **`required_checks(root, branches)`.** Branches are `[baseRefName]` when there is a PR, else `["develop", "main"]`. A branch with no local `origin/<branch>` ref is skipped, which is D4's "does not exist on origin". relay fetches before every write, so the remote refs are current. For each remaining branch it calls `gitops.gh_json(root, ["api", f"repos/{{owner}}/{{repo}}/rules/branches/{b}"])` and `gitops.gh_json(root, ["api", f"repos/{{owner}}/{{repo}}/branches/{b}"])` and applies D4's tests. Any `RelayError` propagates and becomes False in `marker_ok`.
-- **Marked commits in `ci_for_code`.** One `git log --format=%H%x00%B%x01` over the candidate range gives every message. A candidate is marked when its message contains `[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]` or `[actions skip]`, or has a `skip-checks: true` trailer: GitHub's documented markers, none of which leave a push or PR run on that commit. Marked candidates are passed over without a `gh` call, and `limit` counts only candidates actually asked.
+- **Marked commits in `ci_for_code`.** One `git log --format=%H%x00%B%x01` over the candidate range gives every message. A candidate is marked when a line of its message is exactly `[skip ci]`, the spec's marker (D1). Marked candidates are passed over without a `gh` call, and `limit` counts only candidates actually asked.
 - **Cancelled checks (D8).** `gitops.ci_state(info, cancelled="failing")` keeps today's behaviour for its other callers. `ci_for_code` reads candidates through `commit_ci_state(root, sha, cancelled="skip")`. In that mode a candidate is:
   - `failing` when any completed check failed for a reason other than `CANCELLED`;
   - otherwise `pending` when any check is pending;
@@ -58,6 +56,7 @@
   - `relay new`, `relay adopt` and `relay take` call `config.load(root)`, already loaded as `c.cfg` where a `Ctx` exists.
   - `owneractions.run_override` calls `config.load(work)` in its worktree.
 - **The dashboard review's push.** `reviewjobs._run` pushes the whole chain with one lease push. A spec or plan re-review chain can make two commits, and neither is ever `ready-to-merge`. A build review makes one commit. So a single push never mixes a marked commit with the unmarked GO commit in the D10 case.
+- **A rejected push in tests.** The bare origin gets a `hooks/pre-receive` that exits 1. The push fails, while `ls-remote` still works and shows that origin lacks the commit. An unreachable origin (its path renamed) makes both fail.
 - **Fake `gh`.** `FAKE_GH` in `tests/helpers.py` gains `FAKE_GH_API`, a JSON file mapping a path substring to either a response object or `{"__rc": 1}` (exit 1 with a message). It is checked before the existing fallbacks, so every current test keeps its behaviour.
 
 ## Review Focus
@@ -103,7 +102,7 @@ Files: `relaylib/config.py`, `relaylib/commands.py` (`cmd_roles` output), `tests
 
 ### Task 3: The decision
 
-Covers: R1, R10, and D10 at the function level.
+Covers: R1, R10 (function level; the command level is in Task 5), and D10 at the function level.
 
 Files: `relaylib/ciskip.py` (new), `tests/helpers.py` (`FAKE_GH_API`), `tests/test_ciskip.py` (new).
 
@@ -111,10 +110,9 @@ Files: `relaylib/ciskip.py` (new), `tests/helpers.py` (`FAKE_GH_API`), `tests/te
   - true when everything holds (code pushed, green CI, no required checks) for status `review`, and for `ready-to-merge` with no required checks;
   - false for each condition alone: `never`; local code ahead of `origin/<branch>`; no `origin/<branch>` with code differing from `origin/develop`; neither ref; `ci_for_code` `none`;
   - with a ruleset requiring checks: false for `ready-to-merge`, true for `review`, `author` and `waiting-owner`. The same four results hold with classic protection requiring checks (non-empty `contexts`, non-empty `checks`, and `enforcement_level` `everyone`), while `enforcement_level` `off` with empty lists counts as no requirement;
-  - a failing rules call or branch call gives false for `ready-to-merge`;
+  - a failing rules call, and separately a failing branch call, gives false for `review`, `author`, `waiting-owner` and `ready-to-merge`;
   - a branch with no `origin/<branch>` is skipped (only `develop` checked when `main` is missing);
   - with a PR, only its base is checked;
-  - for status `review`, the fake `gh` log shows no `rules` or `branches` call;
   - an exception from git inside the function (patched `gitops.git` raising) gives false and does not raise.
 - [ ] Implement `marker_ok` and `required_checks`. Run; commit.
 
@@ -125,16 +123,16 @@ Covers: R6 at the function level.
 Files: `relaylib/ciskip.py`, `tests/test_ciskip.py`.
 
 - [ ] Failing tests:
-  - after a marked commit and a failed push (origin path made unreachable), `unmark` leaves subject and tree unchanged, removes the marker and keeps staged changes staged;
+  - after a marked commit and a push rejected by origin's `pre-receive` hook, `unmark` leaves subject and tree unchanged, removes the marker and keeps staged changes staged;
   - no change when HEAD moved after the commit;
   - no change when origin already has the commit, which simulates a push that landed but lost its answer;
-  - no change when `ls-remote` fails;
+  - no change when `ls-remote` fails (origin unreachable);
   - no exception in any case.
 - [ ] Implement; run; commit.
 
 ### Task 5: Command commit sites
 
-Covers: R3, R6.
+Covers: R3, R6, R10.
 
 Files: `relaylib/commands.py` (`Ctx.save`, `cmd_new`, `cmd_adopt`, `cmd_take`), `tests/test_commands.py`.
 
@@ -143,7 +141,9 @@ Files: `relaylib/commands.py` (`Ctx.save`, `cmd_new`, `cmd_adopt`, `cmd_take`), 
   - with an unpushed code commit, no marker;
   - in a repo whose base has a required check: the build `relay submit` commit is marked, the build GO commit is not, a NO-GO commit is, a `relay handoff` while `ready-to-merge` is not;
   - in a repo without required checks, the build GO commit is marked;
-  - with origin unreachable after the commit: `Ctx.save` with a best-effort push and with `push="required"` (an override) leaves the local commit unmarked and reports the push failure as today; the same for `relay new` and `relay take`.
+  - with origin rejecting pushes (`pre-receive` hook): `Ctx.save` with a best-effort push, and with `push="required"` (an override), leaves the local commit unmarked and reports the push failure as today. The same holds for `relay new` and `relay take`;
+  - with origin unreachable: the commit keeps its marker (D7 cannot tell whether the push landed) and the push failure is reported as today;
+  - R10 at the command level: with the fake `gh` failing every `api` call, and separately with a patched git failure inside `ciskip`, `relay submit` succeeds and its commit carries no marker.
 - [ ] Implement: each site computes `marker_ok`, passes `skip_ci`, and on a failed push calls `ciskip.unmark` before warning or raising. Run `tests.test_commands`; commit.
 
 ### Task 6: Dashboard commit sites
@@ -179,11 +179,11 @@ Covers: R8, R9.
 
 - [ ] Run the full suite: `python3.11 -m unittest discover -s tests -t . -v`.
 - [ ] Push, open the PR, and wait for CI.
-- [ ] On this PR (public repo, so free), and recorded in Build notes below:
-  - push an empty commit whose body is `[skip ci]` and confirm no workflow run starts;
-  - push an unmarked code commit and confirm runs start;
-  - push a marked commit followed by a code commit in one push, and record whether the push and PR workflows start (F7).
-  Leave the branch with an unmarked code head before `relay submit`.
+- [ ] On this PR (public repo, so free). The results go in the Build notes section of `docs/relay/ci-skip-bookkeeping/plan.md`. The probes are empty commits (`git commit --allow-empty`), so they touch no files:
+  - push an empty commit `chore: CI probe, marked` with body `[skip ci]` and confirm with `gh run list --branch feat/ci-skip-bookkeeping` that no workflow run starts;
+  - push an empty commit `chore: CI probe, unmarked` and confirm runs start. GitHub sees it as a new head, which is what the probe needs;
+  - make a marked empty commit and then an unmarked one, push both in one push, and record whether the push and PR workflows start (F7).
+  The branch's head is unmarked before `relay submit`.
 
 ## Build notes
 
