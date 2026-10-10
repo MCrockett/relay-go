@@ -415,3 +415,81 @@ def digest(session, records=None, as_json=False, now=None):
     if as_json:
         return render_json(digest_id, source, found, c, warnings), []
     return render_text(digest_id, source, found, c, now), warnings
+
+
+# ---------------------------------------------------------------- passing on the owner's words (D5, D6)
+
+NOT_LISTED = "that session is no longer listed; run relay hub again"
+NOT_KNOWN = "that session is no longer known; run relay hub again"
+
+
+def prefix(relayed_by):
+    return f"Note from the owner, relayed by {relayed_by} from the relay hub:"
+
+
+def note_target(item):
+    """(provider, session_id, label) a note to this item goes to, or RelayError (D5, D8)."""
+    if item["kind"] == "session":
+        target = (item["provider"], item["session_id"], item.get("label") or item["session_id"])
+    elif item["kind"] == "feature" and item.get("session"):
+        s = item["session"]
+        target = (s["provider"], s["session_id"], s.get("label") or item["slug"])
+    else:
+        raise RelayError(f"item {item['n']} has no session to send a note to")
+    if item.get("answer_here"):
+        raise RelayError(f"item {item['n']}: {ANSWER_HERE}")
+    return target
+
+
+def _feature_claims(item, session_id):
+    from . import owneractions
+    from .ui import snapshot
+    try:
+        repo = snapshot.allowed_repo(item["repo_path"])
+        fresh = owneractions.fingerprint(repo, item["slug"])  # fetches: a change pushed elsewhere is seen
+    except (RelayError, OSError, KeyError, TypeError) as e:
+        raise RelayError(f"could not confirm the feature still names that session: {e}")
+    return (fresh.get("owner") or {}).get("session") == session_id and "done" not in (fresh.get("stage"),
+                                                                                       fresh.get("status"))
+
+
+def deliverable(item, provider, session_id, now=None):
+    """The inbox to post to, or None to queue, for a target that is listed and answerable right now; RelayError
+    otherwise. Never from a dashboard cache: the records are read here (D5, R8)."""
+    from . import config, leftoff, othersessions, sessions, status
+    now = time.time() if now is None else now
+    try:
+        with open(sessions.record_path(provider, session_id)) as f:
+            record = json.load(f)
+    except (OSError, ValueError):
+        raise RelayError(NOT_KNOWN)
+    if not sessions._valid(record) or (record["provider"], record["session_id"]) != (provider, session_id):
+        raise RelayError(NOT_KNOWN)
+    if record["state"] == "permission":
+        raise RelayError(f"item {item['n']}: {ANSWER_HERE}")
+    records = sessions.read_records()
+    alive = sessions.alive(records)
+    root = status.projects_root()
+    listed = any((e["provider"], e["session_id"]) == (provider, session_id)
+                 for e in othersessions.listed(records, set(), root, config.load(), now))
+    if not listed:
+        turns = leftoff.codex_turns(records, alive, now)
+        listed = leftoff.is_running(record, alive, now, turns)
+    if not listed and item["kind"] == "feature":
+        listed = _feature_claims(item, session_id)  # a feature's own session has no age limit
+    if not listed:
+        raise RelayError(NOT_LISTED)
+    gone = leftoff._shown_state(record, alive) in ("ended", "stopped")  # as the dashboard decides (session-notify)
+    return None if gone else record.get("inbox")
+
+
+def log(entry):
+    """Append one line to the hub's action log; a warning, or None (D6, R11)."""
+    try:
+        os.makedirs(folder(), exist_ok=True)
+        fd = os.open(os.path.join(folder(), "log.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "a") as f:
+            f.write(json.dumps({"at": time.time(), **entry}) + "\n")
+        return None
+    except OSError as e:
+        return f"could not write the hub log: {e}"

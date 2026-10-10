@@ -3,10 +3,14 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
-from relaylib import hub
+from relaylib import commands, hub, notes, sessions, state
+from tests import helpers
+from tests.test_agentask import said
+from tests.test_notes import FakeInbox
 
 
 class HubHome(unittest.TestCase):
@@ -366,6 +370,201 @@ Nothing else needs you: 1 feature in progress, 1 session working.
                 out, _ = hub.digest(None, records=[], as_json=as_json)
                 self.assertNotIn(TOKEN, out)
         self.assertEqual(hub.registered(), set())
+
+
+HUB = {"provider": "claude", "session_id": "hub1"}
+
+
+class NoteTest(unittest.TestCase):  # mobile-hub D5, D6, D8, R8, R11, R12
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(dir="/tmp")  # short: macOS caps socket paths near 104 bytes
+        self.addCleanup(temp.cleanup)
+        self.tmp = temp.name
+        root = os.path.join(self.tmp, "p")
+        os.makedirs(root)
+        self.origin, made = helpers.make_repo(self.tmp)
+        self.work = os.path.join(root, "proj")
+        os.rename(made, self.work)
+        helpers.sh(self.work, "git", "switch", "-qc", "feat/demo")
+        st = state.new_state("proj", "demo", {"provider": "claude", "session": "F1"}, "feat/demo")
+        state.write_state(state.state_path(self.work, "demo"), st)
+        helpers.sh(self.work, "git", "add", ".")
+        helpers.sh(self.work, "git", "commit", "-qm", "feature")
+        helpers.sh(self.work, "git", "push", "-qu", "origin", "HEAD")
+        env = {"RELAY_HOME": os.path.join(self.tmp, "h"), "RELAY_ROOT": root, "HOME": self.tmp,
+               "CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "c"), "CODEX_HOME": os.path.join(self.tmp, "x"),
+               "CLAUDECODE": "1", "RELAY_PROVIDER": "claude", "RELAY_SESSION": "hub1",
+               "RELAY_CONFIG": os.path.join(self.tmp, "none.toml")}
+        p = mock.patch.dict(os.environ, env)
+        p.start()
+        self.addCleanup(p.stop)
+        self.now = time.time()
+
+    def record(self, sid, st="waiting", since_h=2, inbox=None, provider="claude"):
+        at = self.now - since_h * 3600
+        r = {"provider": provider, "session_id": sid, "state": st, "since": at, "at": at, "event": "Stop",
+             "pending": [], "cwd": self.work}
+        if st == "working":
+            r["at"] = self.now - 30
+        if inbox:
+            r["inbox"] = inbox
+        os.makedirs(sessions.folder(), exist_ok=True)
+        with open(sessions.record_path(provider, sid), "w") as f:
+            json.dump(r, f)
+        path = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", "-p", sid + ".jsonl")
+        helpers.write(path, said(f"{sid} waits for you.") + "\n")
+
+    def digest(self, *found):
+        digest, warning = hub.save(list(found), {"from": "build", "seconds": 1}, HUB)
+        self.assertIsNone(warning)
+        return digest
+
+    def session_item(self, n, sid, **extra):
+        return {"n": n, "kind": "session", "provider": "claude", "session_id": sid, "label": "proj",
+                "state": "waiting", "answer_here": False, **extra}
+
+    def feature_item(self, n, sid="F1", session=True, **extra):
+        return {"n": n, "kind": "feature", "repo": "proj", "repo_path": self.work, "slug": "demo",
+                "actions": [], "session": {"provider": "claude", "session_id": sid, "label": "proj",
+                                           "state": "waiting"} if session else None, "answer_here": False, **extra}
+
+    def relay(self, *argv, env=None):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, env or {}), redirect_stdout(out), redirect_stderr(err):
+            rc = commands.main(list(argv))
+        self.out, self.err = out.getvalue(), err.getvalue()
+        return rc
+
+    def logged(self):
+        with open(os.path.join(hub.folder(), "log.jsonl")) as f:
+            return [json.loads(line) for line in f]
+
+    def inbox(self):
+        fake = FakeInbox(self.tmp)
+        self.addCleanup(fake.close)
+        return fake
+
+    def test_posted_with_the_hub_prefix_and_logged(self):
+        fake = self.inbox()
+        self.record("S1", inbox=fake.path)
+        d = self.digest(self.session_item(1, "S1"))
+        self.assertEqual(self.relay("hub", "note", f"{d}.1", "go ahead", "--relayed"), 0, self.err)
+        self.assertEqual(self.out, "relay: posted to proj\n")
+        [sent] = fake.wait()
+        self.assertEqual(json.loads(sent)["message"]["content"],
+                         "Note from the owner, relayed by claude session hub1 from the relay hub:\ngo ahead")
+        [line] = self.logged()
+        self.assertEqual((line["command"], line["target"], line["result"], line["relayed_by"]),
+                         ("note", "claude:S1", "posted", "claude session hub1"))
+
+    def test_relayed_is_required_and_only_from_an_agent(self):
+        self.record("S1")
+        d = self.digest(self.session_item(1, "S1"))
+        self.assertEqual(self.relay("hub", "note", f"{d}.1", "hi"), 1)
+        self.assertIn("run it with --relayed", self.err)
+        from relaylib import identity
+        owner = dict.fromkeys(identity.AGENT_MARKERS + ("RELAY_SESSION",), "")
+        self.assertEqual(self.relay("hub", "note", f"{d}.1", "hi", env=owner), 1)
+        self.assertIn("run it with --relayed", self.err)
+        self.assertEqual(self.relay("hub", "note", f"{d}.1", "hi", "--relayed", env=owner), 1)
+        self.assertIn("in your own terminal", self.err)
+        self.assertEqual([l["result"].split(":")[0] for l in self.logged()], ["refused"] * 3)
+
+    def test_refusals(self):
+        self.record("S1")
+        self.record("P1", "permission")
+        d = self.digest(self.session_item(1, "S1"), self.feature_item(2, session=False),
+                        self.session_item(3, "P1", state="permission", answer_here=True),
+                        self.session_item(4, "P1"))
+        cases = [(f"{d}.9", "unknown reference"), (f"{d}.2", "item 2 has no session to send a note to"),
+                 (f"{d}.3", "open this session to answer"), (f"{d}.4", "open this session to answer")]
+        for ref, why in cases:
+            with self.subTest(ref=ref):
+                self.assertEqual(self.relay("hub", "note", ref, "hi", "--relayed"), 1)
+                self.assertIn(why, self.err)
+        for text, why in (("", "cannot be empty"), ("x" * 2001, "at most 2,000")):
+            self.assertEqual(self.relay("hub", "note", f"{d}.1", text, "--relayed"), 1)
+            self.assertIn(why, self.err)
+        self.assertTrue(all(l["result"].startswith("refused: ") for l in self.logged()))
+
+    def test_live_state_after_the_digest(self):
+        fake = self.inbox()
+        self.record("W1", inbox=fake.path)
+        d = self.digest(self.session_item(1, "W1"))
+        self.record("W1", "permission", inbox=fake.path)
+        self.assertEqual(self.relay("hub", "note", f"{d}.1", "hi", "--relayed"), 1)
+        self.assertIn("open this session to answer", self.err)
+        self.record("W1", "working", inbox=fake.path)
+        self.assertEqual(self.relay("hub", "note", f"{d}.1", "while you work", "--relayed"), 0, self.err)
+        self.assertIn("posted to proj", self.out)
+        self.record("W1", "ended", inbox=fake.path)                        # no longer listed anywhere
+        self.assertEqual(self.relay("hub", "note", f"{d}.1", "later", "--relayed"), 1)
+        self.assertIn("no longer listed", self.err)
+        self.record("F1", "ended", inbox=fake.path)                        # the feature still claims it
+        f = self.digest(self.feature_item(1))
+        self.assertEqual(self.relay("hub", "note", f"{f}.1", "later", "--relayed"), 0, self.err)
+        self.assertIn("queued for proj's next prompt", self.out)
+        self.assertEqual(notes.list_for("claude", "F1")[-1]["status"], "queued")
+        os.unlink(sessions.record_path("claude", "W1"))
+        self.assertEqual(self.relay("hub", "note", f"{d}.1", "hi", "--relayed"), 1)
+        self.assertIn("no longer known", self.err)
+
+    def test_an_aged_out_session_is_refused_even_while_a_cached_snapshot_lists_it(self):
+        self.record("OLD", since_h=25)
+        d = self.digest(self.session_item(1, "OLD"))
+        cached = {"rows": [], "other_sessions": [{"provider": "claude", "session_id": "OLD"}], "running": []}
+        with mock.patch.object(hub, "load", return_value=(cached, {"from": "dashboard", "age_seconds": 1})) as load:
+            self.assertEqual(self.relay("hub", "note", f"{d}.1", "hi", "--relayed"), 1)
+        load.assert_not_called()
+        self.assertIn("no longer listed", self.err)
+
+    def test_a_feature_session_has_no_age_limit_while_the_feature_claims_it(self):
+        fake = self.inbox()
+        self.record("F1", since_h=25, inbox=fake.path)
+        self.record("U1", since_h=25)
+        d = self.digest(self.feature_item(1), self.session_item(2, "U1"))
+        self.assertEqual(self.relay("hub", "note", f"{d}.1", "still there?", "--relayed"), 0, self.err)
+        self.assertIn("posted to proj", self.out)
+        self.assertEqual(self.relay("hub", "note", f"{d}.2", "hi", "--relayed"), 1)
+        self.assertIn("no longer listed", self.err)
+        other = helpers.clone(self.origin, os.path.join(self.tmp, "other"))   # the hub checkout is not updated
+        helpers.sh(other, "git", "switch", "-q", "feat/demo")
+        st = state.read_state(state.state_path(other, "demo"))
+        st["owner"]["session"] = "F2"
+        state.write_state(state.state_path(other, "demo"), st)
+        helpers.sh(other, "git", "commit", "-qam", "relay take")
+        helpers.sh(other, "git", "push", "-q")
+        self.assertEqual(self.relay("hub", "note", f"{d}.1", "hi", "--relayed"), 1)
+        self.assertIn("no longer listed", self.err)
+        helpers.sh(other, "git", "push", "-q", "origin", "--delete", "feat/demo")
+        self.assertEqual(self.relay("hub", "note", f"{d}.1", "hi", "--relayed"), 1)
+        self.assertIn("could not confirm the feature still names that session", self.err)
+        os.rename(self.origin, self.origin + ".gone")
+        self.assertEqual(self.relay("hub", "note", f"{d}.1", "hi", "--relayed"), 1)
+        self.assertIn("could not confirm the feature still names that session", self.err)
+
+    def test_posted_but_not_recorded_and_an_unwritable_log(self):
+        fake = self.inbox()
+        self.record("S1", inbox=fake.path)
+        d = self.digest(self.session_item(1, "S1"))
+        real = os.replace
+
+        def fail_log(src, dst):
+            if dst.startswith(notes.folder()):
+                raise OSError("disk full")
+            return real(src, dst)
+        with mock.patch("relaylib.notes.os.replace", fail_log):
+            self.assertEqual(self.relay("hub", "note", f"{d}.1", "hi", "--relayed"), 0, self.err)
+        self.assertIn(notes.NOT_RECORDED, self.err)
+        self.assertEqual(self.logged()[-1]["result"], "posted, not recorded")
+        os.chmod(hub.folder(), 0o500)
+        self.addCleanup(os.chmod, hub.folder(), 0o700)
+        os.chmod(os.path.join(hub.folder(), "log.jsonl"), 0o400)
+        self.assertEqual(self.relay("hub", "note", f"{d}.1", "again", "--relayed"), 0, self.err)
+        self.assertIn("could not write the hub log", self.err)
+        self.assertEqual(len(fake.wait(2)), 2)
 
 
 if __name__ == "__main__":

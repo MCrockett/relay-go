@@ -771,6 +771,48 @@ def cmd_hub(args):
     return 0
 
 
+def _hub_relayed(args, what):
+    """The hub only passes on the owner's words: --relayed is required, and only an agent may pass it (D5)."""
+    if not args.relayed:
+        raise RelayError(f"{what} passes on the owner's words: run it with --relayed from the hub session")
+    return owner_or_relayed(args, what)
+
+
+def _hub_logged(entry, result):
+    from . import hub
+    warning = hub.log({**entry, "result": result})
+    if warning:
+        print(f"relay: warning: {warning}", file=sys.stderr)
+
+
+def cmd_hub_note(args):
+    from . import hub, notes
+    entry = {"command": "note", "ref": args.ref, "target": None, "action": None, "relayed_by": None}
+    result = "failed"
+    try:
+        relayed_by = entry["relayed_by"] = _hub_relayed(args, "relay hub note")
+        item = hub.resolve(args.ref, _hub_session(dict(os.environ), args.by))
+        provider, sid, label = hub.note_target(item)
+        entry["target"] = f"{provider}:{sid}"
+        inbox = hub.deliverable(item, provider, sid)
+        note, message = notes.send(provider, sid, args.text, inbox, prefix=hub.prefix(relayed_by))
+        if message:
+            result = "posted, not recorded"
+            print(f"relay: warning: {message}", file=sys.stderr)
+        elif note["status"] == "posted":
+            result = "posted"
+            print(f"relay: posted to {label}")
+        else:
+            result = "queued"
+            print(f"relay: queued for {label}'s next prompt")
+        return 0
+    except RelayError as e:
+        result = f"refused: {e}"
+        raise
+    finally:
+        _hub_logged(entry, result)
+
+
 # ---------------------------------------------------------------- ownership handoff
 
 def cmd_take(args):
