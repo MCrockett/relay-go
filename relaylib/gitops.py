@@ -9,7 +9,7 @@ import threading
 
 from .errors import RelayError
 
-PR_FIELDS = "number,state,baseRefName,headRefOid,statusCheckRollup"
+PR_FIELDS = "number,state,baseRefName,headRefOid,statusCheckRollup,isDraft"
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 NOT_STARTED = "The job was not started"  # GitHub's annotation on a job it refused to run (billing)
 WAITING = {"", "PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS"}
@@ -297,6 +297,17 @@ def pr_comment(root, pr, body):
             timeout=GH_TIMEOUT_S)
     if p.returncode != 0:
         raise RelayError(f"gh pr comment failed: {p.stderr.strip()}")
+
+
+def pr_ready(root, pr, undo=False):
+    """Mark a draft PR ready for review, or with undo turn it back into a draft (ci-on-submit D2, D3)."""
+    try:
+        p = run([os.environ.get("RELAY_GH_BIN", "gh"), "pr", "ready", str(pr), *(("--undo",) if undo else ())], root,
+                check=False, timeout=GH_TIMEOUT_S)
+    except OSError as e:
+        raise RelayError(f"gh pr ready failed: {e}") from e
+    if p.returncode != 0:
+        raise RelayError(f"gh pr ready failed: {p.stderr.strip()}")
 
 
 def pr_info(root, pr=None):

@@ -61,6 +61,22 @@ def commit(root, slug, st, cfg, message):
     return gitops.head_sha(root) if made and mark else None
 
 
+def mark_head(root, st, cfg):
+    """ci-on-submit D4: before a draft whose code already passed CI is marked ready, make sure its head carries
+    the marker, so the ready_for_review event starts no run. Adds an empty commit "relay: mark PR ready" only when
+    the head is unmarked and marker_ok allows a marker; the index and working tree are left alone. Returns the
+    new sha, or None when nothing was made."""
+    if gitops.marked(gitops.git(root, "log", "-1", "--format=%B").stdout):
+        return None
+    if not marker_ok(root, st["branch"], st.get("pr"), cfg, st.get("status")):
+        return None
+    old = gitops.head_sha(root)
+    new = gitops.git(root, "commit-tree", "HEAD^{tree}", "-p", old, "-m", "relay: mark PR ready",
+                     "-m", gitops.SKIP_CI).stdout.strip()
+    gitops.git(root, "update-ref", "-m", "relay: mark PR ready", "HEAD", new, old)
+    return new
+
+
 def unmark(root, branch, sha):
     """D7: after a failed push, drop the marker from the unpublished tip so a later push with code starts CI.
     Only when HEAD is still sha and origin's branch is not sha; otherwise, or on any error, nothing changes."""

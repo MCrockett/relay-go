@@ -149,6 +149,29 @@ class CiSkipTest(unittest.TestCase):
         with mock.patch.object(gitops, "ci_for_code", side_effect=OSError("boom")):
             self.assertFalse(self.ok())
 
+    # ---- mark_head (ci-on-submit D4)
+
+    def st(self):
+        return {"branch": "feat/a", "pr": None, "status": "drafting"}
+
+    def test_mark_head_makes_one_empty_marked_commit(self):
+        tree = helpers.sh(self.work, "git", "rev-parse", "HEAD^{tree}")
+        helpers.write(os.path.join(self.work, "staged.txt"), "s")
+        helpers.sh(self.work, "git", "add", "staged.txt")
+        sha = ciskip.mark_head(self.work, self.st(), self.cfg)
+        self.assertEqual(sha, gitops.head_sha(self.work))
+        self.assertEqual(self.message(), "relay: mark PR ready\n\n[skip ci]")
+        self.assertEqual(helpers.sh(self.work, "git", "rev-parse", "HEAD^{tree}"), tree)
+        self.assertEqual(helpers.sh(self.work, "git", "rev-parse", "HEAD~1").strip(), self.code)
+        self.assertIn("A  staged.txt", helpers.sh(self.work, "git", "status", "--short"))
+        self.assertIsNone(ciskip.mark_head(self.work, self.st(), self.cfg))         # already marked
+        self.assertEqual(gitops.head_sha(self.work), sha)
+
+    def test_mark_head_only_when_a_marker_is_allowed(self):
+        self.cfg["build"]["skip_ci"] = "never"
+        self.assertIsNone(ciskip.mark_head(self.work, self.st(), self.cfg))
+        self.assertEqual(gitops.head_sha(self.work), self.code)
+
     # ---- unmark
 
     def reject_pushes(self):

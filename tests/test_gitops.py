@@ -259,6 +259,25 @@ class SkipMarkerTest(unittest.TestCase):
                          "failing")
 
 
+class PrReadyTest(unittest.TestCase):
+    """ci-on-submit R2."""
+
+    def test_fields_and_calls(self):
+        self.assertIn("isDraft", gitops.PR_FIELDS.split(","))
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        gh, log, api = helpers.fake_bin(tmp, "gh", helpers.FAKE_GH), os.path.join(tmp, "gh.log"), os.path.join(tmp, "a")
+        helpers.write(api, json.dumps({"pr ready": {}}))
+        with mock.patch.dict(os.environ, {"RELAY_GH_BIN": gh, "FAKE_GH_LOG": log, "FAKE_GH_API": api}):
+            gitops.pr_ready(tmp, 7)
+            gitops.pr_ready(tmp, 7, undo=True)
+            with open(log) as f:
+                self.assertEqual(f.read().splitlines(), ["pr ready 7", "pr ready 7 --undo"])
+            helpers.write(api, json.dumps({"pr ready": {"__rc": 1}}))
+            with self.assertRaisesRegex(RelayError, "HTTP 500"):
+                gitops.pr_ready(tmp, 7)
+
+
 NOT_STARTED = ("The job was not started because recent account payments have failed or your spending limit needs to "
                "be increased. Please check the 'Billing & plans' section in your settings")
 
