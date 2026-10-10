@@ -316,3 +316,102 @@ def resolve(ref, session, now=None):
     if len(found) != 1:
         raise unknown
     return found[0]
+
+
+# ---------------------------------------------------------------- output (D2, R1 to R6)
+
+WIDTH, EXCERPT = 78, 160
+ANSWER_HERE = "open this session to answer"
+PRIVATE = ("seen", "repo_path")  # saved for actions, never printed
+
+
+def _header(digest_id, source):
+    where = (f"dashboard data {_age(source.get('age_seconds'))} old" if source["from"] == "dashboard"
+             else f"built in {_age(source.get('seconds'))}")
+    return f"relay hub · {'digest ' + digest_id if digest_id else 'not saved: actions need a new digest'} · {where}"
+
+
+def _age(seconds):
+    from .health import age
+    return age(seconds) if isinstance(seconds, (int, float)) else "?"
+
+
+def _wrap(text, indent):
+    import textwrap
+    return textwrap.wrap(text, WIDTH, initial_indent=indent, subsequent_indent=indent + "  ") or [indent]
+
+
+def _item_lines(item, numbered, now):
+    lead = f"{item['n']}. " if numbered else "- "
+    wait = f" · waiting {_age(now - item['wait_since'])}" if item.get("wait_since") is not None else ""
+    if item["kind"] == "error":
+        return _wrap(f"{lead}{item['repo']} · could not be read: {item['error']}", "")
+    if item["kind"] == "session":
+        state = "" if item["state"] == "waiting" and wait else f" · {item['state']}"  # "waiting 40m" says it
+        lines = _wrap(f"{lead}{item['label']} · {item['provider']} session{state}{wait}", "")
+        if item.get("pending_tools"):
+            lines += _wrap("needs: " + ", ".join(item["pending_tools"]), "    ")
+        if item.get("excerpt"):
+            text = item["excerpt"] if len(item["excerpt"]) <= EXCERPT else item["excerpt"][:EXCERPT - 3] + "..."
+            lines += _wrap(f'"{text}"', "    ")
+    else:
+        lines = _wrap(f"{lead}{item['repo']}/{item['slug']} · {item['stage']} {item['status']}{wait}", "")
+        for text in [a["text"] for a in item.get("asks") or []] + list(item.get("flags") or []):
+            lines += _wrap(text, "    ")
+        if item.get("pr"):
+            lines += _wrap(f"PR #{item['pr']} · CI {item.get('ci') or 'unknown'}", "    ")
+        if item.get("actions"):
+            lines += _wrap("actions: " + ", ".join(item["actions"]), "    ")
+        if item.get("session"):
+            s = item["session"]
+            lines += _wrap(f"session: {s['label']} ({s['provider']}) · {s['state']}", "    ")
+    if item.get("answer_here"):
+        lines += _wrap(ANSWER_HERE, "    ")
+    return lines
+
+
+def _closing(c):
+    return (f"Nothing else needs you: {c['features']} feature{'s' * (c['features'] != 1)} in progress, "
+            f"{c['sessions']} session{'s' * (c['sessions'] != 1)} working.")
+
+
+def render_text(digest_id, source, found, c, now=None):
+    now = time.time() if now is None else now
+    lines = [_header(digest_id, source)]
+    if not found:
+        lines.append("Nothing needs you right now.")
+    for item in found:
+        lines += _item_lines(item, bool(digest_id), now)
+    lines.append(_closing(c))
+    return "\n".join(lines) + "\n"
+
+
+def render_json(digest_id, source, found, c, warnings):
+    shown = [{k: v for k, v in item.items() if k not in PRIVATE} for item in found]
+    return json.dumps({"digest": digest_id, "source": source, "items": shown, "counts": c,
+                       "warnings": list(warnings)}, indent=1) + "\n"
+
+
+def digest(session, records=None, as_json=False, now=None):
+    """(stdout text, warnings): load, number, save, render (R1 to R7). `session` is {provider, session_id}
+    for an agent session, registered as a hub, or None from the owner's terminal."""
+    warnings = []
+    if session:
+        if records is None:
+            from . import sessions
+            try:
+                records = sessions.read_records()
+            except Exception:
+                records = []
+        warning = register(session["provider"], session["session_id"], records, now)
+        if warning:
+            warnings.append(warning)
+    data, source = load()
+    found = items(data)
+    c = counts(data, found)
+    digest_id, warning = save(found, source, session, now)
+    if warning:
+        warnings.append(warning)
+    if as_json:
+        return render_json(digest_id, source, found, c, warnings), []
+    return render_text(digest_id, source, found, c, now), warnings

@@ -748,6 +748,29 @@ def cmd_override(args):
     print(f"relay: override {args.action} recorded on {stage}{note}; now {st['stage']} / {st['status']}")
 
 
+# ---------------------------------------------------------------- the hub (mobile-hub)
+
+def _hub_session(env, by):
+    """{provider, session_id} for an agent session, None for the owner's terminal."""
+    if not identity.in_agent_session(env):
+        return None
+    me = identity.detect(env, by)
+    return {"provider": me.provider, "session_id": me.session} if me.provider in config.PROVIDERS else None
+
+
+def cmd_hub(args):
+    from . import hub
+    if args.hub_cmd == "note":
+        return cmd_hub_note(args)
+    if args.hub_cmd == "act":
+        return cmd_hub_act(args)
+    out, warnings = hub.digest(_hub_session(dict(os.environ), args.by), as_json=args.json)
+    for w in warnings:
+        print(f"relay: warning: {w}", file=sys.stderr)
+    sys.stdout.write(out)
+    return 0
+
+
 # ---------------------------------------------------------------- ownership handoff
 
 def cmd_take(args):
@@ -1099,6 +1122,22 @@ def build_parser():
                     help="listen address: 127.0.0.1 (default), or 0.0.0.0 inside a container")
     ui.add_argument("--background", action="store_true")
     ui.add_argument("--serve-child", action="store_true", help=argparse.SUPPRESS)
+    hb = add("hub", cmd_hub, "what needs you, for reading on a phone; note and act pass on your words (hub sessions)")
+    hb.add_argument("--json", action="store_true")
+    hb.add_argument("--by", help="claude, codex or owner, when detection is ambiguous")
+    hsub = hb.add_subparsers(dest="hub_cmd")
+    hn = hsub.add_parser("note", help="send the owner's words to a digest item's session (agents, --relayed)")
+    hn.add_argument("ref", help="<digest id>.<item number> from the digest the owner saw")
+    hn.add_argument("text")
+    ha = hsub.add_parser("act", help="run an owner action on a digest item's feature (agents, --relayed)")
+    ha.add_argument("ref", help="<digest id>.<item number> from the digest the owner saw")
+    ha.add_argument("action", choices=["go", "extra-round", "reset-rounds", "release", "review", "review-spec",
+                                       "review-plan", "merge"])
+    ha.add_argument("--reviewer", help="review actions only: provider:model[@effort] from the preference table")
+    for sp in (hn, ha):
+        sp.add_argument("--relayed", action="store_true",
+                        help="required: pass on what the owner typed in the hub chat (recorded as relayed)")
+        sp.add_argument("--by", help="claude or codex, when detection is ambiguous")
     try:
         from . import status
     except ImportError:

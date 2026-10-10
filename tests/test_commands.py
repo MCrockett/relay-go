@@ -304,6 +304,19 @@ class CommandsTest(unittest.TestCase):
         self.assertEqual(self.st()["stage"], "spec")
         self.assertEqual(self.relay("override", "go"), 0, self.last_err)
 
+    def test_hub_registers_an_agent_session_and_not_the_owner(self):  # mobile-hub R14, D9
+        from relaylib import hub
+        data = {"rows": [], "other_sessions": [], "running": []}
+        with mock.patch.object(hub, "load", return_value=(data, {"from": "build", "seconds": 2.0})):
+            owner = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "RELAY_PROVIDER", "RELAY_SESSION")}
+            with mock.patch.dict(os.environ, owner, clear=True):
+                self.assertEqual(self.relay("hub"), 0, self.last_err)
+            self.assertEqual(hub.registered(), set())
+            self.assertIn("Nothing needs you right now.", self.last_out)
+            self.assertEqual(self.relay("hub", "--json"), 0, self.last_err)
+            self.assertEqual(json.loads(self.last_out)["items"], [])
+        self.assertEqual(hub.registered(), {("claude", "s1")})
+
     def test_second_session_blocked_until_handoff(self):
         self.to_spec()
         other = helpers.clone(self.origin, os.path.join(self.tmp, "other"))

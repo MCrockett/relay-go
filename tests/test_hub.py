@@ -290,5 +290,83 @@ class DigestStoreTest(HubHome):  # mobile-hub D4, R7, R7a
         self.assertIn("could not save the digest", warning)
 
 
+class OutputTest(HubHome):  # mobile-hub D2, R1 to R6
+    NOW = 10_000.0
+
+    def data(self):
+        return {"rows": [
+            row("ledger", status="ready-to-merge", wait=self.NOW - 7200,
+                asks=[{"kind": "merge", "text": "Merge PR #12"}], actions=["merge", "review"]),
+            row("perm", repo="isitev", wait=self.NOW - 600, pr=None, pr_info={},
+                asks=[{"kind": "approve", "text": "Approve Bash in the claude session", "session": "claude:P1"}]),
+            row("busy")],
+            "other_sessions": [other("Q1", since=self.NOW - 2400)],
+            "running": [{"provider": "claude", "session_id": "R1"}]}
+
+    def run_digest(self, data, as_json=False, session=S):
+        with mock.patch.object(hub, "load", return_value=(data, {"from": "dashboard", "age_seconds": 12.0})):
+            return hub.digest(session, records=[rec("S")], as_json=as_json, now=self.NOW)
+
+    def test_text(self):
+        out, warnings = self.run_digest(self.data())
+        self.assertEqual(warnings, [])
+        digest = out.split("digest ", 1)[1].split(" ", 1)[0]
+        self.assertEqual(out, f"""relay hub · digest {digest} · dashboard data 12s old
+1. bottomsup/ledger · build ready-to-merge · waiting 2h
+    Merge PR #12
+    PR #12 · CI green
+    actions: merge, review
+2. proteindiary · codex session · waiting 40m
+    "Q1 says hi"
+3. isitev/perm · build drafting · waiting 10m
+    Approve Bash in the claude session
+    session: isitev (claude) · permission
+    open this session to answer
+Nothing else needs you: 1 feature in progress, 1 session working.
+""")
+        self.assertEqual(hub.resolve(f"{digest}.3", S, now=self.NOW)["session"]["session_id"], "P1")
+        self.assertEqual(hub.registered(), {("claude", "S")})
+
+    def test_nothing_waiting(self):
+        out, _ = self.run_digest({"rows": [row("busy")], "other_sessions": [], "running": []})
+        lines = out.splitlines()
+        self.assertTrue(lines[0].startswith("relay hub · digest "))
+        self.assertEqual(lines[1:], ["Nothing needs you right now.",
+                                     "Nothing else needs you: 1 feature in progress, 0 sessions working."])
+
+    def test_an_unsaved_digest_has_no_numbers(self):
+        os.makedirs(os.path.join(hub.folder(), "digests"))
+        os.chmod(os.path.join(hub.folder(), "digests"), 0o500)
+        self.addCleanup(os.chmod, os.path.join(hub.folder(), "digests"), 0o700)
+        out, warnings = self.run_digest(self.data())
+        self.assertTrue(out.startswith("relay hub · not saved: actions need a new digest · dashboard data 12s old\n"))
+        self.assertIn("\n- bottomsup/ledger", out)
+        self.assertNotIn("\n1. ", out)
+        self.assertIn("could not save the digest", warnings[0])
+
+    def test_json_parses_with_counts_and_warnings(self):
+        os.makedirs(hub.folder())
+        os.chmod(hub.folder(), 0o500)
+        self.addCleanup(os.chmod, hub.folder(), 0o700)
+        out, warnings = self.run_digest(self.data(), as_json=True)
+        self.assertEqual(warnings, [])
+        parsed = json.loads(out)
+        self.assertIsNone(parsed["digest"])
+        self.assertEqual(parsed["counts"], {"features": 1, "sessions": 1})
+        self.assertEqual(len(parsed["warnings"]), 2)                    # registration and save
+        self.assertEqual([i["n"] for i in parsed["items"]], [1, 2, 3])
+        self.assertNotIn("seen", parsed["items"][0])
+        self.assertNotIn("repo_path", parsed["items"][0])
+        self.assertEqual(parsed["source"], {"from": "dashboard", "age_seconds": 12.0})
+
+    def test_owner_terminal_registers_nothing_and_the_token_is_never_printed(self):
+        FakeDashboard(self)
+        with mock.patch("relaylib.ui.snapshot.build", no_processes):
+            for as_json in (False, True):
+                out, _ = hub.digest(None, records=[], as_json=as_json)
+                self.assertNotIn(TOKEN, out)
+        self.assertEqual(hub.registered(), set())
+
+
 if __name__ == "__main__":
     unittest.main()
