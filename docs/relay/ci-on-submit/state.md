@@ -5,7 +5,9 @@
     "spec": "claude"
   },
   "branch": "feat/ci-on-submit",
-  "extra_rounds": {},
+  "extra_rounds": {
+    "spec": 1
+  },
   "feature": "ci-on-submit",
   "history": {
     "spec": [
@@ -46,6 +48,11 @@
     {
       "action": "owner joined spec",
       "at": "2026-10-10T07:28:49-04:00"
+    },
+    {
+      "action": "override extra-round (spec)",
+      "at": "2026-10-10T07:52:00-04:00",
+      "relayed_by": "claude session 958dee3a-031e-4b49-be5f-09efa15292b1"
     }
   ],
   "pr": null,
@@ -64,8 +71,8 @@
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "waiting-owner",
-  "updated": "2026-10-10T07:33:05-04:00",
+  "status": "changes-requested",
+  "updated": "2026-10-10T07:52:00-04:00",
   "verdicts": {
     "spec": "NO-GO"
   }
