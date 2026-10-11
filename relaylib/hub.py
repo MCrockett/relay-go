@@ -124,8 +124,9 @@ def _dashboard(timeout):
     worker.start()
     worker.join(timeout)  # bounds connect, headers and body together
     body = None if worker.is_alive() else result.get("body")
-    if not isinstance(body, dict) or body.get("loading") or not isinstance(body.get("data"), dict):
-        return None
+    if (not isinstance(body, dict) or body.get("loading") or body.get("error")
+            or not isinstance(body.get("data"), dict)):
+        return None  # an error means its last refresh failed: the data it still holds may be old
     age = body.get("age_seconds")
     return body["data"], (age if isinstance(age, (int, float)) else None)
 
@@ -375,10 +376,20 @@ def _closing(c):
             f"{c['sessions']} session{'s' * (c['sessions'] != 1)} working.")
 
 
-def render_text(digest_id, source, found, c, now=None):
+SCAN_FAILED = "Features could not be read"
+
+
+def problems(data):
+    """Notes saying the scan itself failed: a digest built on them is not an all-clear."""
+    return [n for n in data.get("notes") or [] if isinstance(n, str) and n.startswith(SCAN_FAILED)]
+
+
+def render_text(digest_id, source, found, c, now=None, failed=()):
     now = time.time() if now is None else now
     lines = [_header(digest_id, source)]
-    if not found:
+    for problem in failed:
+        lines += _wrap(f"Could not check everything: {problem}", "")
+    if not found and not failed:
         lines.append("Nothing needs you right now.")
     for item in found:
         lines += _item_lines(item, bool(digest_id), now)
@@ -407,6 +418,8 @@ def digest(session, records=None, as_json=False, now=None):
         if warning:
             warnings.append(warning)
     data, source = load()
+    failed = problems(data)
+    warnings += failed
     found = items(data)
     c = counts(data, found)
     digest_id, warning = save(found, source, session, now)
@@ -414,7 +427,7 @@ def digest(session, records=None, as_json=False, now=None):
         warnings.append(warning)
     if as_json:
         return render_json(digest_id, source, found, c, warnings), []
-    return render_text(digest_id, source, found, c, now), warnings
+    return render_text(digest_id, source, found, c, now, failed), [w for w in warnings if w not in failed]
 
 
 # ---------------------------------------------------------------- passing on the owner's words (D5, D6)

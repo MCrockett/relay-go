@@ -92,7 +92,8 @@ class FakeDashboard:
                 if outer.mode == "slow-headers":
                     t.sleep(1.5)
                 body = json.dumps({"loading": outer.mode == "loading", "data": None if outer.mode == "loading"
-                                   else CANNED, "error": None, "age_seconds": 12.0}).encode()
+                                   else CANNED, "error": "refresh failed: boom" if outer.mode == "stale" else None,
+                                   "age_seconds": 12.0}).encode()
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -130,7 +131,7 @@ class LoadTest(HubHome):  # mobile-hub D3, R6
     def test_falls_back_to_a_build_when_the_dashboard_cannot_answer(self):
         import time
         built = {"rows": [], "built": True}
-        for mode in ("500", "403", "loading", "slow-headers", "trickle"):
+        for mode in ("500", "403", "loading", "stale", "slow-headers", "trickle"):
             with self.subTest(mode=mode):
                 dash = FakeDashboard(self, mode)
                 with mock.patch("relaylib.ui.snapshot.build", return_value=built):
@@ -337,6 +338,17 @@ Nothing else needs you: 1 feature in progress, 1 session working.
         self.assertTrue(lines[0].startswith("relay hub · digest "))
         self.assertEqual(lines[1:], ["Nothing needs you right now.",
                                      "Nothing else needs you: 1 feature in progress, 0 sessions working."])
+
+    def test_a_failed_scan_is_not_an_all_clear(self):
+        # the shape snapshot.build returns when the feature scan fails (where-i-left-off F5)
+        data = {"rows": [], "other_sessions": [], "running": [],
+                "notes": ["Features could not be read: boom", "some health note"]}
+        out, warnings = self.run_digest(data)
+        self.assertNotIn("Nothing needs you right now.", out)
+        self.assertIn("Could not check everything: Features could not be read: boom", out)
+        self.assertEqual(warnings, [])                                   # shown once, in the digest itself
+        parsed = json.loads(self.run_digest(data, as_json=True)[0])
+        self.assertEqual(parsed["warnings"], ["Features could not be read: boom"])
 
     def test_an_unsaved_digest_has_no_numbers(self):
         os.makedirs(os.path.join(hub.folder(), "digests"))
