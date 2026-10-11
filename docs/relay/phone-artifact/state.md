@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/phone-artifact",
   "extra_rounds": {},
   "feature": "phone-artifact",
@@ -34,9 +36,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-10-11T11:48:35-04:00",
+  "updated": "2026-10-11T11:48:49-04:00",
   "verdicts": {}
 }
 ---
