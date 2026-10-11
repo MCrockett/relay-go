@@ -192,11 +192,22 @@ def _order(item):
     return (at is None, at or 0) + name
 
 
+def _without_hubs(row, hubs):
+    """The row with asks that wait on a hub session left out: the hub never asks the owner to answer itself."""
+    asks = row.get("asks") or []
+    kept = [a for a in asks if tuple((a.get("session") or "").partition(":")[::2]) not in hubs]
+    if len(kept) == len(asks):
+        return row
+    times = [a["since"] for a in kept if a.get("since") is not None]
+    return dict(row, asks=kept, waiting_on_owner=bool(kept), wait_since=min(times) if times else None)
+
+
 def items(data, hubs=None):
     """The digest's items, oldest wait first, numbered from 1 (D2, R1 to R3). Hub sessions are left out even
-    when a snapshot cached before they registered lists them."""
+    when a snapshot cached before they registered lists them, and so are asks that wait on one."""
     hubs = registered() if hubs is None else hubs
-    out = [_feature_item(r) for r in data.get("rows") or [] if r.get("error") or _feature_wanted(r)]
+    rows = [_without_hubs(r, hubs) for r in data.get("rows") or []]
+    out = [_feature_item(r) for r in rows if r.get("error") or _feature_wanted(r)]
     out += [_session_item(e) for e in data.get("other_sessions") or []
             if (e.get("provider"), e.get("session_id")) not in hubs]
     out.sort(key=_order)

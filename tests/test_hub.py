@@ -207,6 +207,23 @@ class ItemsTest(HubHome):  # mobile-hub D2, D8, R1 to R3
         self.assertEqual(by["merge"]["seen"], {"commit": "cmerge"})
         self.assertEqual(hub.counts(self.data(), found, hubs={("claude", "HUB")}), {"features": 1, "sessions": 1})
 
+    def test_asks_waiting_on_a_hub_are_left_out_of_its_features(self):  # hub-owned-feature
+        hub_ask = {"kind": "answer", "text": "Answer the claude session", "since": 20, "session": "claude:HUB"}
+        data = {"rows": [
+            row("mine", status="ready-to-merge", wait=20, actions=["merge"],
+                asks=[{"kind": "merge", "text": "Merge PR #12", "since": 300}, hub_ask]),
+            row("only", wait=20, asks=[dict(hub_ask)]),
+            row("other", wait=40, asks=[dict(hub_ask, session="claude:P1", since=40)]),
+        ], "other_sessions": [], "running": []}
+        found = hub.items(data, hubs={("claude", "HUB")})
+        self.assertEqual([i["slug"] for i in found], ["other", "mine"])
+        mine = found[1]
+        self.assertEqual((mine["asks"], mine["session"], mine["answer_here"], mine["wait_since"]),
+                         ([{"kind": "merge", "text": "Merge PR #12"}], None, False, 300))
+        self.assertEqual(found[0]["session"]["session_id"], "P1")
+        self.assertEqual(hub.counts(data, found, hubs={("claude", "HUB")}), {"features": 1, "sessions": 0})
+        self.assertEqual([a["session"] for a in data["rows"][1]["asks"]], ["claude:HUB"])  # the input is unchanged
+
     def test_a_registered_hub_is_left_out_of_a_cached_snapshot(self):
         hub.register("claude", "HUB", [rec("HUB")])
         found = hub.items(self.data())
