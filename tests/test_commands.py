@@ -287,6 +287,36 @@ class CommandsTest(unittest.TestCase):
         st = self.st()
         self.assertEqual((st["stage"], st["owner_actions"][-1]["action"]), ("plan", "override go (spec)"))
 
+    def test_override_is_refused_while_another_process_holds_the_action_lock(self):
+        self.to_spec()
+        self.enqueue_codex("NO-GO", ["a - x"])
+        self.relay("submit")
+        self.enqueue_codex("NO-GO", ["id: R1-1 a - x"], [("R1-1", "unresolved")])
+        self.relay("submit")
+        for k in ("RELAY_PROVIDER", "RELAY_SESSION", "CLAUDECODE"):
+            del os.environ[k]
+        child = helpers.hold_action_lock()
+        try:
+            self.assertEqual(self.relay("override", "go"), 1)
+        finally:
+            helpers.release(child)
+        self.assertIn("busy", self.last_err)
+        self.assertEqual(self.st()["stage"], "spec")
+        self.assertEqual(self.relay("override", "go"), 0, self.last_err)
+
+    def test_hub_registers_an_agent_session_and_not_the_owner(self):  # mobile-hub R14, D9
+        from relaylib import hub
+        data = {"rows": [], "other_sessions": [], "running": []}
+        with mock.patch.object(hub, "load", return_value=(data, {"from": "build", "seconds": 2.0})):
+            owner = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "RELAY_PROVIDER", "RELAY_SESSION")}
+            with mock.patch.dict(os.environ, owner, clear=True):
+                self.assertEqual(self.relay("hub"), 0, self.last_err)
+            self.assertEqual(hub.registered(), set())
+            self.assertIn("Nothing needs you right now.", self.last_out)
+            self.assertEqual(self.relay("hub", "--json"), 0, self.last_err)
+            self.assertEqual(json.loads(self.last_out)["items"], [])
+        self.assertEqual(hub.registered(), {("claude", "s1")})
+
     def test_second_session_blocked_until_handoff(self):
         self.to_spec()
         other = helpers.clone(self.origin, os.path.join(self.tmp, "other"))
@@ -1242,6 +1272,41 @@ done
         self.assertFalse(result["ok"])
         self.assertIn("review failed", result["message"])
         self.assertEqual(self.published(), before)
+
+    def test_a_review_publishes_nothing_while_another_process_holds_the_action_lock(self):
+        from relaylib import reviewjobs
+        availability = self.fallback_build_go()
+        availability.record_out("codex", until=0)
+        before = self.published()
+        self.enqueue_codex("GO")
+        from relaylib import owneractions
+        job = reviewjobs.prepare(self.work, "tiny", owneractions.fingerprint(self.work, "tiny"))
+        child = helpers.hold_action_lock()                  # taken after the check, before the publish
+        try:
+            with mock.patch.object(reviewjobs, "PUBLISH_WAIT_S", 0.3):
+                result = job.run()
+        finally:
+            helpers.release(child)
+        self.assertFalse(result["ok"])
+        self.assertIn("another owner action kept the lock", result["message"])
+        self.assertEqual(self.published(), before)
+        self.enqueue_codex("GO")
+        result = self.request()
+        self.assertTrue(result["ok"], result["message"])
+        self.assertEqual(self.published()["status"], "ready-to-merge")
+
+    def test_a_hub_review_runs_and_records_who_relayed_it(self):  # mobile-hub R9
+        from relaylib import hub, owneractions
+        availability = self.fallback_build_go()
+        availability.record_out("codex", until=0)
+        os.environ["RELAY_ROOT"] = self.tmp
+        item = {"n": 1, "kind": "feature", "repo": "work", "repo_path": self.work, "slug": "tiny",
+                "actions": ["review"], "seen": owneractions.fingerprint(self.work, "tiny"), "session": None}
+        digest, _ = hub.save([item], {"from": "build", "seconds": 1}, {"provider": "claude", "session_id": "s1"})
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("hub", "act", f"{digest}.1", "review", "--relayed"), 0, self.last_err)
+        self.assertIn("build GO from codex", self.last_out)
+        self.assertEqual(self.published()["owner_actions"][-1]["relayed_by"], "claude session s1")
 
     def test_a_branch_that_moved_during_the_review_is_not_overwritten(self):
         from relaylib import owneractions, reviewjobs

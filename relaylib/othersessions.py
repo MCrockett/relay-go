@@ -2,7 +2,7 @@
 session records as the hooks wrote them, last messages read live and never stored (D8)."""
 import os
 
-from . import agentask, gitops, health
+from . import agentask, gitops, health, hub
 from .errors import RelayError
 
 
@@ -49,8 +49,10 @@ def listed(records, claimed, root, cfg, now):
     from . import status  # status imports this module
     grace = health.ui_value(cfg, "health_grace_minutes") * 60
     window = health.ui_value(cfg, "other_sessions_hours") * 3600
+    hubs = hub.registered()  # a hub waits on the owner by design (mobile-hub D9)
     candidates = [r for r in records
                   if r.get("state") in ("waiting", "permission") and r["session_id"] not in claimed
+                  and (r.get("provider"), r["session_id"]) not in hubs
                   and grace < now - r["since"] <= window]
     if not candidates:
         return []

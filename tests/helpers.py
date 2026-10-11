@@ -2,6 +2,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 
 
 def sh(cwd, *args):
@@ -141,3 +142,28 @@ def verdict_block(v, blocking=(), prior=()):
     lines += [f"  - id: {i} status: {s}" for i, s in prior]
     lines += ["blocking:"] + [f"  - {b}" for b in blocking] + ["notes:", "```"]
     return "Review done.\n\n" + "\n".join(lines) + "\n"
+
+
+HOLD_LOCK = '''import sys
+sys.path.insert(0, sys.argv[1])
+from relaylib import owneractions
+with owneractions.action_lock():
+    print("held", flush=True)
+    sys.stdin.read()
+'''
+
+
+def hold_action_lock():
+    """A separate process holding relay's owner action lock until `.stdin.close()` (mobile-hub D7)."""
+    import subprocess
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    child = subprocess.Popen([sys.executable, "-c", HOLD_LOCK, root], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             text=True, env=dict(os.environ))
+    assert child.stdout.readline().strip() == "held"
+    return child
+
+
+def release(child):
+    child.stdin.close()
+    child.wait(10)
+    child.stdout.close()

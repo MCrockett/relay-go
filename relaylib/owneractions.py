@@ -1,9 +1,11 @@
 """Owner actions bound to published revisions, isolated from session worktrees."""
 import contextlib
+import fcntl
 import os
 import re
 import tempfile
 import threading
+import time
 
 from . import ciskip, config, freshness, gitops, state
 from .errors import RelayError
@@ -83,12 +85,38 @@ def applicable(st):
     return actions
 
 
+BUSY = "busy: another owner action is running"
+
+
+def _lock_path():
+    return os.path.join(config.relay_home(), "owner-action.lock")
+
+
 @contextlib.contextmanager
-def action_lock():
-    if not ACTION_LOCK.acquire(blocking=False):
-        raise Conflict("busy: another owner action is running")
+def action_lock(wait=0, busy=BUSY):
+    """One owner action at a time across processes (mobile-hub D7): the thread lock covers the dashboard's own
+    threads, the flock every relay process. `wait` seconds of retrying before refusing with `busy`."""
+    deadline = time.monotonic() + wait
+    if not (ACTION_LOCK.acquire(timeout=wait) if wait > 0 else ACTION_LOCK.acquire(blocking=False)):
+        raise Conflict(busy)
     try:
-        yield
+        os.makedirs(config.relay_home(), exist_ok=True)
+        fd = os.open(_lock_path(), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise Conflict(busy)
+                    time.sleep(0.1)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
     finally:
         ACTION_LOCK.release()
 
@@ -104,7 +132,7 @@ def _validate(repo, slug, action, seen):
     return fresh, st
 
 
-def run_override(repo, slug, action, seen):
+def run_override(repo, slug, action, seen, relayed_by=None):
     if action not in ("go", "extra-round", "reset-rounds", "release"):
         raise RelayError("unknown override")
     with action_lock():
@@ -116,7 +144,7 @@ def run_override(repo, slug, action, seen):
                 gitops.git(repo, "worktree", "add", "--detach", work, fresh["commit"])
                 created = True
                 from .commands import apply_override
-                message = apply_override(work, slug, st, action)
+                message = apply_override(work, slug, st, action, relayed_by)  # recorded, no PR comment (D11)
                 state.write_state(state.state_path(work, slug), st)
                 ciskip.commit(work, slug, st, config.load(work), message)  # the worktree goes if the push fails
                 gitops.git(work, "push", "origin", f"HEAD:refs/heads/{fresh['branch']}")
@@ -161,7 +189,9 @@ def merge_readiness(repo, st, seen):
     return info
 
 
-def merge(repo, slug, seen):
+def merge(repo, slug, seen, relayed_by=None):
+    """Merge a ready PR. With relayed_by (a hub), a PR comment records who passed the decision on: the merge
+    deletes the branch, so the feature's state cannot (mobile-hub D6)."""
     with action_lock():
         fresh, st = _validate(repo, slug, "merge", seen)
         info = merge_readiness(repo, st, fresh)
@@ -170,4 +200,17 @@ def merge(repo, slug, seen):
             result = gitops.run([os.environ.get("RELAY_GH_BIN", "gh"), "pr", "merge", str(info["number"]),
                                  "-R", remote, "--merge", "--match-head-commit", seen["pr_head"],
                                  "--delete-branch"], outside, timeout=gitops.GH_TIMEOUT_S)
-        return {"message": (result.stdout or result.stderr).strip() or f"Merged PR #{info['number']}"}
+            done = {"message": (result.stdout or result.stderr).strip() or f"Merged PR #{info['number']}"}
+            if relayed_by:
+                try:
+                    note = gitops.run([os.environ.get("RELAY_GH_BIN", "gh"), "pr", "comment", str(info["number"]),
+                                       "-R", remote, "--body",
+                                       f"Merged by the owner, relayed by {relayed_by} from the relay hub"],
+                                      outside, check=False, timeout=gitops.GH_TIMEOUT_S)
+                    why = ((note.stderr or "").strip() or f"exit {note.returncode}") if note.returncode else None
+                except (RelayError, OSError) as e:
+                    why = str(e)
+                if why:
+                    done["warning"] = (f"PR #{info['number']} is merged, but the comment recording who relayed "
+                                       f"it could not be posted: {why}")
+        return done

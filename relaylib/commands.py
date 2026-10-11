@@ -734,9 +734,11 @@ def cmd_override(args):
         print(f"relay: {result['message']}")
         return 0
     st, stage = c.st, c.st["stage"]
-    message = apply_override(c.root, c.slug, st, args.action, relayed_by)
-    note = f" (relayed by {relayed_by})" if relayed_by else ""
-    c.save(message, push="required")
+    from . import owneractions
+    with owneractions.action_lock():  # one owner action at a time, with the dashboard and the hub (mobile-hub D7)
+        message = apply_override(c.root, c.slug, st, args.action, relayed_by)
+        note = f" (relayed by {relayed_by})" if relayed_by else ""
+        c.save(message, push="required")
     if relayed_by and st.get("pr"):  # make a relayed decision visible where the owner merges
         try:
             gitops.pr_comment(c.root, st["pr"], f"relay: owner decision `override {args.action}` on {stage}, "
@@ -744,6 +746,114 @@ def cmd_override(args):
         except RelayError as e:
             print(f"relay: warning: could not comment on PR #{st['pr']}: {e}", file=sys.stderr)
     print(f"relay: override {args.action} recorded on {stage}{note}; now {st['stage']} / {st['status']}")
+
+
+# ---------------------------------------------------------------- the hub (mobile-hub)
+
+def _hub_session(env, by):
+    """{provider, session_id} for an agent session, None for the owner's terminal."""
+    if not identity.in_agent_session(env):
+        return None
+    me = identity.detect(env, by)
+    return {"provider": me.provider, "session_id": me.session} if me.provider in config.PROVIDERS else None
+
+
+def cmd_hub(args):
+    from . import hub
+    if args.hub_cmd == "note":
+        return cmd_hub_note(args)
+    if args.hub_cmd == "act":
+        return cmd_hub_act(args)
+    out, warnings = hub.digest(_hub_session(dict(os.environ), args.by), as_json=args.json)
+    for w in warnings:
+        print(f"relay: warning: {w}", file=sys.stderr)
+    sys.stdout.write(out)
+    return 0
+
+
+def _hub_relayed(args, what):
+    """The hub only passes on the owner's words: --relayed is required, and only an agent may pass it (D5)."""
+    if not args.relayed:
+        raise RelayError(f"{what} passes on the owner's words: run it with --relayed from the hub session")
+    return owner_or_relayed(args, what)
+
+
+def _hub_logged(entry, result):
+    from . import hub
+    warning = hub.log({**entry, "result": result})
+    if warning:
+        print(f"relay: warning: {warning}", file=sys.stderr)
+
+
+def cmd_hub_note(args):
+    from . import hub, notes
+    entry = {"command": "note", "ref": args.ref, "target": None, "action": None, "relayed_by": None}
+    result = "failed"
+    try:
+        relayed_by = entry["relayed_by"] = _hub_relayed(args, "relay hub note")
+        item = hub.resolve(args.ref, _hub_session(dict(os.environ), args.by))
+        provider, sid, label = hub.note_target(item)
+        entry["target"] = f"{provider}:{sid}"
+        inbox = hub.deliverable(item, provider, sid)
+        note, message = notes.send(provider, sid, args.text, inbox, prefix=hub.prefix(relayed_by))
+        if message:
+            result = "posted, not recorded"
+            print(f"relay: warning: {message}", file=sys.stderr)
+        elif note["status"] == "posted":
+            result = "posted"
+            print(f"relay: posted to {label}")
+        else:
+            result = "queued"
+            print(f"relay: queued for {label}'s next prompt")
+        return 0
+    except RelayError as e:
+        result = f"refused: {e}"
+        raise
+    finally:
+        _hub_logged(entry, result)
+
+
+HUB_REVIEWS = {"review": "build", "review-spec": "spec", "review-plan": "plan"}
+
+
+def cmd_hub_act(args):
+    from . import hub, owneractions, reviewjobs
+    from .ui import snapshot
+    entry = {"command": "act", "ref": args.ref, "target": None, "action": args.action, "relayed_by": None}
+    result = "failed"
+    try:
+        relayed_by = entry["relayed_by"] = _hub_relayed(args, "relay hub act")
+        item = hub.resolve(args.ref, _hub_session(dict(os.environ), args.by))
+        if item["kind"] == "session":
+            raise RelayError(f"item {item['n']} is a session; use relay hub note")
+        if item["kind"] != "feature":
+            raise RelayError(f"item {item['n']} has no feature to act on")
+        entry["target"] = f"{item['repo']}/{item['slug']}"
+        if args.action not in item.get("actions") or []:
+            offered = ", ".join(item.get("actions") or []) or "none"
+            raise RelayError(f"{args.action} was not offered for item {item['n']} (offered: {offered})")
+        repo = snapshot.allowed_repo(item["repo_path"])
+        if args.action in HUB_REVIEWS:
+            job = reviewjobs.prepare(repo, item["slug"], item["seen"], args.reviewer, relayed_by,
+                                     stage=HUB_REVIEWS[args.action])
+            print(f"relay: {reviewjobs.spec_id(job.spec)} is reviewing {item['slug']}. This can take minutes.")
+            done = job.run()
+            if not done["ok"]:
+                raise RelayError(done["message"])
+        elif args.action == "merge":
+            done = owneractions.merge(repo, item["slug"], item["seen"], relayed_by)
+        else:
+            done = owneractions.run_override(repo, item["slug"], args.action, item["seen"], relayed_by)
+        result = "done" + ("; " + done["warning"] if done.get("warning") else "")
+        print(f"relay: {done['message']}")
+        if done.get("warning"):
+            print(f"relay: warning: {done['warning']}", file=sys.stderr)
+        return 0
+    except RelayError as e:
+        result = f"refused: {e}"
+        raise
+    finally:
+        _hub_logged(entry, result)
 
 
 # ---------------------------------------------------------------- ownership handoff
@@ -1097,6 +1207,22 @@ def build_parser():
                     help="listen address: 127.0.0.1 (default), or 0.0.0.0 inside a container")
     ui.add_argument("--background", action="store_true")
     ui.add_argument("--serve-child", action="store_true", help=argparse.SUPPRESS)
+    hb = add("hub", cmd_hub, "what needs you, for reading on a phone; note and act pass on your words (hub sessions)")
+    hb.add_argument("--json", action="store_true")
+    hb.add_argument("--by", help="claude, codex or owner, when detection is ambiguous")
+    hsub = hb.add_subparsers(dest="hub_cmd")
+    hn = hsub.add_parser("note", help="send the owner's words to a digest item's session (agents, --relayed)")
+    hn.add_argument("ref", help="<digest id>.<item number> from the digest the owner saw")
+    hn.add_argument("text")
+    ha = hsub.add_parser("act", help="run an owner action on a digest item's feature (agents, --relayed)")
+    ha.add_argument("ref", help="<digest id>.<item number> from the digest the owner saw")
+    ha.add_argument("action", choices=["go", "extra-round", "reset-rounds", "release", "review", "review-spec",
+                                       "review-plan", "merge"])
+    ha.add_argument("--reviewer", help="review actions only: provider:model[@effort] from the preference table")
+    for sp in (hn, ha):
+        sp.add_argument("--relayed", action="store_true",
+                        help="required: pass on what the owner typed in the hub chat (recorded as relayed)")
+        sp.add_argument("--by", help="claude or codex, when detection is ambiguous")
     try:
         from . import status
     except ImportError:

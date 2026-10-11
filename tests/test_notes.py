@@ -200,15 +200,28 @@ class NotesTest(unittest.TestCase):
             notes.log_path("claude", "s1"))]))                                     # no temporary files left
         self.assertIs(os.replace, real)
 
+    def test_a_note_can_carry_its_own_prefix(self):  # mobile-hub D5
+        hub = "Note from the owner, relayed by claude session h1 from the relay hub:"
+        fake = self.inbox()
+        note, _ = notes.send("claude", "s1", "go ahead", fake.path, NOW, prefix=hub)
+        self.assertEqual(note["status"], "posted")
+        [sent] = fake.wait()
+        self.assertEqual(json.loads(sent)["message"]["content"], hub + "\ngo ahead")
+        notes.send("claude", "s2", "queued one", None, NOW, prefix=hub)
+        notes.send("claude", "s2", "plain one", None, NOW)
+        taken = notes.take("claude", "s2", NOW)
+        self.assertEqual(notes.render(taken), [hub + "\nqueued one", notes.PREFIX + "\nplain one"])
+        self.assertNotIn("prefix", self.log("claude", "s2")[1])
+
     def test_take_waits_out_a_send_that_is_posting(self):
         fake = self.inbox()
         posting, release = threading.Event(), threading.Event()
         real = notes.post
 
-        def slow(inbox, text):
+        def slow(inbox, text, prefix=None):
             posting.set()
             release.wait(2)
-            return real(inbox, text)
+            return real(inbox, text, prefix)
         result = {}
         with mock.patch.object(notes, "post", side_effect=slow):
             sender = threading.Thread(target=lambda: result.update(sent=notes.send("claude", "s1", "hi", fake.path,
