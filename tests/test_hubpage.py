@@ -35,6 +35,12 @@ class RedactTest(unittest.TestCase):  # phone-artifact D5, R7, R8
             self.assertEqual(hubpage.redact(f"see {secret} here"), "see [hidden] here", secret)
         self.assertEqual(hubpage.redact("api_key=abc123 and auth: 'x y'"), "api_key=[hidden] and auth: [hidden]")
         self.assertEqual(hubpage.redact("built at 011f0bc"), "built at 011f0bc")    # a short SHA stays
+        for run in ("abcdef" * 8, "1" * 40, "AbC+/dEf" * 5 + "xyz=", "0123456789abcdef" * 4):
+            self.assertEqual(hubpage.redact(f"key {run} end"), "key [hidden] end", run)
+        for kept in ("boss-defects-2-3-and-a-very-long-feature-slug-name", "relay-go/hub-owned-feature",
+                     "snake_case_names_that_run_on_for_quite_a_while_here"):
+            self.assertEqual(hubpage.redact(kept), kept)
+        self.assertEqual(hubpage.redact("~/" + "a" * 40 + "/report.txt"), "report.txt")
 
     def test_paths(self):
         self.assertEqual(hubpage.redact("read ~/x/y.txt and /opt/a/b and " + "/" + "private/tmp/c/d."), "read y.txt and b and d.")

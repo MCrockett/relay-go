@@ -406,14 +406,17 @@ class OutputTest(HubHome):  # mobile-hub D2, R1 to R6
         strip = lambda t: "\n".join(l for l in t.splitlines()[1:] if not l.startswith("page: "))
         self.assertEqual(strip(with_page), strip(text))                      # same digest apart from its id
 
-    def test_page_write_failure_keeps_the_digest(self):  # F1
+    def test_page_write_failure_keeps_the_digest(self):  # F1, F6
         from relaylib import hubpage
+        first = json.loads(self.page_run(self.data(), True)[0])
+        hubpage.record(S, first["digest"], "https://claude.ai/artifact/page-1", now=self.NOW)
         with mock.patch.object(hubpage, "write", side_effect=OSError("disk full")):
             text, warnings = self.page_run(self.data(), False)
             out = json.loads(self.page_run(self.data(), True)[0])
         self.assertNotIn("page:", text)
         self.assertEqual(warnings, ["could not write the page: disk full"])
-        self.assertIsNone(out["page"])
+        self.assertEqual(out["page"], {"path": None, "url": "https://claude.ai/artifact/page-1",
+                                       "published_digest": first["digest"], "published_at": self.NOW})
         self.assertIn("could not write the page: disk full", out["warnings"])
         self.assertEqual(hub.resolve(out["digest"] + ".1", S, now=self.NOW)["slug"], "ledger")
 
@@ -734,7 +737,7 @@ class SkillTest(unittest.TestCase):  # mobile-hub R15
             text = f.read()
         section = text.split("## The phone page", 1)[1]
         for rule in ("only when the owner asks", "relay hub --json --page", "page-url <digest id> <url>",
-                     "publish a new one", "cannot publish artifacts", "page: null", "offline, timeout, sign-in",
+                     "publish a new one", "cannot publish artifacts", "`page.path` is null", "offline, timeout, sign-in",
                      "not refreshed", "the link still shows the digest from",
                      "no page has been published from this hub yet", "show the digest in the chat", "never share",
                      "never publishes on its own", "naming both"):

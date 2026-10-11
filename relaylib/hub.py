@@ -496,8 +496,8 @@ def render_json(digest_id, source, found, c, warnings, page=NO_PAGE):
 
 
 def _page(session, records, digest_id, source, found, c, failed, now):
-    """({path, url, published_digest, published_at}, None) once the phone page is written, else (None, warning)
-    (phone-artifact D1, D2, F1). An unsaved digest still gets an unnumbered page under its own name."""
+    """({path, url, published_digest, published_at}, warning or None). On a write failure `path` is None and the
+    rest still says what this hub's link shows (phone-artifact D1, D2, F1, F6). An unsaved digest still gets an unnumbered page under its own name."""
     from . import hubpage
     if records is None:
         from . import sessions
@@ -505,14 +505,15 @@ def _page(session, records, digest_id, source, found, c, failed, now):
             records = sessions.read_records()
         except Exception:
             records = []
+    link = hubpage.published(session)
+    info = {"path": None, "url": link["url"], "published_digest": link["digest"], "published_at": link["at"]}
     try:
         page = hubpage.render(digest_id, source, found, c, failed, now, ids=hubpage.known_ids(found, records),
                               token=hubpage.dashboard_token())
-        path = hubpage.write(digest_id or "unsaved-" + new_id(now * 1000), page)
+        info["path"] = hubpage.write(digest_id or "unsaved-" + new_id(now * 1000), page)
     except OSError as e:
-        return None, f"could not write the page: {e}"
-    link = hubpage.published(session)
-    return {"path": path, "url": link["url"], "published_digest": link["digest"], "published_at": link["at"]}, None
+        return info, f"could not write the page: {e}"  # the link and what it still shows stay known (F1, F6)
+    return info, None
 
 
 def digest(session, records=None, as_json=False, now=None, page=False):
@@ -547,7 +548,7 @@ def digest(session, records=None, as_json=False, now=None, page=False):
     if as_json:
         return render_json(digest_id, source, found, c, warnings, info), []
     text = render_text(digest_id, source, found, c, now, failed)
-    if info is not NO_PAGE and info:
+    if info is not NO_PAGE and info["path"]:
         text += f"page: {info['path']}\n" + (f"publish to: {info['url']}\n" if info["url"] else "")
     return text, [w for w in warnings if w not in failed]
 

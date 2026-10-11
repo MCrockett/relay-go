@@ -23,7 +23,7 @@ BEARER = re.compile(r"(\bBearer\s+)[^\s\"']+")
 NAMED = re.compile(r"(\b[\w.-]*(?:token|secret|passwd|password|api_key|apikey|auth)[\w.-]*\s*[:=]\s*)"
                    r"(?!Bearer\b|\[hidden\])(\"[^\"]*\"|'[^']*'|[^\s,;]+)", re.IGNORECASE)
 UUID = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
-LONG_RUN = re.compile(r"(?<![\w+=/-])(?=[\w+=-]*\d)(?=[\w+=-]*[A-Za-z])[A-Za-z0-9+=_-]{32,}")
+LONG_RUN = re.compile(r"[A-Za-z0-9+/]{32,}={0,2}")  # base64 or hex; `-` and `_` split it, so slugs stay
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 PATH = re.compile(r"(?:~|/(?:Users|home|private|var|tmp|opt|Volumes))((?:/[^\s/()\[\]\"'`<>,;]+)+)")
 MIN_ID = 4  # shorter strings are too common to treat as ids
@@ -42,9 +42,9 @@ def redact(text, ids=(), token=None):
     text = UUID.sub("[id]", text)
     for known in sorted({i for i in ids if isinstance(i, str) and len(i) >= MIN_ID}, key=len, reverse=True):
         text = text.replace(known, "[id]")
-    text = LONG_RUN.sub("[hidden]", text)
     text = EMAIL.sub("[email]", text)
-    return PATH.sub(lambda m: m.group(1).rsplit("/", 1)[-1], text)
+    text = PATH.sub(lambda m: m.group(1).rsplit("/", 1)[-1], text)  # before long runs, so a path keeps its name
+    return LONG_RUN.sub("[hidden]", text)
 
 
 def known_ids(found, records):
