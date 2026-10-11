@@ -100,15 +100,15 @@
     }
   },
   "rounds": {
-    "build": 1,
+    "build": 2,
     "plan": 5,
     "spec": 2
   },
   "skipped": [],
   "small": false,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-10-11T12:39:17-04:00",
+  "status": "in-review",
+  "updated": "2026-10-11T12:43:33-04:00",
   "verdicts": {
     "plan": "GO",
     "spec": "GO"
