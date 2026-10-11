@@ -185,6 +185,56 @@ def _session_item(entry):
             "answer_here": entry.get("state") == "permission" or bool(QUESTION_TOOLS & set(tools))}
 
 
+def _num(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _strs(values):
+    return [v for v in values if isinstance(v, str)] if isinstance(values, list) else []
+
+
+def _str(value):
+    return value if isinstance(value, str) else None
+
+
+def _clean_row(row):
+    """A copy of a feature row with values of the wrong type dropped (phone-artifact F5), so an old or odd snapshot
+    never aborts the digest."""
+    out = dict(row)
+    for key in ("repo", "feature", "stage", "status", "error", "checkout", "ci"):
+        if key in out:
+            out[key] = _str(out[key])
+    asks = []
+    for a in row.get("asks") if isinstance(row.get("asks"), list) else []:
+        if isinstance(a, dict):
+            ask = {k: _str(a.get(k)) for k in ("kind", "text", "session") if _str(a.get(k)) is not None}
+            ask["since"] = _num(a.get("since"))
+            asks.append(ask)
+    out.update(asks=asks, flags=_strs(row.get("flags")), actions=_strs(row.get("actions")),
+               wait_since=_num(row.get("wait_since")),
+               pr=row.get("pr") if isinstance(row.get("pr"), int) and not isinstance(row.get("pr"), bool) else None)
+    for key in ("pr_info", "seen"):
+        if not isinstance(out.get(key), dict):
+            out[key] = None
+    return out
+
+
+def _clean_session(entry):
+    """A copy of an other-sessions or running entry with values of the wrong type dropped (phone-artifact F5)."""
+    out = {k: _str(entry.get(k)) for k in ("provider", "session_id", "label", "state")}
+    excerpt = entry.get("excerpt")
+    out.update(since=_num(entry.get("since")), pending_tools=_strs(entry.get("pending_tools")),
+               excerpt=excerpt if isinstance(excerpt, dict) and isinstance(excerpt.get("text"), str) else None)
+    return out
+
+
+def _clean(data):
+    rows = data.get("rows") if isinstance(data.get("rows"), list) else []
+    lists = {k: data.get(k) if isinstance(data.get(k), list) else [] for k in ("other_sessions", "running")}
+    return dict(data, rows=[_clean_row(r) for r in rows if isinstance(r, dict)],
+                **{k: [_clean_session(e) for e in v if isinstance(e, dict)] for k, v in lists.items()})
+
+
 def _order(item):
     at = item.get("wait_since")
     name = (item.get("repo") or "", item.get("slug") or "") if item["kind"] != "session" else \
@@ -206,6 +256,7 @@ def items(data, hubs=None):
     """The digest's items, oldest wait first, numbered from 1 (D2, R1 to R3). Hub sessions are left out even
     when a snapshot cached before they registered lists them, and so are asks that wait on one."""
     hubs = registered() if hubs is None else hubs
+    data = _clean(data)
     rows = [_without_hubs(r, hubs) for r in data.get("rows") or []]
     out = [_feature_item(r) for r in rows if r.get("error") or _feature_wanted(r)]
     out += [_session_item(e) for e in data.get("other_sessions") or []
@@ -219,6 +270,7 @@ def items(data, hubs=None):
 def counts(data, found, hubs=None):
     """What needs nothing: features in progress and sessions working, beyond the items."""
     hubs = registered() if hubs is None else hubs
+    data = _clean(data)
     listed = {(i.get("repo"), i.get("slug")) for i in found if i["kind"] != "session"}
     sessions = {(i.get("provider"), i.get("session_id")) for i in found if i["kind"] == "session"}
     sessions |= {(i["session"]["provider"], i["session"]["session_id"]) for i in found if i.get("session")}
@@ -368,8 +420,9 @@ def _item_lines(item, numbered, now):
             lines += _wrap(f'"{text}"', "    ")
     else:
         lines = _wrap(f"{lead}{item['repo']}/{item['slug']} · {item['stage']} {item['status']}{wait}", "")
-        for text in [a["text"] for a in item.get("asks") or []] + list(item.get("flags") or []):
-            lines += _wrap(text, "    ")
+        for text in [a.get("text") for a in item.get("asks") or []] + list(item.get("flags") or []):
+            if isinstance(text, str):
+                lines += _wrap(text, "    ")
         if item.get("pr"):
             lines += _wrap(f"PR #{item['pr']} · CI {item.get('ci') or 'unknown'}", "    ")
         if item.get("actions"):

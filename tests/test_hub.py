@@ -164,6 +164,18 @@ def other(sid, state="waiting", since=None, tools=(), label="proteindiary", prov
             "pending_tools": list(tools), "excerpt": {"source": "agent", "text": f"{sid} says hi"}}
 
 
+def malformed():
+    """A snapshot with values of the wrong type everywhere (phone-artifact F5)."""
+    return {"rows": [
+        row("ok", status="waiting-owner", wait=100, asks=[{"kind": "decide", "text": "Decide", "since": 100}]),
+        row("badwait", status="waiting-owner", wait="x", pr="7", flags=[3],
+            asks=["x", {"kind": "decide", "text": 5, "since": "y"}]),
+        row("truewait", status="ready-to-merge", wait=True, pr_info="x") | {"asks": None, "actions": None, "flags": None},
+        "not a row"],
+        "other_sessions": [other("X1", since="soon", tools=[1, "Bash"]) | {"excerpt": "plain"}, 7],
+        "running": [{"provider": 1, "session_id": None}, None]}
+
+
 class ItemsTest(HubHome):  # mobile-hub D2, D8, R1 to R3
     def data(self):
         return {"rows": [
@@ -223,6 +235,14 @@ class ItemsTest(HubHome):  # mobile-hub D2, D8, R1 to R3
         self.assertEqual(found[0]["session"]["session_id"], "P1")
         self.assertEqual(hub.counts(data, found, hubs={("claude", "HUB")}), {"features": 1, "sessions": 0})
         self.assertEqual([a["session"] for a in data["rows"][1]["asks"]], ["claude:HUB"])  # the input is unchanged
+
+    def test_malformed_values_do_not_abort_the_digest(self):  # phone-artifact F5
+        found = hub.items(malformed(), hubs=set())
+        self.assertEqual([i.get("slug") or i.get("session_id") for i in found], ["ok", "badwait", "truewait", "X1"])
+        bad = found[1]
+        self.assertEqual((bad["wait_since"], bad["asks"], bad["flags"], bad["pr"]),
+                         (None, [{"kind": "decide", "text": None}], [], None))
+        self.assertEqual(hub.counts(malformed(), found, hubs=set()), {"features": 0, "sessions": 1})
 
     def test_a_registered_hub_is_left_out_of_a_cached_snapshot(self):
         hub.register("claude", "HUB", [rec("HUB")])
@@ -328,6 +348,15 @@ class OutputTest(HubHome):  # mobile-hub D2, R1 to R6
     def run_digest(self, data, as_json=False, session=S):
         with mock.patch.object(hub, "load", return_value=(data, {"from": "dashboard", "age_seconds": 12.0})):
             return hub.digest(session, records=[rec("S")], as_json=as_json, now=self.NOW)
+
+    def test_a_malformed_snapshot_prints_in_every_mode(self):  # phone-artifact F5
+        data = malformed()
+        before = json.dumps(data, sort_keys=True)
+        text, _ = self.run_digest(data)
+        self.assertIn("badwait", text)
+        self.assertEqual([i.get("slug") or i.get("session_id") for i in json.loads(self.run_digest(data, True)[0])
+                          ["items"]], ["ok", "badwait", "truewait", "X1"])
+        self.assertEqual(json.dumps(data, sort_keys=True), before)
 
     def test_text(self):
         out, warnings = self.run_digest(self.data())
