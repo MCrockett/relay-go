@@ -68,18 +68,13 @@
     }
   ],
   "pr": null,
-  "refresh": false,
+  "refresh": true,
   "repo": "relay-go",
   "retried": false,
   "review_notes": {},
   "reviewed": {
     "build": null,
-    "plan": {
-      "inputs": {
-        "plan": "25e8e70e9a076ebeec48eef73fdb0b555f6fa76bcdb4247710374058c336019e",
-        "spec": "9f2f83d7892a08c9b7fe9b6c4fa15ed3d30ceefecef7e6b728e477bb428839c8"
-      }
-    },
+    "plan": null,
     "spec": {
       "inputs": {
         "spec": "9f2f83d7892a08c9b7fe9b6c4fa15ed3d30ceefecef7e6b728e477bb428839c8"
@@ -92,11 +87,10 @@
   },
   "skipped": [],
   "small": false,
-  "stage": "build",
-  "status": "drafting",
-  "updated": "2026-10-11T11:59:03-04:00",
+  "stage": "spec",
+  "status": "in-review",
+  "updated": "2026-10-11T12:28:57-04:00",
   "verdicts": {
-    "plan": "GO",
     "spec": "GO"
   }
 }
