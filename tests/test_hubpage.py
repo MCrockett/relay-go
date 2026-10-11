@@ -65,5 +65,156 @@ class TokenTest(HubHome):
         self.assertIsNone(hubpage.dashboard_token())
 
 
+NOW = 1_800_000_000.0
+SRC = {"from": "dashboard", "age_seconds": 12.0}
+COUNTS = {"features": 2, "sessions": 1}
+
+
+def feature(n, slug="ledger", **extra):
+    item = {"n": n, "kind": "feature", "repo": "bottomsup", "slug": slug, "stage": "build", "status": "ready-to-merge",
+            "asks": [{"kind": "merge", "text": "Merge PR #12"}], "flags": [], "wait_since": NOW - 7200, "pr": 12,
+            "pr_state": "OPEN", "ci": "green", "actions": ["merge", "review"], "session": None, "answer_here": False,
+            "repo_path": "/Users/x/StudioProjects/bottomsup", "seen": {"commit": "c0ffee" * 6}}
+    item.update(extra)
+    return item
+
+
+def session(n, sid="S-123", **extra):
+    item = {"n": n, "kind": "session", "provider": "codex", "session_id": sid, "label": "proteindiary",
+            "state": "waiting", "pending_tools": [], "wait_since": NOW - 600, "excerpt": "PR #72 is merged",
+            "answer_here": False}
+    item.update(extra)
+    return item
+
+
+def cards(page):
+    return page.count('<article class="card')
+
+
+class RenderTest(unittest.TestCase):  # phone-artifact D3, D5, R4, R5, R7, R9
+    def render(self, found, digest_id="mv3abc1234", failed=(), **kw):
+        return hubpage.render(digest_id, SRC, found, COUNTS, failed, now=NOW, **kw)
+
+    def test_items_in_digest_order_with_their_fields(self):
+        found = [feature(1), session(2), {"n": 3, "kind": "error", "repo": "broken", "slug": "?",
+                                          "error": "could not read state", "wait_since": None, "actions": []},
+                 feature(4, "perm", status="drafting", asks=[{"kind": "approve", "text": "Approve Bash"}], pr=None,
+                         actions=[], session={"provider": "claude", "session_id": "P1", "label": "isitev",
+                                              "state": "permission"}, answer_here=True)]
+        page = self.render(found)
+        order = [page.index(x) for x in ("bottomsup/ledger", "proteindiary · codex session", "broken", "bottomsup/perm")]
+        self.assertEqual(order, sorted(order))
+        for text in ("digest mv3abc1234", "dashboard data 12s old", "numbers work until", '<span class="n">1.</span>',
+                     "build ready-to-merge · waiting 2h", "Merge PR #12", "PR #12 · CI green",
+                     '<span class="chip">merge</span>', "waiting · waiting 10m", "PR #72 is merged",
+                     "could not be read: could not read state", "session: isitev (claude) · permission",
+                     '<p class="here">open this session to answer</p>', '<article class="card answer">',
+                     "Nothing else needs you: 2 features in progress, 1 session working.", hubpage.FOOTER):
+            self.assertIn(text, page)
+        self.assertEqual(cards(page), 4)
+        self.assertNotIn("Nothing needs you right now", page)
+
+    def test_an_unsaved_digest_has_no_numbers(self):
+        page = self.render([feature(1), session(2)], digest_id=None)
+        self.assertIn("Not saved: actions need a new digest.", page)
+        self.assertNotIn('class="n"', page)
+        self.assertNotIn("numbers work until", page)
+
+    def test_nothing_waiting_and_a_failed_scan(self):
+        self.assertIn("Nothing needs you right now.", self.render([]))
+        page = self.render([], failed=["Features could not be read: boom"])
+        self.assertIn("Could not check everything: Features could not be read: boom", page)
+        self.assertNotIn("Nothing needs you right now", page)
+
+    def test_values_of_the_wrong_type_are_left_out(self):  # F5
+        page = self.render([feature(1, wait_since="x", asks=None, pr="7", flags=[3], actions="merge", session="s"),
+                            session(2, pending_tools=None, excerpt={"text": "x"}, label=None, wait_since=True), "junk"])
+        self.assertEqual(cards(page), 2)
+        self.assertNotIn("more items", page)
+        for gone in ("waiting ", "PR #", "actions:", "session:", "needs:", "<blockquote>"):
+            self.assertNotIn(gone, page.split("<main>", 1)[1].split("</header>", 1)[1], gone)
+
+    def test_item_text_is_escaped(self):  # R9
+        page = self.render([feature(1, slug="<b>x</b>", asks=[{"text": "<script>alert(1)</script>"}],
+                                    flags=['" onmouseover="x'])])
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", page)
+        self.assertIn("&lt;b&gt;x&lt;/b&gt;", page)
+        self.assertIn("&quot; onmouseover=&quot;x", page)
+        self.assertEqual(page.count("<script>"), 1)                                  # only the page's own
+
+    def test_nothing_private_reaches_the_page(self):  # R7
+        found = [session(1, sid="S-123", excerpt=f"run claude --resume S-123 with {UUID} at /Users/x/p/a.txt"),
+                 feature(2)]
+        page = self.render(found, ids=hubpage.known_ids(found, []), token="TOKENVALUE1")
+        page_with_token = self.render([session(1, excerpt="open ?t=TOKENVALUE1")], token="TOKENVALUE1")
+        for secret in ("S-123", UUID, "/Users/x", "StudioProjects", "c0ffee", "repo_path"):
+            self.assertNotIn(secret, page, secret)
+        self.assertIn("run claude --resume [id] with [id] at a.txt", page)
+        self.assertNotIn("TOKENVALUE1", page_with_token)
+
+
+class ShellTest(unittest.TestCase):  # phone-artifact D4, D6, R6, R10
+    def test_the_artifact_rules(self):
+        page = hubpage.render("mv3abc1234", SRC, [feature(1)], COUNTS, now=NOW)
+        for text in ("<title>Relay hub</title>", 'name="viewport"', ":root{", "@media (prefers-color-scheme: dark)",
+                     ':root:not([data-theme="light"])', ':root[data-theme="dark"]', "body{", "background:var(--bg)",
+                     "padding:16px", "overflow-wrap:anywhere", f'data-made="{int(NOW)}"',
+                     f'data-expires="{int(NOW) + hub.KEEP_S}"', hubpage.EXPIRED):
+            self.assertIn(text, page)
+        for banned in ("src=", 'href="http', "@import", "url(", "fetch", "XMLHttpRequest", "WebSocket", "import("):
+            self.assertNotIn(banned, page, banned)
+        self.assertEqual(page.count("<script>"), 1)
+        import re
+        self.assertFalse([w for w in re.findall(r"(?<![-\w])(?:min-)?width:(\d+)px", page) if int(w) > 328])
+
+    def test_limits(self):
+        long = "x " * 500
+        found = [feature(n, slug=f"f{n}", asks=[{"text": long}] * 9, flags=[long], ci=long) for n in range(1, 151)]
+        page = hubpage.render("mv3abc1234", SRC, found, COUNTS, failed=[long] * 10, now=NOW)
+        self.assertEqual(cards(page), 100)
+        self.assertIn("50 more items: ask the hub", page)
+        self.assertIn("<li>+4 more</li>", page)
+        self.assertIn('<p class="failed">+5 more</p>', page)
+        self.assertEqual(page.count("Could not check everything"), 5)
+        self.assertNotIn("x " * 201, page)
+        self.assertLess(len(page.encode()), hubpage.BYTES_MAX)
+
+    def test_the_byte_budget_drops_cards_from_the_end(self):
+        wide = "\U0001F600" * 400
+        found = [feature(n, slug=wide, asks=[{"text": wide}] * 5, flags=[wide] * 5, ci=wide) for n in range(1, 101)]
+        page = hubpage.render("mv3abc1234", SRC, found, COUNTS, now=NOW)
+        shown = cards(page)
+        self.assertLess(shown, 100)
+        self.assertIn(f"{100 - shown} more items: ask the hub", page)
+        self.assertLess(len(page.encode()), hubpage.BYTES_MAX)
+        self.assertIn('<span class="n">1.</span>', page)
+
+    @unittest.skipUnless(__import__("shutil").which("node"), "node is not installed")
+    def test_the_age_script_runs(self):
+        import re
+        import subprocess
+        page = hubpage.render("mv3abc1234", SRC, [], COUNTS, now=NOW)
+        script = re.search(r"<script>(.*)</script>", page, re.S).group(1)
+        made = int(re.search(r'data-made="(\d+)"', page).group(1))
+        expires = int(re.search(r'data-expires="(\d+)"', page).group(1))
+        harness = """
+const els = {age: {textContent: ""}, expired: {hidden: true}};
+let timer = null, now = %d * 1000;
+global.document = {body: {dataset: {made: "%d", expires: "%d"}}, getElementById: id => els[id] || null};
+global.setInterval = f => { timer = f; };
+Date.now = () => now;
+%s
+const out = [els.age.textContent, els.expired.hidden];
+now = (%d + 1) * 1000; timer();
+out.push(els.expired.hidden);
+console.log(JSON.stringify(out));
+""" % (made + 600, made, expires, script, expires)
+        before = subprocess.run(["node", "-e", harness], capture_output=True, text=True, timeout=30)
+        self.assertEqual(json.loads(before.stdout), ["made 10 min ago", True, False])
+        after = subprocess.run(["node", "-e", harness.replace(f"now = {made + 600} * 1000", f"now = {expires + 5} * 1000")],
+                               capture_output=True, text=True, timeout=30)
+        self.assertEqual(json.loads(after.stdout), ["made 24 h ago", False, False])
+
+
 if __name__ == "__main__":
     unittest.main()
