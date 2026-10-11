@@ -10,6 +10,18 @@
   "extra_rounds": {},
   "feature": "phone-artifact",
   "history": {
+    "build": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2"
+        ],
+        "head": "1a1eb69c44fe62fda43141262a8d1f0da9c0cf5f",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ],
     "plan": [
       {
         "blocking_ids": [
@@ -95,9 +107,10 @@
   "skipped": [],
   "small": false,
   "stage": "build",
-  "status": "in-review",
-  "updated": "2026-10-11T12:34:43-04:00",
+  "status": "changes-requested",
+  "updated": "2026-10-11T12:36:22-04:00",
   "verdicts": {
+    "build": "NO-GO",
     "plan": "GO",
     "spec": "GO"
   }
