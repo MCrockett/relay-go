@@ -106,7 +106,7 @@ class RenderTest(unittest.TestCase):  # phone-artifact D3, D5, R4, R5, R7, R9
         self.assertEqual(order, sorted(order))
         for text in ("digest mv3abc1234", "dashboard data 12s old", "numbers work until", '<span class="n">1.</span>',
                      "build ready-to-merge · waiting 2h", "Merge PR #12", "PR #12 · CI green",
-                     '<span class="chip">merge</span>', "waiting · waiting 10m", "PR #72 is merged",
+                     '<span class="chip">merge</span>', '<p class="meta">waiting 10m</p>', "PR #72 is merged",
                      "could not be read: could not read state", "session: isitev (claude) · permission",
                      '<p class="here">open this session to answer</p>', '<article class="card answer">',
                      "Nothing else needs you: 2 features in progress, 1 session working.", hubpage.FOOTER):
@@ -132,7 +132,7 @@ class RenderTest(unittest.TestCase):  # phone-artifact D3, D5, R4, R5, R7, R9
         self.assertEqual(cards(page), 2)
         self.assertNotIn("more items", page)
         for gone in ("waiting ", "PR #", "actions:", "session:", "needs:", "<blockquote>"):
-            self.assertNotIn(gone, page.split("<main>", 1)[1].split("</header>", 1)[1], gone)
+            self.assertNotIn(gone, page.split("<main", 1)[1].split("</header>", 1)[1], gone)
 
     def test_item_text_is_escaped(self):  # R9
         page = self.render([feature(1, slug="<b>x</b>", asks=[{"text": "<script>alert(1)</script>"}],
@@ -156,9 +156,13 @@ class RenderTest(unittest.TestCase):  # phone-artifact D3, D5, R4, R5, R7, R9
 class ShellTest(unittest.TestCase):  # phone-artifact D4, D6, R6, R10
     def test_the_artifact_rules(self):
         page = hubpage.render("mv3abc1234", SRC, [feature(1)], COUNTS, now=NOW)
-        for text in ("<title>Relay hub</title>", 'name="viewport"', ":root{", "@media (prefers-color-scheme: dark)",
+        self.assertTrue(page.startswith("<title>Relay hub</title>"))
+        for tag in ("<!doctype", "<html", "<head>", "<body", "<meta"):              # the publisher adds these
+            self.assertNotIn(tag, page.lower())
+        self.assertEqual(page.count("color-scheme:dark"), 2)
+        for text in (":root{", "@media (prefers-color-scheme: dark)",
                      ':root:not([data-theme="light"])', ':root[data-theme="dark"]', "body{", "background:var(--bg)",
-                     "padding:16px", "overflow-wrap:anywhere", f'data-made="{int(NOW)}"',
+                     "padding-inline:16px", "overflow-wrap:anywhere", f'data-made="{int(NOW)}"',
                      f'data-expires="{int(NOW) + hub.KEEP_S}"', hubpage.EXPIRED):
             self.assertIn(text, page)
         for banned in ("src=", 'href="http', "@import", "url(", "fetch", "XMLHttpRequest", "WebSocket", "import("):
@@ -200,7 +204,8 @@ class ShellTest(unittest.TestCase):  # phone-artifact D4, D6, R6, R10
         harness = """
 const els = {age: {textContent: ""}, expired: {hidden: true}};
 let timer = null, now = %d * 1000;
-global.document = {body: {dataset: {made: "%d", expires: "%d"}}, getElementById: id => els[id] || null};
+els.hub = {dataset: {made: "%d", expires: "%d"}};
+global.document = {getElementById: id => els[id] || null};
 global.setInterval = f => { timer = f; };
 Date.now = () => now;
 %s

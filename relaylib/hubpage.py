@@ -79,11 +79,11 @@ STYLE = """
 --here-bg:#fff4d6;--here-fg:#6b4a00;--warn-bg:#fde8e6;--warn-fg:#8a2318}
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#171716;--fg:#ecebe7;--muted:#a3a29c;
 --card:#232321;--border:#3a3936;--accent:#8db7e0;--here-bg:#3b3014;--here-fg:#f2d48a;--warn-bg:#3d1d1a;
---warn-fg:#f3b0a7}}
+--warn-fg:#f3b0a7;color-scheme:dark}}
 :root[data-theme="dark"]{--bg:#171716;--fg:#ecebe7;--muted:#a3a29c;--card:#232321;--border:#3a3936;
---accent:#8db7e0;--here-bg:#3b3014;--here-fg:#f2d48a;--warn-bg:#3d1d1a;--warn-fg:#f3b0a7}
+--accent:#8db7e0;--here-bg:#3b3014;--here-fg:#f2d48a;--warn-bg:#3d1d1a;--warn-fg:#f3b0a7;color-scheme:dark}
 *{box-sizing:border-box}
-body{margin:0;padding:16px;background:var(--bg);color:var(--fg);
+body{margin:0;padding-block:16px;padding-inline:16px;background:var(--bg);color:var(--fg);
 font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 main{max-width:640px;margin:0 auto}
 h1{font-size:20px;margin:0 0 4px}
@@ -101,7 +101,8 @@ blockquote{margin:6px 0;padding-left:10px;border-left:3px solid var(--border);co
 .here{background:var(--here-bg);color:var(--here-fg);border-radius:6px;padding:4px 8px;font-weight:600}
 """
 
-SCRIPT = """(function(){var b=document.body,made=+b.dataset.made,expires=+b.dataset.expires;
+SCRIPT = """(function(){var b=document.getElementById("hub");if(!b){return;}
+var made=+b.dataset.made,expires=+b.dataset.expires;
 function tick(){var now=Date.now()/1000,m=Math.max(0,Math.floor((now-made)/60));
 var age=document.getElementById("age");
 if(age){age.textContent=m<60?"made "+m+" min ago":"made "+Math.floor(m/60)+" h ago";}
@@ -146,7 +147,8 @@ def _card(item, numbered, now, t):
         body.append(f'<p>could not be read: {t(item.get("error"))}</p>')
     elif kind == "session":
         title = f'{t(item.get("label"))} · {t(item.get("provider"))} session'
-        body.append(f'<p class="meta">{" · ".join(x for x in (t(item.get("state")), waited) if x)}</p>')
+        state = "" if item.get("state") == "waiting" and waited else t(item.get("state"))  # "waiting 40m" says it
+        body.append(f'<p class="meta">{" · ".join(x for x in (state, waited) if x)}</p>')
         tools = hub._strs(item.get("pending_tools"))
         if tools:
             body.append(f'<p>needs: {t(", ".join(tools))}</p>')
@@ -209,12 +211,11 @@ def render(digest_id, source, found, counts, failed=(), now=None, ids=(), token=
     def page(shown):
         more = len(found) - shown
         rest = [f'<p class="more">{more} more items: ask the hub</p>'] if more > 0 else []
-        return ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-                "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-                f"<title>Relay hub</title><style>{STYLE}</style></head>"
-                f'<body data-made="{int(now)}" data-expires="{int(expires)}"><main>'
+        # The artifact publisher wraps the page in its own doctype, head (charset, viewport) and body (D6).
+        return (f"<title>Relay hub</title><style>{STYLE}</style>"
+                f'<main id="hub" data-made="{int(now)}" data-expires="{int(expires)}">'
                 + "".join(top + cards[:shown] + rest)
-                + f"<p>{closing}</p><footer>{FOOTER}</footer></main><script>{SCRIPT}</script></body></html>\n")
+                + f"<p>{closing}</p><footer>{FOOTER}</footer></main><script>{SCRIPT}</script>\n")
 
     shown = len(cards)
     out = page(shown)
