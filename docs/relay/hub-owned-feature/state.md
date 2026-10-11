@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "fix/hub-owned-feature",
   "extra_rounds": {},
   "feature": "hub-owned-feature",
@@ -17,7 +19,7 @@
       "at": "2026-10-11T11:06:01-04:00"
     }
   ],
-  "pr": null,
+  "pr": 20,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -26,15 +28,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-10-11T11:06:01-04:00",
+  "status": "in-review",
+  "updated": "2026-10-11T11:44:38-04:00",
   "verdicts": {}
 }
 ---
