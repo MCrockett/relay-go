@@ -764,10 +764,22 @@ def cmd_hub(args):
         return cmd_hub_note(args)
     if args.hub_cmd == "act":
         return cmd_hub_act(args)
-    out, warnings = hub.digest(_hub_session(dict(os.environ), args.by), as_json=args.json)
+    if args.hub_cmd == "page-url":
+        return cmd_hub_page_url(args)
+    out, warnings = hub.digest(_hub_session(dict(os.environ), args.by), as_json=args.json, page=args.page)
     for w in warnings:
         print(f"relay: warning: {w}", file=sys.stderr)
     sys.stdout.write(out)
+    return 0
+
+
+def cmd_hub_page_url(args):
+    from . import hubpage
+    try:
+        hubpage.record(_hub_session(dict(os.environ), args.by), args.digest, args.url)
+    except OSError as e:
+        raise RelayError(f"could not record the page link: {e}")
+    print("relay: hub page link recorded")
     return 0
 
 
@@ -1210,7 +1222,12 @@ def build_parser():
     hb = add("hub", cmd_hub, "what needs you, for reading on a phone; note and act pass on your words (hub sessions)")
     hb.add_argument("--json", action="store_true")
     hb.add_argument("--by", help="claude, codex or owner, when detection is ambiguous")
+    hb.add_argument("--page", action="store_true", help="also write the digest as a phone page to publish")
     hsub = hb.add_subparsers(dest="hub_cmd")
+    hp = hsub.add_parser("page-url", help="record this hub session's published page link (hub sessions)")
+    hp.add_argument("digest", help="the digest id the published page shows")
+    hp.add_argument("url", help="the claude.ai artifact link")
+    hp.add_argument("--by", help="claude or codex, when detection is ambiguous")
     hn = hsub.add_parser("note", help="send the owner's words to a digest item's session (agents, --relayed)")
     hn.add_argument("ref", help="<digest id>.<item number> from the digest the owner saw")
     hn.add_argument("text")
