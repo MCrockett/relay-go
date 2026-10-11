@@ -359,6 +359,29 @@ def _prune(now):
                 os.unlink(path)
             except OSError:
                 pass
+    _prune_pages(now)
+
+
+def _prune_pages(now):
+    """Phone pages go with their digests; an unsaved digest's page goes after 24 hours (phone-artifact D2)."""
+    folder_ = os.path.join(folder(), "pages")
+    try:
+        names = os.listdir(folder_)
+    except OSError:
+        return
+    for name in names:
+        if not name.endswith(".html"):
+            continue
+        path = os.path.join(folder_, name)
+        try:
+            if name.startswith("unsaved-"):
+                stale = now - os.stat(path).st_mtime > KEEP_S
+            else:
+                stale = not os.path.exists(os.path.join(_digests(), name[:-5] + ".json"))
+            if stale:
+                os.unlink(path)
+        except OSError:
+            pass
 
 
 def resolve(ref, session, now=None):

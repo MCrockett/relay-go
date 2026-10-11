@@ -323,6 +323,24 @@ class DigestStoreTest(HubHome):  # mobile-hub D4, R7, R7a
         self.assertNotIn(ids[0] + ".json", left)
         self.assertIn(ids[-1] + ".json", left)
 
+    def test_pruning_takes_pages_with_their_digests(self):  # phone-artifact D2
+        from relaylib import hubpage
+        ids = [hub.save([feat(1, str(i))], SRC, S, now=1000.0 + i)[0] for i in range(21)]
+        for digest in ids:
+            hubpage.write(digest, "<p>page</p>")
+        hubpage.write("orphan1234", "<p>gone</p>")
+        hubpage.write("unsaved-old", "<p>old</p>")
+        hubpage.write("unsaved-new", "<p>new</p>")
+        os.utime(os.path.join(hubpage.pages(), "unsaved-old.html"), (1000.0, 1000.0))
+        late = 1000.0 + 86400 + 30
+        os.utime(os.path.join(hubpage.pages(), "unsaved-new.html"), (late, late))
+        hub.save([feat(1, "late")], SRC, S, now=late)
+        left = sorted(os.listdir(hubpage.pages()))
+        self.assertNotIn(ids[0] + ".html", left)                       # its digest was pruned
+        self.assertIn(ids[-1] + ".html", left)
+        self.assertNotIn("orphan1234.html", left)
+        self.assertEqual([n for n in left if n.startswith("unsaved-")], ["unsaved-new.html"])
+
     def test_an_unwritable_folder_gives_a_warning(self):
         os.makedirs(os.path.join(hub.folder(), "digests"))
         os.chmod(os.path.join(hub.folder(), "digests"), 0o500)

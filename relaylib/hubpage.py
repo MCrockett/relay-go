@@ -222,3 +222,96 @@ def render(digest_id, source, found, counts, failed=(), now=None, ids=(), token=
         shown -= 1
         out = page(shown)
     return out
+
+
+# ---------------------------------------------------------------- the page file (D2)
+
+def pages():
+    return os.path.join(hub.folder(), "pages")
+
+
+def write(name, page):
+    """Write pages/<name>.html atomically, mode 0600, and return its path; an OSError leaves no temp file."""
+    import contextlib
+    import tempfile
+    os.makedirs(pages(), exist_ok=True)
+    fd, temp = tempfile.mkstemp(prefix=".page-", dir=pages())
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            os.fchmod(f.fileno(), 0o600)
+            f.write(page)
+        path = os.path.join(pages(), name + ".html")
+        os.replace(temp, path)
+        return path
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temp)
+        raise
+
+
+# ---------------------------------------------------------------- this hub's link (D2)
+
+ARTIFACT = re.compile(r"https://claude\.ai/(?:code/)?artifact/[A-Za-z0-9_-]{1,128}")
+NONE = {"url": None, "digest": None, "at": None}
+
+
+def _links_path():
+    return os.path.join(hub.folder(), "pages.json")
+
+
+def _key(session):
+    return f"{session['provider']}:{session['session_id']}"
+
+
+def _read_links():
+    with open(_links_path()) as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError("hub pages file is malformed")
+    return data
+
+
+def published(session):
+    """This session's {url, digest, at}, all None when unknown or not a claude.ai artifact link (F2)."""
+    if not session:
+        return dict(NONE)
+    try:
+        entry = _read_links().get(_key(session))
+    except (OSError, ValueError):
+        return dict(NONE)
+    if not isinstance(entry, dict) or not isinstance(entry.get("url"), str) or not ARTIFACT.fullmatch(entry["url"]):
+        return dict(NONE)
+    return {"url": entry["url"], "digest": entry.get("digest") if isinstance(entry.get("digest"), str) else None,
+            "at": hub._num(entry.get("at"))}
+
+
+def _own_digest(digest_id, session, now):
+    if not isinstance(digest_id, str) or not re.fullmatch(r"[0-9a-z]{5,20}", digest_id):
+        return False
+    try:
+        with open(os.path.join(hub._digests(), digest_id + ".json")) as f:
+            digest = json.load(f)
+        return digest["session"] == session and 0 <= now - digest["created_at"] <= hub.KEEP_S
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def record(session, digest_id, url, now=None):
+    """Remember this hub session's artifact link and the digest it now shows (D2, R3)."""
+    import time
+    from .errors import RelayError
+    now = time.time() if now is None else now
+    if not session:
+        raise RelayError("relay hub page-url records a hub session's page: run it from the hub session")
+    if not isinstance(url, str) or not ARTIFACT.fullmatch(url):
+        raise RelayError("not a claude.ai artifact link: expected https://claude.ai/artifact/<id> "
+                         "or https://claude.ai/code/artifact/<id>")
+    if not _own_digest(digest_id, session, now):
+        raise RelayError(f"unknown digest {digest_id}: use the digest id this session's relay hub --page printed")
+    with hub._locked():
+        try:
+            links = _read_links()
+        except (OSError, ValueError):
+            links = {}
+        links[_key(session)] = {"url": url, "digest": digest_id, "at": now}
+        hub._write_json(_links_path(), links)

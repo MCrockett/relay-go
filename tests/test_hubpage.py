@@ -216,5 +216,85 @@ console.log(JSON.stringify(out));
         self.assertEqual(json.loads(after.stdout), ["made 24 h ago", False, False])
 
 
+HUB_S = {"provider": "claude", "session_id": "S"}
+OTHER = {"provider": "claude", "session_id": "T"}
+URL = "https://claude.ai/code/artifact/0b1c2d3e-aaaa"
+
+
+class PageFileTest(HubHome):  # phone-artifact D2, R1, R2, F1
+    def test_write(self):
+        path = hubpage.write("abc12", "<p>é</p>")
+        self.assertEqual(path, os.path.join(hub.folder(), "pages", "abc12.html"))
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "<p>é</p>")
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        hubpage.write("abc13", "<p>two</p>")
+        self.assertEqual(sorted(os.listdir(hubpage.pages())), ["abc12.html", "abc13.html"])
+
+    def test_an_unwritable_folder_raises_and_leaves_nothing(self):
+        os.makedirs(hubpage.pages())
+        hubpage.write("abc12", "old")
+        with mock.patch.object(hubpage.os, "replace", side_effect=OSError("disk full")), self.assertRaises(OSError):
+            hubpage.write("abc12", "new")
+        self.assertEqual(os.listdir(hubpage.pages()), ["abc12.html"])
+        os.chmod(hubpage.pages(), 0o500)
+        self.addCleanup(os.chmod, hubpage.pages(), 0o700)
+        with self.assertRaises(OSError):
+            hubpage.write("abc14", "x")
+
+
+class LinkTest(HubHome):  # phone-artifact D2, R3, F2, F3
+    def setUp(self):
+        super().setUp()
+        self.digest = hub.save([], {"from": "build", "seconds": 1.0}, HUB_S, now=NOW)[0]
+
+    def test_record_and_read_back(self):
+        self.assertEqual(hubpage.published(HUB_S), {"url": None, "digest": None, "at": None})   # missing file
+        hubpage.record(HUB_S, self.digest, URL, now=NOW + 5)
+        self.assertEqual(hubpage.published(HUB_S), {"url": URL, "digest": self.digest, "at": NOW + 5})
+        other = hub.save([], {"from": "build", "seconds": 1.0}, OTHER, now=NOW)[0]
+        hubpage.record(OTHER, other, "https://claude.ai/artifact/xyz", now=NOW)
+        self.assertEqual(hubpage.published(HUB_S)["url"], URL)
+        self.assertEqual(hubpage.published(OTHER)["url"], "https://claude.ai/artifact/xyz")
+        self.assertEqual(os.stat(os.path.join(hub.folder(), "pages.json")).st_mode & 0o777, 0o600)
+
+    def test_refusals(self):
+        from relaylib.errors import RelayError
+        other = hub.save([], {"from": "build", "seconds": 1.0}, OTHER, now=NOW)[0]
+        for session, digest, url, now in (
+                (HUB_S, self.digest, "https://example.com/artifact/x", NOW),
+                (HUB_S, self.digest, "http://claude.ai/artifact/x", NOW),
+                (HUB_S, self.digest, URL + "/extra", NOW),
+                (HUB_S, other, URL, NOW),                                     # another session's digest
+                (HUB_S, self.digest, URL, NOW + hub.KEEP_S + 1),             # expired
+                (HUB_S, "zzzzz9", URL, NOW),                                  # unknown
+                (HUB_S, "../x", URL, NOW),
+                (None, self.digest, URL, NOW)):
+            with self.assertRaises(RelayError):
+                hubpage.record(session, digest, url, now=now)
+        self.assertFalse(os.path.exists(os.path.join(hub.folder(), "pages.json")))
+
+    def test_bad_files_read_as_unknown(self):
+        path = os.path.join(hub.folder(), "pages.json")
+        for content in ("{", "[]", json.dumps({"claude:S": {"url": "https://evil.example/x"}}),
+                        json.dumps({"claude:S": "x"})):
+            with open(path, "w") as f:
+                f.write(content)
+            self.assertEqual(hubpage.published(HUB_S), {"url": None, "digest": None, "at": None}, content)
+        with open(path, "w") as f:
+            json.dump({"claude:S": {"url": URL, "digest": 5, "at": "x"}}, f)
+        self.assertEqual(hubpage.published(HUB_S), {"url": URL, "digest": None, "at": None})
+        os.chmod(path, 0)
+        self.addCleanup(os.chmod, path, 0o600)
+        self.assertEqual(hubpage.published(HUB_S)["url"], None)                  # unreadable
+        self.assertEqual(hubpage.published(None)["url"], None)
+
+    def test_an_unwritable_folder_raises(self):
+        os.chmod(hub.folder(), 0o500)
+        self.addCleanup(os.chmod, hub.folder(), 0o700)
+        with self.assertRaises(OSError):
+            hubpage.record(HUB_S, self.digest, URL, now=NOW)
+
+
 if __name__ == "__main__":
     unittest.main()
