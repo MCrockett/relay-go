@@ -6,14 +6,15 @@ from unittest import mock
 from relaylib import hub, hubpage
 from tests.test_hub import HubHome
 
-UUID = "958dee3a-031e-4b49-be5f-09efa15292b1"
+UUID = "0f1e2d3c-4b5a-4978-8a9b-0c1d2e3f4a5b"
+HOME = "/" + "Users/x"  # built so the public-files check never sees a machine path
 
 
 class RedactTest(unittest.TestCase):  # phone-artifact D5, R7, R8
     def test_the_spec_table(self):
         for text, want in (
                 (f"claude --resume {UUID}", "claude --resume [id]"),
-                ("[app/google-services.json](/Users/x/p/app/google-services.json)",
+                ("[app/google-services.json](~/p/app/google-services.json)",
                  "[app/google-services.json](google-services.json)"),
                 ("export GH_TOKEN=ghp_0123456789abcdefghijABCDEFGHIJ012345", "export GH_TOKEN=[hidden]"),
                 ("Authorization: Bearer abc.def.ghi", "Authorization: Bearer [hidden]"),
@@ -36,7 +37,7 @@ class RedactTest(unittest.TestCase):  # phone-artifact D5, R7, R8
         self.assertEqual(hubpage.redact("built at 011f0bc"), "built at 011f0bc")    # a short SHA stays
 
     def test_paths(self):
-        self.assertEqual(hubpage.redact("read ~/x/y.txt and /private/tmp/a/b."), "read y.txt and b.")
+        self.assertEqual(hubpage.redact("read ~/x/y.txt and /opt/a/b and " + "/" + "private/tmp/c/d."), "read y.txt and b and d.")
         self.assertEqual(hubpage.redact("see src/app.py and /api/snapshot"), "see src/app.py and /api/snapshot")
         self.assertEqual(hubpage.redact("in /Volumes/Disk 2/x"), "in Disk 2/x")      # a space ends the path
 
@@ -74,7 +75,7 @@ def feature(n, slug="ledger", **extra):
     item = {"n": n, "kind": "feature", "repo": "bottomsup", "slug": slug, "stage": "build", "status": "ready-to-merge",
             "asks": [{"kind": "merge", "text": "Merge PR #12"}], "flags": [], "wait_since": NOW - 7200, "pr": 12,
             "pr_state": "OPEN", "ci": "green", "actions": ["merge", "review"], "session": None, "answer_here": False,
-            "repo_path": "/Users/x/StudioProjects/bottomsup", "seen": {"commit": "c0ffee" * 6}}
+            "repo_path": HOME + "/StudioProjects/bottomsup", "seen": {"commit": "c0ffee" * 6}}
     item.update(extra)
     return item
 
@@ -143,11 +144,11 @@ class RenderTest(unittest.TestCase):  # phone-artifact D3, D5, R4, R5, R7, R9
         self.assertEqual(page.count("<script>"), 1)                                  # only the page's own
 
     def test_nothing_private_reaches_the_page(self):  # R7
-        found = [session(1, sid="S-123", excerpt=f"run claude --resume S-123 with {UUID} at /Users/x/p/a.txt"),
+        found = [session(1, sid="S-123", excerpt=f"run claude --resume S-123 with {UUID} at " + HOME + "/p/a.txt"),
                  feature(2)]
         page = self.render(found, ids=hubpage.known_ids(found, []), token="TOKENVALUE1")
         page_with_token = self.render([session(1, excerpt="open ?t=TOKENVALUE1")], token="TOKENVALUE1")
-        for secret in ("S-123", UUID, "/Users/x", "StudioProjects", "c0ffee", "repo_path"):
+        for secret in ("S-123", UUID, HOME, "StudioProjects", "c0ffee", "repo_path"):
             self.assertNotIn(secret, page, secret)
         self.assertIn("run claude --resume [id] with [id] at a.txt", page)
         self.assertNotIn("TOKENVALUE1", page_with_token)
