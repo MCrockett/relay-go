@@ -728,5 +728,18 @@ class SkillTest(unittest.TestCase):  # mobile-hub R15
             self.assertIn('for d in "$HERE"/skills/*/', f.read())   # every skill folder with a SKILL.md is linked
 
 
+    def test_the_skill_has_the_page_rules(self):  # phone-artifact R11
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "skills", "relay-hub", "SKILL.md")) as f:
+            text = f.read()
+        section = text.split("## The phone page", 1)[1]
+        for rule in ("only when the owner asks", "relay hub --json --page", "page-url <digest id> <url>",
+                     "publish a new one", "cannot publish artifacts", "page: null", "offline, timeout, sign-in",
+                     "not refreshed", "the link still shows the digest from",
+                     "no page has been published from this hub yet", "show the digest in the chat", "never share",
+                     "never publishes on its own", "naming both"):
+            self.assertIn(rule, section)
+        self.assertNotIn("\u2014", text)
+
 if __name__ == "__main__":
     unittest.main()

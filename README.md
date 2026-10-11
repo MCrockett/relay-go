@@ -266,7 +266,13 @@ otherwise. Answer in plain words: "merge 2" or "tell 3 to go ahead". The hub pas
 in its chat, and only for an item you were shown; if that item changed since, it shows you the new state and
 asks again. Each action is recorded as relayed by the hub, and a merge it relays gets a PR comment saying so.
 It cannot answer a session stopped at a permission prompt or a question: it tells you to open that session.
-The hub never lists itself as waiting on you, and nothing is published beyond that merge comment.
+The hub never lists itself as waiting on you, and it publishes nothing on its own beyond that merge comment.
+
+Ask the hub to "show me the page" for the same digest as a phone page: a private claude.ai artifact with one
+card per item and the same numbers, at one link the hub updates each time you ask. The page is read-only; you
+still act by typing in the hub chat. relay builds it (`relay hub --page`) without session ids, workstation
+paths or tokens, and redacts secrets and email addresses in quoted text. It shows how old it is and says so
+once its numbers expire after 24 hours.
 
 For SwiftBar, choose its plugin folder and run `./install.sh`. The installer links `menubar/relay.30s.py`.
 The menu shows how many features need you, links to the dashboard or GitHub, and can open the UI.
