@@ -12,6 +12,18 @@
   },
   "feature": "mobile-hub",
   "history": {
+    "build": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2"
+        ],
+        "head": "ce638974707b32136762d67e611fd2bc5f8b2b8a",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ],
     "plan": [
       {
         "blocking_ids": [
@@ -188,9 +200,10 @@
   "skipped": [],
   "small": false,
   "stage": "build",
-  "status": "in-review",
-  "updated": "2026-10-10T20:10:53-04:00",
+  "status": "changes-requested",
+  "updated": "2026-10-10T20:13:10-04:00",
   "verdicts": {
+    "build": "NO-GO",
     "plan": "GO",
     "spec": "GO"
   }
