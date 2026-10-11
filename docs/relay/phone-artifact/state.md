@@ -2,6 +2,7 @@
 {
   "authors": {
     "idea": "claude",
+    "plan": "claude",
     "spec": "claude"
   },
   "branch": "feat/phone-artifact",
@@ -57,13 +58,14 @@
     }
   },
   "rounds": {
+    "plan": 1,
     "spec": 2
   },
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "drafting",
-  "updated": "2026-10-11T11:55:18-04:00",
+  "status": "in-review",
+  "updated": "2026-10-11T11:55:28-04:00",
   "verdicts": {
     "spec": "GO"
   }
