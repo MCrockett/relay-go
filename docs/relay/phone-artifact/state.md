@@ -7,7 +7,20 @@
   "branch": "feat/phone-artifact",
   "extra_rounds": {},
   "feature": "phone-artifact",
-  "history": {},
+  "history": {
+    "spec": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2"
+        ],
+        "head": "0d3c711d88fbdc6299238bd5365a45ed0cdd7fe3",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ]
+  },
   "owner": {
     "provider": "claude",
     "session": "958dee3a-031e-4b49-be5f-09efa15292b1",
@@ -33,6 +46,7 @@
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
+  "review_notes": {},
   "reviewed": {
     "build": null,
     "plan": null,
@@ -44,9 +58,11 @@
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "in-review",
-  "updated": "2026-10-11T11:50:12-04:00",
-  "verdicts": {}
+  "status": "changes-requested",
+  "updated": "2026-10-11T11:51:26-04:00",
+  "verdicts": {
+    "spec": "NO-GO"
+  }
 }
 ---
 
