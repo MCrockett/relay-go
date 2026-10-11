@@ -376,6 +376,77 @@ class OutputTest(HubHome):  # mobile-hub D2, R1 to R6
                           ["items"]], ["ok", "badwait", "truewait", "X1"])
         self.assertEqual(json.dumps(data, sort_keys=True), before)
 
+    def page_run(self, data, as_json, session=S, now=None):
+        with mock.patch.object(hub, "load", return_value=(data, {"from": "dashboard", "age_seconds": 12.0})):
+            return hub.digest(session, records=[rec("S")], as_json=as_json, now=now or self.NOW, page=True)
+
+    def test_page_matches_the_digest(self):  # phone-artifact R1
+        from relaylib import hubpage
+        text, warnings = self.page_run(self.data(), False)
+        self.assertEqual(warnings, [])
+        digest = text.split("digest ", 1)[1].split(" ", 1)[0]
+        path = os.path.join(hubpage.pages(), digest + ".html")
+        self.assertTrue(text.endswith(f"page: {path}\n"))
+        with open(path) as f:
+            page = f.read()
+        self.assertIn(f"digest {digest}", page)
+        for label in ("bottomsup/ledger", "proteindiary · codex session", "isitev/perm"):
+            self.assertIn(label, page)
+        out = json.loads(self.page_run(self.data(), True)[0])
+        self.assertEqual(out["page"], {"path": os.path.join(hubpage.pages(), out["digest"] + ".html"), "url": None,
+                                       "published_digest": None, "published_at": None})
+
+    def test_no_page_without_the_flag(self):
+        from relaylib import hubpage
+        text, _ = self.run_digest(self.data())
+        self.assertNotIn("page:", text)
+        self.assertNotIn("page", json.loads(self.run_digest(self.data(), True)[0]))
+        self.assertFalse(os.path.exists(hubpage.pages()))
+        with_page, _ = self.page_run(self.data(), False)
+        strip = lambda t: "\n".join(l for l in t.splitlines()[1:] if not l.startswith("page: "))
+        self.assertEqual(strip(with_page), strip(text))                      # same digest apart from its id
+
+    def test_page_write_failure_keeps_the_digest(self):  # F1
+        from relaylib import hubpage
+        with mock.patch.object(hubpage, "write", side_effect=OSError("disk full")):
+            text, warnings = self.page_run(self.data(), False)
+            out = json.loads(self.page_run(self.data(), True)[0])
+        self.assertNotIn("page:", text)
+        self.assertEqual(warnings, ["could not write the page: disk full"])
+        self.assertIsNone(out["page"])
+        self.assertIn("could not write the page: disk full", out["warnings"])
+        self.assertEqual(hub.resolve(out["digest"] + ".1", S, now=self.NOW)["slug"], "ledger")
+
+    def test_page_reports_the_link(self):
+        from relaylib import hubpage
+        first = json.loads(self.page_run(self.data(), True)[0])
+        url = "https://claude.ai/artifact/page-1"
+        hubpage.record(S, first["digest"], url, now=self.NOW)
+        text, _ = self.page_run(self.data(), False)
+        self.assertTrue(text.endswith(f"publish to: {url}\n"))
+        out = json.loads(self.page_run(self.data(), True)[0])
+        self.assertEqual((out["page"]["url"], out["page"]["published_digest"], out["page"]["published_at"]),
+                         (url, first["digest"], self.NOW))
+
+    def test_a_malformed_snapshot_gets_a_page(self):  # F5
+        for as_json in (False, True):
+            out, _ = self.page_run(malformed(), as_json)
+            self.assertIn("badwait", out)
+        from relaylib import hubpage
+        self.assertEqual(len(os.listdir(hubpage.pages())), 2)
+
+    def test_an_unsaved_digest_still_gets_a_page(self):  # R5
+        from relaylib import hubpage
+        with mock.patch.object(hub, "save", return_value=(None, "could not save the digest: boom")):
+            text, _ = self.page_run(self.data(), False)
+            out = json.loads(self.page_run(self.data(), True)[0])
+        for path in (text.rsplit("page: ", 1)[1].strip(), out["page"]["path"]):
+            self.assertTrue(os.path.basename(path).startswith("unsaved-"))
+            with open(path) as f:
+                page = f.read()
+            self.assertIn("Not saved: actions need a new digest.", page)
+            self.assertNotIn('class="n"', page)
+
     def test_text(self):
         out, warnings = self.run_digest(self.data())
         self.assertEqual(warnings, [])

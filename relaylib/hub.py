@@ -484,15 +484,42 @@ def render_text(digest_id, source, found, c, now=None, failed=()):
     return "\n".join(lines) + "\n"
 
 
-def render_json(digest_id, source, found, c, warnings):
+NO_PAGE = object()
+
+
+def render_json(digest_id, source, found, c, warnings, page=NO_PAGE):
     shown = [{k: v for k, v in item.items() if k not in PRIVATE} for item in found]
-    return json.dumps({"digest": digest_id, "source": source, "items": shown, "counts": c,
-                       "warnings": list(warnings)}, indent=1) + "\n"
+    out = {"digest": digest_id, "source": source, "items": shown, "counts": c, "warnings": list(warnings)}
+    if page is not NO_PAGE:
+        out["page"] = page  # only with --page (phone-artifact D2)
+    return json.dumps(out, indent=1) + "\n"
 
 
-def digest(session, records=None, as_json=False, now=None):
+def _page(session, records, digest_id, source, found, c, failed, now):
+    """({path, url, published_digest, published_at}, None) once the phone page is written, else (None, warning)
+    (phone-artifact D1, D2, F1). An unsaved digest still gets an unnumbered page under its own name."""
+    from . import hubpage
+    if records is None:
+        from . import sessions
+        try:
+            records = sessions.read_records()
+        except Exception:
+            records = []
+    try:
+        page = hubpage.render(digest_id, source, found, c, failed, now, ids=hubpage.known_ids(found, records),
+                              token=hubpage.dashboard_token())
+        path = hubpage.write(digest_id or "unsaved-" + new_id(now * 1000), page)
+    except OSError as e:
+        return None, f"could not write the page: {e}"
+    link = hubpage.published(session)
+    return {"path": path, "url": link["url"], "published_digest": link["digest"], "published_at": link["at"]}, None
+
+
+def digest(session, records=None, as_json=False, now=None, page=False):
     """(stdout text, warnings): load, number, save, render (R1 to R7). `session` is {provider, session_id}
-    for an agent session, registered as a hub, or None from the owner's terminal."""
+    for an agent session, registered as a hub, or None from the owner's terminal. `page` also writes the phone
+    page for the same digest (phone-artifact)."""
+    now = time.time() if now is None else now
     warnings = []
     if session:
         if records is None:
@@ -512,9 +539,17 @@ def digest(session, records=None, as_json=False, now=None):
     digest_id, warning = save(found, source, session, now)
     if warning:
         warnings.append(warning)
+    info = NO_PAGE
+    if page:
+        info, warning = _page(session, records, digest_id, source, found, c, failed, now)
+        if warning:
+            warnings.append(warning)
     if as_json:
-        return render_json(digest_id, source, found, c, warnings), []
-    return render_text(digest_id, source, found, c, now, failed), [w for w in warnings if w not in failed]
+        return render_json(digest_id, source, found, c, warnings, info), []
+    text = render_text(digest_id, source, found, c, now, failed)
+    if info is not NO_PAGE and info:
+        text += f"page: {info['path']}\n" + (f"publish to: {info['url']}\n" if info["url"] else "")
+    return text, [w for w in warnings if w not in failed]
 
 
 # ---------------------------------------------------------------- passing on the owner's words (D5, D6)
