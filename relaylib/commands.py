@@ -92,14 +92,20 @@ def owner_record(me, root):
             "since": state.now_iso()}
 
 
-def record_owner_action(st, action, relayed_by=None, once=False):
+def record_owner_action(st, action, relayed_by=None, once=False, via=None):
     """once: participation ("owner joined spec") counts one action per stage, however many submits."""
     if once and any(a["action"] == action for a in st["owner_actions"]):
         return
     entry = {"at": state.now_iso(), "action": action}
     if relayed_by:
         entry["relayed_by"] = relayed_by
+    if via:
+        entry["via"] = via
     st["owner_actions"].append(entry)
+
+
+def via_note(via):
+    return f" (owner via {via['channel']}, actor {via['actor']}, event {via['event']})" if via else ""
 
 
 def unique_path(path):
@@ -666,7 +672,7 @@ def write_stuck(c, stage, reason):
 
 # ---------------------------------------------------------------- owner decisions
 
-def apply_override(root, slug, st, action, relayed_by=None):
+def apply_override(root, slug, st, action, relayed_by=None, via=None):
     """Shared state change for the terminal command and isolated UI owner actions."""
     stage = st["stage"]
     if action == "release":
@@ -690,9 +696,55 @@ def apply_override(root, slug, st, action, relayed_by=None):
         st["rounds"][stage], st["history"][stage], st["extra_rounds"][stage] = 0, [], 0
         st.get("round_base", {}).pop(stage, None)
         st["status"] = "changes-requested"
-    record_owner_action(st, f"override {action} ({stage})", relayed_by)
-    note = f" (relayed by {relayed_by})" if relayed_by else ""
+    record_owner_action(st, f"override {action} ({stage})", relayed_by, via=via)
+    note = f" (relayed by {relayed_by})" if relayed_by else via_note(via)
     return f"relay: owner override {action} on {stage}{note}"
+
+
+def cmd_owner(args):
+    """Owner decisions collected by another tool. Always one JSON object on stdout.
+    Exit 0 done, 3 stale (with `fresh`), 4 replay, 5 busy, 1 error."""
+    from . import owneractions, status
+
+    def out(obj, code):
+        print(json.dumps(obj))
+        return code
+
+    def stale(message, repo):
+        try:
+            fresh = owneractions.fingerprint_full(repo, args.slug)
+        except (RelayError, OSError):
+            fresh = None
+        return out({"message": message, "fresh": fresh}, 3)
+    try:
+        if identity.in_agent_session(dict(os.environ)):
+            raise RelayError(f"relay owner {args.owner_cmd} is owner-only: run it in your own terminal, not in an "
+                             "agent session")
+        repo = os.path.join(status.projects_root(), args.repo)
+        if not os.path.exists(os.path.join(repo, ".git")):
+            raise RelayError(f"no repo {args.repo} under {status.projects_root()}")
+        if args.owner_cmd == "fingerprint":
+            return out(owneractions.fingerprint_full(repo, args.slug), 0)
+        via = {"channel": args.via, "actor": args.actor, "event": args.event}
+        for name, value in via.items():
+            if not value or len(value) > 200 or "\n" in value or "\r" in value:
+                raise RelayError(f"--{'via' if name == 'channel' else name} must be one non-empty line of at most "
+                                 "200 characters")
+        return out(owneractions.act(repo, args.slug, args.action, args.expect_commit, via), 0)
+    except owneractions.Replay as e:
+        return out({"message": str(e)}, 4)
+    except owneractions.Conflict as e:
+        if str(e).startswith("busy"):
+            return out({"message": str(e)}, 5)
+        return stale(str(e), repo)
+    except owneractions.NotApplicable as e:
+        return stale(str(e), repo)
+    except RelayError as e:
+        if "no published branch" in str(e):
+            return stale(str(e), repo)
+        return out({"message": str(e)}, 1)
+    except OSError as e:  # lock file, temp dir, missing executable: still one JSON object, never a traceback
+        return out({"message": f"{type(e).__name__}: {e}"}, 1)
 
 
 def cmd_override(args):
@@ -1180,6 +1232,17 @@ def build_parser():
     o.add_argument("--feature")
     o.add_argument("--relayed", action="store_true",
                    help="agents only: pass on a decision the owner made in this conversation (recorded as relayed)")
+    ow = add("owner", cmd_owner, "owner decisions collected by another tool; JSON output")
+    osub = ow.add_subparsers(dest="owner_cmd", required=True)
+    fp = osub.add_parser("fingerprint")
+    fp.add_argument("repo")
+    fp.add_argument("slug")
+    ac = osub.add_parser("act")
+    ac.add_argument("repo")
+    ac.add_argument("slug")
+    ac.add_argument("action", choices=["go", "extra-round", "reset-rounds"])
+    for flag in ("--expect-commit", "--via", "--actor", "--event"):
+        ac.add_argument(flag, required=True)
     o.add_argument("--by", help="claude or codex, when detection is ambiguous (with --relayed)")
     t = add("take", cmd_take, "take over a feature another session handed off")
     t.add_argument("--feature")
