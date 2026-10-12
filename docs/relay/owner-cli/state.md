@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "feat/owner-cli",
   "extra_rounds": {},
   "feature": "owner-cli",
@@ -17,7 +19,7 @@
       "at": "2026-10-11T22:55:14-04:00"
     }
   ],
-  "pr": null,
+  "pr": 22,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -26,15 +28,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-10-11T22:55:14-04:00",
+  "status": "in-review",
+  "updated": "2026-10-12T00:47:33-04:00",
   "verdicts": {}
 }
 ---
