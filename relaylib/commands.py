@@ -713,7 +713,7 @@ def cmd_owner(args):
     def stale(message, repo):
         try:
             fresh = owneractions.fingerprint_full(repo, args.slug)
-        except RelayError:
+        except (RelayError, OSError):
             fresh = None
         return out({"message": message, "fresh": fresh}, 3)
     try:
@@ -743,6 +743,8 @@ def cmd_owner(args):
         if "no published branch" in str(e):
             return stale(str(e), repo)
         return out({"message": str(e)}, 1)
+    except OSError as e:  # lock file, temp dir, missing executable: still one JSON object, never a traceback
+        return out({"message": f"{type(e).__name__}: {e}"}, 1)
 
 
 def cmd_override(args):

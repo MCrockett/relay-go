@@ -36,7 +36,8 @@ class OwnerCliTest(unittest.TestCase):
         helpers.sh(self.work, "git", "add", ".")
         helpers.sh(self.work, "git", "commit", "-qm", "fixture")
         helpers.sh(self.work, "git", "push", "-q", "-u", "origin", "feat/demo")
-        env = dict(CLEAN_ENV, RELAY_ROOT=self.root, RELAY_HOME=os.path.join(self.root, "relay-home"))
+        env = dict(CLEAN_ENV, RELAY_ROOT=self.root, RELAY_HOME=os.path.join(self.root, "relay-home"),
+                   RELAY_GH_BIN=helpers.fake_bin(self.root, "gh", helpers.FAKE_GH))  # never the real gh
         os.makedirs(env["RELAY_HOME"])
         p = mock.patch.dict(os.environ, env)
         p.start()
@@ -166,3 +167,16 @@ class OwnerCliTest(unittest.TestCase):
             self.assertIn("message", out)
         code, out = self.run_cli(*self.act_args("go", self.head(), "x" * 201))
         self.assertEqual(code, 1)
+
+    def test_oserror_from_the_action_lock_prints_json_and_exits_1(self):
+        with mock.patch.object(owneractions, "action_lock", side_effect=PermissionError("lock denied")):
+            code, out = self.run_cli(*self.act_args("go", self.head(), "20"))
+        self.assertEqual(code, 1)
+        self.assertIn("lock denied", out["message"])
+
+    def test_oserror_while_refreshing_fresh_exits_3_with_null(self):
+        with mock.patch.object(owneractions, "fingerprint_full", side_effect=OSError("temp dir unavailable")):
+            code, out = self.run_cli("owner", "act", "demo-repo", "demo", "go", "--expect-commit", "0" * 40,
+                                     "--via", "tracker", "--actor", "a", "--event", "21")
+        self.assertEqual(code, 3, out)
+        self.assertIsNone(out["fresh"])
