@@ -740,7 +740,7 @@ def cmd_owner(args):
     except owneractions.NotApplicable as e:
         return stale(str(e), repo)
     except RelayError as e:
-        if args.owner_cmd == "fingerprint" and "no published branch" in str(e):
+        if "no published branch" in str(e):
             return stale(str(e), repo)
         return out({"message": str(e)}, 1)
 

@@ -137,6 +137,13 @@ class OwnerCliTest(unittest.TestCase):
         self.assertIn("no published branch", out["message"])
         self.assertIsNone(out["fresh"])
 
+    def test_act_without_published_branch_exits_3(self):
+        code, out = self.run_cli("owner", "act", "demo-repo", "nothing-here", "go", "--expect-commit", self.head(),
+                                 "--via", "tracker", "--actor", "a", "--event", "12")
+        self.assertEqual(code, 3, out)
+        self.assertIn("no published branch", out["message"])
+        self.assertIsNone(out["fresh"])
+
     def test_unknown_repo_prints_json_and_exits_1(self):
         code, out = self.run_cli("owner", "fingerprint", "no-such-repo", "demo")
         self.assertEqual(code, 1)
