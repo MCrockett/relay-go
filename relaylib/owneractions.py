@@ -21,6 +21,10 @@ EFFECTS = {
 }
 
 
+class Replay(RelayError):
+    pass
+
+
 class Conflict(RelayError):
     def __init__(self, message, fresh=None):
         super().__init__(message)
@@ -132,7 +136,7 @@ def _validate(repo, slug, action, seen):
     return fresh, st
 
 
-def run_override(repo, slug, action, seen, relayed_by=None):
+def run_override(repo, slug, action, seen, relayed_by=None, via=None):
     if action not in ("go", "extra-round", "reset-rounds", "release"):
         raise RelayError("unknown override")
     with action_lock():
@@ -144,7 +148,7 @@ def run_override(repo, slug, action, seen, relayed_by=None):
                 gitops.git(repo, "worktree", "add", "--detach", work, fresh["commit"])
                 created = True
                 from .commands import apply_override
-                message = apply_override(work, slug, st, action, relayed_by)  # recorded, no PR comment (D11)
+                message = apply_override(work, slug, st, action, relayed_by, via=via)  # recorded, no PR comment (D11)
                 state.write_state(state.state_path(work, slug), st)
                 ciskip.commit(work, slug, st, config.load(work), message)  # the worktree goes if the push fails
                 gitops.git(work, "push", "origin", f"HEAD:refs/heads/{fresh['branch']}")
@@ -152,6 +156,45 @@ def run_override(repo, slug, action, seen, relayed_by=None):
             finally:
                 if created:
                     gitops.git(repo, "worktree", "remove", "--force", work)
+
+
+def fingerprint_full(repo, slug):
+    fp = fingerprint(repo, slug)
+    st = state_at(repo, slug, fp["commit"])
+    pr_url = None
+    if st.get("pr"):
+        try:
+            pr_url = f"https://github.com/{github_repo(repo)}/pull/{st['pr']}"
+        except RelayError:
+            pass
+    return {"commit": fp["commit"], "branch": fp["branch"], "stage": st["stage"], "status": st["status"],
+            "round": (st.get("rounds") or {}).get(st["stage"], 0), "pr": st.get("pr"), "pr_url": pr_url,
+            "owner": fp["owner"]}
+
+
+def act(repo, slug, action, expect_commit, via):
+    """An owner decision collected outside relay, bound to the revision the owner saw."""
+    if action not in ("go", "extra-round", "reset-rounds"):
+        raise RelayError("unknown owner action")
+    fresh = fingerprint(repo, slug)
+    st_now = state_at(repo, slug, fresh["commit"])
+    if any((a.get("via") or {}).get("event") == via["event"] and (a.get("via") or {}).get("channel") == via["channel"]
+           for a in st_now.get("owner_actions", [])):
+        raise Replay(f"event {via['event']} is already recorded for {slug}")
+    try:
+        seen_state = state_at(repo, slug, expect_commit)
+    except RelayError:
+        raise Conflict("the revision you decided on is not published", fresh)
+    seen = {"commit": expect_commit, "stage": seen_state["stage"], "status": seen_state["status"],
+            "owner": seen_state.get("owner") or {}}
+    result = run_override(repo, slug, action, seen, via=via)
+    if seen_state["stage"] == "build" and st_now.get("pr"):
+        from .commands import via_note
+        try:
+            gitops.pr_comment(repo, st_now["pr"], f"relay: owner decision `{action}` on build{via_note(via)}.")
+        except RelayError:
+            pass
+    return result
 
 
 def github_repo(repo):

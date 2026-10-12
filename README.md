@@ -94,7 +94,11 @@ In a repo with required status checks, the commit that records the GO still runs
     relay override release        free a feature whose agent is gone, so another can `relay take`
     relay override review [--reviewer provider:model]   a fresh build review from the reviewer you pick
     relay override review --stage spec|plan             review an approved spec or plan again
+    relay owner fingerprint <repo> <slug>   JSON: the published commit, stage, status, round and PR
+    relay owner act <repo> <slug> <go|extra-round|reset-rounds> --expect-commit SHA --via CH --actor ID --event ID
     relay hooks install | status  add relay's session hooks to Claude Code and Codex (owner), or check them
+
+`relay owner` is for tools that collect your decision somewhere else and apply it to the revision you saw. `<repo>` is a folder under your projects root. It prints JSON, records the channel, actor and event in state.md and the commit message, and refuses inside agent sessions. Exit codes: 0 done, 3 stale (the commit is not the published one, or the action no longer applies), 4 replay (the event is already recorded), 5 busy (another owner action is running), 1 error.
 
 Two ways to make one:
 
