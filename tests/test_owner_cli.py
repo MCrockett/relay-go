@@ -46,7 +46,9 @@ class OwnerCliTest(unittest.TestCase):
         out = io.StringIO()
         with redirect_stdout(out):
             code = commands.main(list(argv))
-        return code, json.loads(out.getvalue() or "{}")
+        text = out.getvalue()
+        self.assertEqual(len(text.strip().splitlines()), 1, f"expected one JSON object on stdout, got {text!r}")
+        return code, json.loads(text)
 
     def head(self):
         return helpers.sh(self.work, "git", "rev-parse", "origin/feat/demo").strip()
