@@ -25,6 +25,10 @@ class Replay(RelayError):
     pass
 
 
+class NotApplicable(RelayError):
+    """The action does not apply to the published state."""
+
+
 class Conflict(RelayError):
     def __init__(self, message, fresh=None):
         super().__init__(message)
@@ -132,7 +136,7 @@ def _validate(repo, slug, action, seen):
         raise Conflict("changed since you looked; review the fresh details before trying again", fresh)
     st = state_at(repo, slug, fresh["commit"])
     if action not in applicable(st):
-        raise RelayError(f"{action} is not available for {st['stage']} / {st['status']}")
+        raise NotApplicable(f"{action} is not available for {st['stage']} / {st['status']}")
     return fresh, st
 
 
@@ -192,8 +196,8 @@ def act(repo, slug, action, expect_commit, via):
         from .commands import via_note
         try:
             gitops.pr_comment(repo, st_now["pr"], f"relay: owner decision `{action}` on build{via_note(via)}.")
-        except RelayError:
-            pass
+        except (RelayError, OSError) as e:  # the decision is already published; report, never fail
+            result["pr_comment"] = f"failed: {e}"
     return result
 
 

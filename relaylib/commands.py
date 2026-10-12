@@ -702,32 +702,47 @@ def apply_override(root, slug, st, action, relayed_by=None, via=None):
 
 
 def cmd_owner(args):
-    """Owner decisions collected by another tool, as JSON. Exit 0 done, 3 stale, 4 replay, 5 busy, 1 error."""
+    """Owner decisions collected by another tool. Always one JSON object on stdout.
+    Exit 0 done, 3 stale (with `fresh`), 4 replay, 5 busy, 1 error."""
     from . import owneractions, status
-    identity.require_owner_terminal(dict(os.environ), f"relay owner {args.owner_cmd}")
-    repo = os.path.join(status.projects_root(), args.repo)
-    if not os.path.exists(os.path.join(repo, ".git")):
-        raise RelayError(f"no repo {args.repo} under {status.projects_root()}")
 
     def out(obj, code):
         print(json.dumps(obj))
         return code
+
+    def stale(message, repo):
+        try:
+            fresh = owneractions.fingerprint_full(repo, args.slug)
+        except RelayError:
+            fresh = None
+        return out({"message": message, "fresh": fresh}, 3)
     try:
+        if identity.in_agent_session(dict(os.environ)):
+            raise RelayError(f"relay owner {args.owner_cmd} is owner-only: run it in your own terminal, not in an "
+                             "agent session")
+        repo = os.path.join(status.projects_root(), args.repo)
+        if not os.path.exists(os.path.join(repo, ".git")):
+            raise RelayError(f"no repo {args.repo} under {status.projects_root()}")
         if args.owner_cmd == "fingerprint":
             return out(owneractions.fingerprint_full(repo, args.slug), 0)
         via = {"channel": args.via, "actor": args.actor, "event": args.event}
+        for name, value in via.items():
+            if not value or len(value) > 200 or "\n" in value or "\r" in value:
+                raise RelayError(f"--{'via' if name == 'channel' else name} must be one non-empty line of at most "
+                                 "200 characters")
         return out(owneractions.act(repo, args.slug, args.action, args.expect_commit, via), 0)
     except owneractions.Replay as e:
         return out({"message": str(e)}, 4)
     except owneractions.Conflict as e:
-        code = 5 if str(e).startswith("busy") else 3
-        return out({"message": str(e), "fresh": e.fresh}, code)
+        if str(e).startswith("busy"):
+            return out({"message": str(e)}, 5)
+        return stale(str(e), repo)
+    except owneractions.NotApplicable as e:
+        return stale(str(e), repo)
     except RelayError as e:
         if args.owner_cmd == "fingerprint" and "no published branch" in str(e):
-            return out({"message": str(e)}, 3)
-        if args.owner_cmd == "act" and "is not available for" in str(e):
-            return out({"message": str(e)}, 3)
-        raise
+            return stale(str(e), repo)
+        return out({"message": str(e)}, 1)
 
 
 def cmd_override(args):

@@ -58,32 +58,32 @@ class OwnerCliTest(unittest.TestCase):
 
     def test_act_applies_and_records_provenance(self):
         code, out = self.run_cli("owner", "act", "demo-repo", "demo", "extra-round", "--expect-commit", self.head(),
-                                 "--via", "jira", "--actor", "acc-1", "--event", "1001")
+                                 "--via", "tracker", "--actor", "acc-1", "--event", "1001")
         self.assertEqual(code, 0, out)
         helpers.sh(self.work, "git", "pull", "-q")
         st = state.read_state(state.state_path(self.work, "demo"))
         entry = st["owner_actions"][-1]
-        self.assertEqual(entry["via"], {"channel": "jira", "actor": "acc-1", "event": "1001"})
+        self.assertEqual(entry["via"], {"channel": "tracker", "actor": "acc-1", "event": "1001"})
         msg = helpers.sh(self.work, "git", "log", "-1", "--format=%B")
-        self.assertIn("via jira, actor acc-1, event 1001", msg)
+        self.assertIn("via tracker, actor acc-1, event 1001", msg)
 
     def test_replayed_event_exits_4(self):
-        args = ("owner", "act", "demo-repo", "demo", "extra-round", "--via", "jira", "--actor", "a", "--event", "7")
+        args = ("owner", "act", "demo-repo", "demo", "extra-round", "--via", "tracker", "--actor", "a", "--event", "7")
         self.assertEqual(self.run_cli(*args[:5], "--expect-commit", self.head(), *args[5:])[0], 0)
         self.assertEqual(self.run_cli(*args[:5], "--expect-commit", self.head(), *args[5:])[0], 4)
 
     def test_stale_commit_exits_3_with_fresh(self):
         old = self.head()
         self.run_cli("owner", "act", "demo-repo", "demo", "extra-round", "--expect-commit", old,
-                     "--via", "jira", "--actor", "a", "--event", "1")
+                     "--via", "tracker", "--actor", "a", "--event", "1")
         code, out = self.run_cli("owner", "act", "demo-repo", "demo", "go", "--expect-commit", old,
-                                 "--via", "jira", "--actor", "a", "--event", "2")
+                                 "--via", "tracker", "--actor", "a", "--event", "2")
         self.assertEqual(code, 3)
         self.assertEqual(out["fresh"]["status"], "changes-requested")
 
     def test_unknown_commit_is_stale(self):
         code, _ = self.run_cli("owner", "act", "demo-repo", "demo", "go", "--expect-commit", "0" * 40,
-                               "--via", "jira", "--actor", "a", "--event", "3")
+                               "--via", "tracker", "--actor", "a", "--event", "3")
         self.assertEqual(code, 3)
 
     def test_busy_exits_5_when_another_process_holds_the_lock(self):
@@ -94,7 +94,7 @@ class OwnerCliTest(unittest.TestCase):
         self.assertTrue(ready.wait(20), "holder never took the lock")
         try:
             code, out = self.run_cli("owner", "act", "demo-repo", "demo", "go", "--expect-commit", self.head(),
-                                     "--via", "jira", "--actor", "a", "--event", "4")
+                                     "--via", "tracker", "--actor", "a", "--event", "4")
         finally:
             done.set()
             p.join(20)
@@ -112,6 +112,48 @@ class OwnerCliTest(unittest.TestCase):
     def test_refused_inside_agent_session(self):
         marker = identity.AGENT_MARKERS[0]
         with mock.patch.dict(os.environ, {marker: "1"}):
-            code, _ = self.run_cli("owner", "act", "demo-repo", "demo", "go", "--expect-commit", self.head(),
-                                   "--via", "jira", "--actor", "a", "--event", "5")
+            code, out = self.run_cli("owner", "act", "demo-repo", "demo", "go", "--expect-commit", self.head(),
+                                     "--via", "tracker", "--actor", "a", "--event", "5")
+        self.assertEqual(code, 1)
+        self.assertIn("owner-only", out["message"])
+        self.assertNotIn("--relayed", out["message"])
+
+    def act_args(self, action, commit, event, via="tracker", actor="a"):
+        return ("owner", "act", "demo-repo", "demo", action, "--expect-commit", commit,
+                "--via", via, "--actor", actor, "--event", event)
+
+    def test_action_not_applicable_exits_3_with_fresh(self):
+        self.run_cli(*self.act_args("extra-round", self.head(), "10"))
+        code, out = self.run_cli(*self.act_args("extra-round", self.head(), "11"))
+        self.assertEqual(code, 3)
+        self.assertEqual(out["fresh"]["status"], "changes-requested")
+        self.assertEqual(out["fresh"]["commit"], self.head())
+
+    def test_fingerprint_without_published_branch_exits_3(self):
+        code, out = self.run_cli("owner", "fingerprint", "demo-repo", "nothing-here")
+        self.assertEqual(code, 3)
+        self.assertIn("no published branch", out["message"])
+        self.assertIsNone(out["fresh"])
+
+    def test_unknown_repo_prints_json_and_exits_1(self):
+        code, out = self.run_cli("owner", "fingerprint", "no-such-repo", "demo")
+        self.assertEqual(code, 1)
+        self.assertIn("no repo", out["message"])
+
+    def test_pr_comment_failure_is_reported_not_raised(self):
+        self.st.update(stage="build", status="waiting-owner", pr=12)
+        state.write_state(state.state_path(self.work, "demo"), self.st)
+        helpers.sh(self.work, "git", "commit", "-qam", "build")
+        helpers.sh(self.work, "git", "push", "-q")
+        with mock.patch.object(owneractions.gitops, "pr_comment", side_effect=FileNotFoundError("no gh")):
+            code, out = self.run_cli(*self.act_args("extra-round", self.head(), "12"))
+        self.assertEqual(code, 0, out)
+        self.assertIn("failed", out["pr_comment"])
+
+    def test_bad_provenance_values_exit_1(self):
+        for kwargs in ({"via": ""}, {"actor": "a\nb"}):
+            code, out = self.run_cli(*self.act_args("go", self.head(), "13", **kwargs))
+            self.assertEqual(code, 1)
+            self.assertIn("message", out)
+        code, out = self.run_cli(*self.act_args("go", self.head(), "x" * 201))
         self.assertEqual(code, 1)
