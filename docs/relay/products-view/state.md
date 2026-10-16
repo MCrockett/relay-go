@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/products-view",
   "extra_rounds": {},
   "feature": "products-view",
@@ -29,9 +31,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-10-16T17:51:56-04:00",
+  "updated": "2026-10-16T17:52:08-04:00",
   "verdicts": {}
 }
 ---
