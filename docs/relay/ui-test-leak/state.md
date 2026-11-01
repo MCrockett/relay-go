@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "fix/ui-test-leak",
   "extra_rounds": {},
   "feature": "ui-test-leak",
@@ -17,7 +19,7 @@
       "at": "2026-11-01T15:54:17-05:00"
     }
   ],
-  "pr": null,
+  "pr": 24,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -26,15 +28,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-11-01T15:54:17-05:00",
+  "status": "in-review",
+  "updated": "2026-11-01T16:10:20-05:00",
   "verdicts": {}
 }
 ---
