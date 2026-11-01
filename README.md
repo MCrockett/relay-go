@@ -108,6 +108,53 @@ Two ways to make one:
   The skills forbid relaying anything you did not say in that conversation; you see every relayed decision
   when you merge.
 
+## Merging
+
+    relay merge <pr number|feature>   merge a ready feature's PR, then tidy this machine
+
+`relay merge` checks the PR the way the dashboard's Merge button does: the build GO is fresh for the PR's code,
+CI is green, the PR head is the reviewed code, and no fallback confirmation is pending. If anything fails, it
+refuses and changes nothing. Otherwise it merges with a merge commit (GitHub deletes the branch) and tidies the
+copy of the repo on this machine:
+
+- removes each worktree that has the feature branch checked out, but only one with nothing git does not hold:
+  no uncommitted, untracked or ignored files (ignored files can be local data such as `.env` or a database).
+  Otherwise it lists the files and the `git worktree remove --force <path>` you can run after checking them;
+- switches the main checkout from the feature branch to the base branch and pulls it, when it is clean and
+  the move would not overwrite an ignored file. On another branch, the main checkout stays put and the local
+  base branch is fast-forwarded;
+- deletes the local feature branch when nothing is checked out on it and it has no commits the PR lacked;
+- prunes worktrees.
+
+relay never forces a step. A step it skips is reported with the command that finishes it, and the merge
+stands. Run it yourself, or tell the agent "merge 23": it runs `relay merge 23 --relayed`, and a PR comment
+records that it passed on your word. The dashboard's Merge button and the hub's merge run the same steps.
+
+### Events for the hub
+
+relay writes a one-line event to the hub log (`~/.relay/hub/log.jsonl`) when a build gets a GO, when a feature
+waits on you (a review loop stopped or a review failed), when a PR merges and when a PR into `main` merges (a
+release). Each hub session gets the line as a note starting "relay event:", except the hub that caused it.
+relay writes events only after the change is pushed, and after the command has shown its own result.
+
+### Finished features leave the list
+
+A feature whose PR is merged, closed without merging, or not in this repository at all leaves the inbox,
+`relay status` and the hub. The last happens when a repository is split and keeps another repository's
+`docs/relay/` folders: their PR numbers point at the other repository. `relay status` ends with one
+"Hidden:" line for each closed or missing feature saying why; the dashboard lists them under "Hidden features".
+If GitHub cannot be reached, the feature stays, as before. relay remembers a missing PR in
+`~/.relay/prgone.json`; if that was wrong (for example `origin` pointed at the wrong repository for a while),
+delete its entry there.
+
+### Updating relay without interrupting sessions
+
+`relay` runs from your clone of this repository, so updating it is a pull there. Every hook call is a new
+process and picks up the new code at its next event; a running dashboard and a review in progress keep the
+code they started with. Run `tools/deploy_check.py` first: it lists what is in flight (reviews running, a held
+owner-action lock, relay processes) and exits 0 when nothing is. Then pull, and restart the dashboard (stop it,
+then `relay ui --background`) so it runs one version. Sessions need nothing.
+
 ## Handoffs
 
 At about 60% context, or when switching provider or machine: `relay handoff`, fill it in, `relay handoff --commit`. A handoff covers every feature that session holds in the repo (ownership is per repo). The next session runs `relay take`, which takes over all of them, including stacked PRs on other branches.
