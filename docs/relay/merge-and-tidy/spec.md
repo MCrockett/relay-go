@@ -45,8 +45,11 @@ review of 2026-10-18 to 2026-11-01).
   command.
   1. `git fetch --prune origin`.
   2. Every linked worktree that has the feature branch checked out is removed with `git worktree remove`,
-     only if it has no uncommitted or untracked changes (`git status --porcelain` empty). A worktree with
-     changes is left, and reported.
+     only if it has no uncommitted, untracked or ignored files (`git status --porcelain --ignored` empty).
+     Ignored files count because they can hold local data (`.env`, local databases) that exists nowhere
+     else. A worktree with any of these is left, and reported with up to five of the paths and the command
+     the owner can run after checking them (`git worktree remove --force <path>`). relay never passes
+     `--force` itself.
   3. If the main checkout has the feature branch checked out and is clean, it switches to the PR's base
      branch.
   4. If the main checkout is on the base branch and clean, `git pull --ff-only`. If it is on some other branch
@@ -56,11 +59,16 @@ review of 2026-10-18 to 2026-11-01).
      tip is the merged PR head or an ancestor of it, so unpushed commits are never lost. Otherwise it is left
      and reported.
   6. `git worktree prune`.
+  The main checkout's clean check (steps 3 and 4) is `git status --porcelain` without `--ignored`, since
+  switching branches and a fast-forward pull do not touch ignored files.
   The output lists each step's result in one line. When the folder relay was run from was removed, the last
   line says so and names the main checkout to continue in.
 - D6. **Marking merged.** After the merge, relay records the PR as merged in `~/.relay/merged.json` (the key
   `merged.is_done` uses), so status, the dashboard, the hub and the merge notice see it at once without asking
-  GitHub. The feature's `state.md` is not changed: its branch is gone, as today (mobile-hub D6).
+  GitHub. The feature's `state.md` is not changed: its branch is gone, as today (mobile-hub D6). If the cache
+  cannot be written, the merge result is still reported as merged with exit 0, plus the warning "PR #N is
+  merged, but relay could not record it locally: <error>; status will find it on GitHub". The next resolve
+  (D11) then finds the merge on GitHub.
 - D7. **One path for every merge button.** The dashboard's Merge button and `relay hub act <n> merge` call the
   same merge-and-tidy code, so their merges tidy too. They keep their own checks: the dashboard binds to the
   revision the owner saw (`seen`), and the hub requires `--relayed`.
@@ -78,7 +86,11 @@ review of 2026-10-18 to 2026-11-01).
     D7) or found merged on GitHub (D11);
   - `released`: the same, for a PR into `main`.
   Each event is written from the place that makes the change, through one function, so dashboard- and
-  hub-run reviews (`reviewjobs`) emit as the CLI does. The text is plain English and names the repo, the
+  hub-run reviews (`reviewjobs`) emit as the CLI does. A review event is written only after the state change
+  is published (pushed to origin); a review whose publication fails (for example a lost `reviewjobs` lease)
+  writes no event. A merge event is written only after `gh pr merge` succeeds.
+  Events at the spec or plan stage have no PR yet: the text names the stage instead ("relay: relay-go
+  merge-and-tidy spec review stopped: <reason>; waiting on the owner.") and the log's `pr` field is `null`. The text is plain English and names the repo, the
   feature, the PR number and what is next, for example "relay: relay-go PR #23 (merge-and-tidy) has a build
   GO from codex; waiting for the owner's merge." and "relay: relay-go PR #23 (merge-and-tidy) is merged into
   develop; worktree removed, repo free." (or the tidy steps left undone, D5).
@@ -90,8 +102,10 @@ review of 2026-10-18 to 2026-11-01).
     own merge). The note's prefix is "relay event:", not the owner-note prefix, so the session knows it is
     not the owner's words. Delivery follows the notes rules: posted to a Claude session's inbox when it is
     running and has one, otherwise queued for its next hook event.
-  - Writing an event never fails or slows the command beyond the notes lock's existing waits; a failure is a
-    one-line warning on stderr.
+  - Events are written after the command's own result is printed. Writing one never fails the command; a
+    failure is a one-line warning on stderr. The time is bounded per recipient by the notes rules' existing
+    limits (at most 2 seconds for the notes lock and 2 seconds for the inbox socket), so an event costs at
+    most 4 seconds per registered hub session; there are normally one or two.
   - The desktop notifications relay already sends (`notify.send`) are unchanged.
 - D11. **Finished, closed and lost PRs.** `merged.is_done` becomes a resolver that returns one of: `open`
   (not done), `merged`, `closed` (closed without merging), `gone` (GitHub says this repo has no such PR), or
@@ -101,8 +115,10 @@ review of 2026-10-18 to 2026-11-01).
     When the feature's `repo` field differs from this checkout's repo name, the reason says it was copied:
     "PR #57 is not in MCrockett/upstream-studio; this feature was copied from UpstreamPartners". Otherwise
     "PR #57 is not in <owner/repo>".
-  - `merged` and `gone` are cached in `merged.json` for good (`true` for merged, as today, so the merge
-    notice is unchanged; `{"gone": "<reason>"}` for gone). `closed` is not cached, because a PR can be
+  - `merged` and `gone` are cached in `merged.json` for good: `true` for merged, as today, and
+    `{"gone": "<reason>"}` for gone. Only the value `true` means merged. Every reader of the cache
+    (`merged.is_done`, the merge notice in `notices.merged_features`, and any other) checks `is True`, never
+    truthiness, so a gone PR never produces a merge notice or a "done" state. `closed` is not cached, because a PR can be
     reopened; it is asked again as today.
   - `unknown` keeps today's behavior: the feature stays visible with its error.
   - The first time a process caches `merged` for a PR it emits the `merged` or `released` event (D9). The
@@ -125,21 +141,25 @@ review of 2026-10-18 to 2026-11-01).
 - R3. Merge per D4: the `gh pr merge` call runs outside the repo with the D4 arguments; the relayed PR comment
   names the source; a failed comment is a warning and the command still succeeds.
 - R4. Tidy per D5, each step tested with a temporary repo, a bare `origin` and the fake `gh`: clean linked
-  worktree removed; dirty worktree kept and reported; main checkout on the feature branch switched to base;
+  worktree removed; worktree with uncommitted, untracked or only ignored files kept and reported with its
+  paths and the `--force` command; main checkout on the feature branch switched to base;
   pull on base; main checkout on another branch left there with base fast-forwarded; local branch with
   unpushed commits kept; prune; the "folder was removed" line. A failing step never changes the exit code
   after a successful merge.
-- R5. D6: after `relay merge`, `merged.is_done` is true for the PR without calling `gh`.
+- R5. D6: after `relay merge`, `merged.is_done` is true for the PR without calling `gh`; a cache that cannot be
+  written gives the D6 warning with exit 0.
 - R6. D7: the dashboard Merge route and `relay hub act <n> merge` run the same tidy and report its lines.
 - R7. Skill text per D8 in `skills/relay-build/SKILL.md` and `skills/relay-hub/SKILL.md`; README section on
   `relay merge`, tidy, events and hidden features.
 - R8. Events per D9 and D10: each kind written once from each path that causes it (CLI submit and review,
   dashboard and hub reviews, `relay merge`, the hub and dashboard merge, a merge found by D11); the log line's
   fields; notes to every registered hub session except the one that caused the event, with the "relay event:"
-  prefix; posted versus queued per the notes rules; a log or note failure is a warning only.
+  prefix; posted versus queued per the notes rules; a log or note failure is a warning only; no event when a
+  review's publication fails or `gh pr merge` fails; spec and plan events with `pr` null and the stage named.
 - R9. Resolver per D11: each outcome from fake `gh` answers (MERGED, CLOSED, OPEN, the "Could not resolve"
   error, a network error); the copied-feature reason when `repo` differs; caching of merged and gone, not of
-  closed; an old cache with `true` values still reads as merged; the merged event written once when two
+  closed; an old cache with `true` values still reads as merged; a `gone` entry never produces a merge
+  notice (`notices.merged_features`) and never reads as merged; the merged event written once when two
   processes resolve the same PR at the same time.
 - R10. Hiding per D12: hidden from `relay status`, the dashboard inbox and the hub digest; the "Hidden:" lines
   for closed and gone, none for merged; the dashboard's collapsed block.
