@@ -27,9 +27,10 @@ Every task is test first: write the failing test, run it, implement, run the ful
   does not announce old merges. If the cache cannot be written, `owneractions.merge` queues its event anyway
   (with the D6 warning), since it knows it just merged; the resolver queues nothing (it will try again).
 - **Ordering (D10).** Code that decides an event calls `events.queue(...)`, which only records it in the
-  process. `events.flush()` delivers the queued events (hub log, then notes). The CLI entry point
-  (`relay` main) calls `flush()` after the command has printed its result, in a `finally`; the dashboard
-  calls it on the request or job thread after the reply is sent; the hub-run review and merge after printing.
+  current operation's batch (see the queue ownership note below). The operation's `batch.flush()` delivers
+  them (hub log, then notes): `commands.main` after the command has printed its result, in a `finally`; the
+  dashboard on the request or job thread after the reply is sent; the hub-run review and merge, which run
+  inside `commands.main`, after printing.
   So the result is always shown before any delivery wait.
 
 ## Build order and plan review round 2 notes
@@ -88,8 +89,9 @@ Every task is test first: write the failing test, run it, implement, run the ful
 ### Task 3: Events module (events.py)
 
 - Files: `relaylib/events.py` (new), `tests/test_events.py`.
-- `queue(kind, repo, slug, stage, pr, text, cause=None)` records an event in the process; `flush()`
-  delivers each queued event and clears the queue, returning warnings. Kind is `go`, `waiting`, `merged` or
+- `queue(kind, repo, slug, stage, pr, text, cause=None)` records an event in the current operation's batch
+  (`events.collect()`, see "Build order and plan review round 2 notes"); `batch.flush()` delivers that batch's
+  events and clears it, returning warnings. Kind is `go`, `waiting`, `merged` or
   `released`. Delivery writes `{"command": "event", "event", "repo", "slug", "pr", "text"}` through `hub.log` (it adds `at`), then
   for each `(provider, sid)` in `hub.registered()` except `cause` calls `notes.send(provider, sid, text,
   inbox, prefix="relay event:")`. `inbox` comes from the session's record when the session is running, the
@@ -105,10 +107,11 @@ Every task is test first: write the failing test, run it, implement, run the ful
 
 - Files: `relaylib/commands.py`, `relaylib/reviewjobs.py`, `tests/test_commands.py`,
   `tests/test_reviewjobs.py`.
-- CLI (`review_current` with `announce=True`): after `c.save(...)` of a build GO (`go`), a stall
-  (`waiting`) or a review error that leaves `review-error` (`waiting`), emit only when the save's push
-  succeeded. `Ctx.save` returns whether the push went through; a failed push queues nothing. `commands.main`
-  calls `events.flush()` in a `finally` after the command
+- `review_current` (the CLI and review jobs alike): after `c.save(...)` of a build GO (`go`), a stall
+  (`waiting`) or a review error that leaves `review-error` (`waiting`), the event is queued through
+  `c.after_publish(...)`. The CLI's `Ctx.after_publish` runs it only when the save's push reached origin
+  (`Ctx.published`), so a failed push queues nothing. `commands.main`
+  runs each command inside `events.collect()` and flushes that batch in a `finally` after the command
   printed its result.
 - Dashboard and hub reviews (`reviewjobs`): register the `queue` with `WorkCtx.after_publish`, so it runs
   only after the lease push succeeds (ci-on-submit R6); a discarded review queues nothing. The job thread
@@ -215,7 +218,9 @@ Every task is test first: write the failing test, run it, implement, run the ful
   checks docs wording.
 - D8 text in both skills, including that relay now reports GO, waiting and merged events, so agents do not
   send those messages. README: `relay merge`, the tidy steps and what it never forces, events and where they
-  go, hidden features and how to undo a wrong `gone` (remove the entry from `~/.relay/merged.json`, F7).
+  go, hidden features and how to undo a wrong `gone` (remove the entry from `~/.relay/prgone.json`, where
+  gone entries live, see Deployment; F7). Test (task 1): removing a `prgone.json` entry makes the next resolve
+  ask GitHub again and an open PR shows the feature again.
 - Test: the existing docs checks (no em-dashes, plain English) pass; a test that the build skill names
   `relay merge` with `--relayed`.
 - Covers: R7.
@@ -262,6 +267,8 @@ modules loaded and can lazily import new ones after the pull.
   and relay processes running (`ps`, excluding itself), each with what to wait for. Exit 0 when nothing is in
   flight. After the pull, the README step is: `relay ui` restart (stop the running dashboard, then
   `relay ui --background`) so the dashboard runs one version; sessions need nothing.
-- Tests: in-review feature, held review lock and held owner-action lock each reported with exit 1; nothing in
-  flight exits 0.
+- Tests: in-review feature, running review job and held owner-action lock each reported; a running relay
+  command (for example `relay submit`) blocks; the checker's own process and hook calls are not counted; a
+  running dashboard does not block (it is idle between requests) and gives the "restart after the pull" note;
+  `main` exits 1 when anything blocks, 0 otherwise.
 - Covers: owner deployment request (no spec requirement number).
