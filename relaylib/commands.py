@@ -6,8 +6,8 @@ import os
 import re
 import sys
 
-from . import (availability, ciskip, config, freshness, gitops, identity, ledger, machine, merged, notify, ownership,
-               prompts, reviewtables, runner, state, verdict)
+from . import (availability, ciskip, config, events, freshness, gitops, identity, ledger, machine, merged, notify,
+               ownership, prompts, reviewtables, runner, state, verdict)
 from .errors import RelayError
 from .progress import RoundRecord
 
@@ -559,6 +559,9 @@ def review_current(c, args, candidates=None, discard_errors=False, announce=True
             raise RelayError(f"review failed: {error}")
         machine.apply_error(st, error)
         c.save(f"relay: {stage} review error ({reviewer})")
+        c.after_publish(lambda: events.queue("waiting", st["repo"], c.slug, stage, st.get("pr"),
+                                             events.waiting_text(st["repo"], c.slug, stage, st.get("pr"), error[:200],
+                                                                 error=True)))
         notify.send(c.cfg, f"relay: {st['repo']} review failed", f"{c.slug} {stage}: {error[:120]}")
         print(f"relay: review failed: {error}. Nothing advanced. Re-run `relay review` or tell the owner.",
               file=sys.stderr)
@@ -584,6 +587,10 @@ def review_current(c, args, candidates=None, discard_errors=False, announce=True
             st.pop("confirm_with", None)
             st.pop("confirm_provider", None)
         c.save(f"relay: {stage} GO ({reviewer})")
+        if st["status"] == "ready-to-merge":
+            c.after_publish(lambda: events.queue("go", st["repo"], c.slug, stage, st.get("pr"),
+                                                 events.go_text(st["repo"], c.slug, st.get("pr"), reviewer,
+                                                                st.get("confirm_with"))))
         if not announce:  # the caller announces once its result is published
             pass
         elif st["status"] == "ready-to-merge" and st.get("confirm_with"):
@@ -604,6 +611,8 @@ def review_current(c, args, candidates=None, discard_errors=False, announce=True
     if action == "stall":
         write_stuck(c, stage, reason)
         c.save(f"relay: {stage} NO-GO ({reviewer}); stopped: {reason}")
+        c.after_publish(lambda: events.queue("waiting", st["repo"], c.slug, stage, st.get("pr"),
+                                             events.waiting_text(st["repo"], c.slug, stage, st.get("pr"), reason)))
         if announce:
             notify.send(c.cfg, f"relay: {st['repo']} needs your decision", f"{c.slug} {stage} review stopped: {reason}")
         print(f"relay: {stage} NO-GO and the loop stopped ({reason}). Waiting on the owner: "
@@ -802,6 +811,33 @@ def cmd_override(args):
 
 # ---------------------------------------------------------------- the hub (mobile-hub)
 
+def cmd_merge(args):
+    """Merge a relay feature's PR and tidy this machine (merge-and-tidy D1 to D5). The owner runs it in their own
+    terminal; an agent only with --relayed, after the owner said to merge in its conversation."""
+    from . import owneractions
+    relayed_by = owner_or_relayed(args, "relay merge")
+    me = _hub_session(dict(os.environ), args.by) if relayed_by else None
+    events.set_cause(me and (me["provider"], me["session_id"]))
+    repo = gitops.repo_root(os.getcwd())
+    gitops.fetch(repo)
+    if args.target.isdigit():
+        slug = owneractions.find_by_pr(repo, int(args.target))
+    else:
+        slug = args.target
+        try:
+            owneractions.published(repo, slug)
+        except RelayError:
+            raise RelayError(f"no relay feature {slug} on origin")
+    done = owneractions.merge(repo, slug, owneractions.fingerprint(repo, slug, fetch=False), relayed_by,
+                              source="session", cwd=os.getcwd())
+    print(f"relay: {done['message']}")
+    for line in done.get("tidy", []):
+        print(f"relay: {line}")
+    if done.get("warning"):
+        print(f"relay: warning: {done['warning']}", file=sys.stderr)
+    return 0
+
+
 def _hub_session(env, by):
     """{provider, session_id} for an agent session, None for the owner's terminal."""
     if not identity.in_agent_session(env):
@@ -887,7 +923,9 @@ def cmd_hub_act(args):
     result = "failed"
     try:
         relayed_by = entry["relayed_by"] = _hub_relayed(args, "relay hub act")
-        item = hub.resolve(args.ref, _hub_session(dict(os.environ), args.by))
+        me = _hub_session(dict(os.environ), args.by)
+        events.set_cause(me and (me["provider"], me["session_id"]))  # a hub is not told its own events (D10)
+        item = hub.resolve(args.ref, me)
         if item["kind"] == "session":
             raise RelayError(f"item {item['n']} is a session; use relay hub note")
         if item["kind"] != "feature":
@@ -1232,6 +1270,11 @@ def build_parser():
     o.add_argument("--feature")
     o.add_argument("--relayed", action="store_true",
                    help="agents only: pass on a decision the owner made in this conversation (recorded as relayed)")
+    mg = add("merge", cmd_merge, "merge a feature's PR once it is ready, then tidy this machine; agents need --relayed")
+    mg.add_argument("target", help="the PR number or the feature's name")
+    mg.add_argument("--relayed", action="store_true",
+                    help="agents only: the owner told you to merge in this conversation (recorded as relayed)")
+    mg.add_argument("--by", help="claude or codex, when detection is ambiguous (with --relayed)")
     ow = add("owner", cmd_owner, "owner decisions collected by another tool; JSON output")
     osub = ow.add_subparsers(dest="owner_cmd", required=True)
     fp = osub.add_parser("fingerprint")
@@ -1324,8 +1367,12 @@ def main(argv):
     if not getattr(args, "func", None):
         parser.print_help()
         return 1
-    try:
-        return args.func(args) or 0
-    except RelayError as e:
-        print(f"relay: {e}", file=sys.stderr)
-        return 1
+    with events.collect() as batch:
+        try:
+            return args.func(args) or 0
+        except RelayError as e:
+            print(f"relay: {e}", file=sys.stderr)
+            return 1
+        finally:  # after the command printed its result (merge-and-tidy D10)
+            for warning in batch.flush():
+                print(f"relay: warning: {warning}", file=sys.stderr)

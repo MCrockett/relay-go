@@ -10,7 +10,7 @@ import tempfile
 import threading
 import time
 
-from . import availability, ciskip, config, gitops, machine, notify, owneractions, runner, state, usage
+from . import availability, ciskip, config, events, gitops, machine, notify, owneractions, runner, state, usage
 from .config import relay_home
 from .errors import RelayError
 
@@ -303,7 +303,9 @@ def start(job, on_done=None):
     and never waits on a thread that has not started."""
     def body():
         try:
-            job.run()
+            with events.collect() as batch:  # delivered once the job recorded its outcome (merge-and-tidy D10)
+                job.run()
+                batch.flush()
         finally:
             with _JOBS_LOCK:
                 _JOBS.pop(threading.current_thread(), None)

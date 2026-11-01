@@ -1,7 +1,7 @@
-import io, json, os, shutil, tempfile, unittest
+import io, json, os, shutil, sys, tempfile, unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
-from relaylib import commands, gitops, state
+from relaylib import ciskip, commands, events, gitops, state
 from relaylib.errors import RelayError
 from tests import helpers
 
@@ -796,6 +796,51 @@ done
         self.relay("submit")
         self.assertIn("review failed", self.notifications())
 
+    def hub_events(self):
+        path = os.path.join(os.environ["RELAY_HOME"], "hub", "log.jsonl")
+        if not os.path.exists(path):
+            return []
+        with open(path) as f:
+            return [e for e in map(json.loads, f) if e.get("command") == "event"]
+
+    def test_a_build_go_sends_one_go_event_after_the_result_is_printed(self):  # merge-and-tidy D9, D10
+        printed = []
+        deliver = events.deliver
+
+        def spy(ev):
+            printed.append(sys.stdout.getvalue())
+            return deliver(ev)
+        with mock.patch.object(events, "deliver", side_effect=spy):
+            self.ready_small_feature()
+        (ev,) = self.hub_events()
+        self.assertEqual((ev["event"], ev["slug"], ev["pr"]), ("go", "tiny", 7))
+        self.assertIn("has a build GO from codex; waiting for the owner's merge", ev["text"])
+        self.assertIn("build GO", printed[0])
+
+    def test_a_stopped_spec_review_sends_a_waiting_event_without_a_pr(self):
+        self.stall_spec()
+        (ev,) = self.hub_events()
+        self.assertEqual((ev["event"], ev["pr"]), ("waiting", None))
+        self.assertIn("demo spec review stopped", ev["text"])
+
+    def test_a_review_error_sends_a_waiting_event(self):
+        self.to_spec()
+        self.enqueue_codex("GO")
+        os.environ["FAKE_RC"] = "1"
+        self.relay("submit")
+        (ev,) = self.hub_events()
+        self.assertEqual(ev["event"], "waiting")
+        self.assertIn("spec review failed", ev["text"])
+
+    def test_no_event_when_the_state_change_is_not_published(self):
+        self.to_spec()
+        self.enqueue_codex("GO")
+        os.environ["FAKE_RC"] = "1"
+        with mock.patch.object(ciskip, "push", side_effect=RelayError("origin unreachable")):
+            self.relay("submit")
+        self.assertEqual(self.st()["status"], "review-error")
+        self.assertEqual(self.hub_events(), [])
+
     def test_unverifiable_open_prs_stop_new_work(self):
         self.small_change()                                  # PR may be open; relay has no number yet
         os.environ["FAKE_GH_PR_LIST_FAILS"] = "1"
@@ -1161,6 +1206,8 @@ done
         st = self.st("tiny")
         self.assertEqual((st["status"], st["confirm_with"]), ("ready-to-merge", "codex:gpt-6-astra"))
         self.assertIn("reviewed by fallback", self.notifications())
+        (ev,) = self.hub_events()                          # merge-and-tidy D9: the event says it is a fallback
+        self.assertIn("a fallback reviewer; codex:gpt-6-astra still confirms it", ev["text"])
         row = self.status_row("tiny")                      # codex still out: the owner decides
         self.assertTrue(row["waiting_on_owner"])
         self.assertTrue(any("confirm with codex:gpt-6-astra" in f and "out of usage" in f for f in row["flags"]))
@@ -1264,6 +1311,7 @@ done
         from relaylib import reviewjobs
         self.assertEqual(reviewjobs.status(self.work, "tiny")["state"], "done")
         self.assertIn("review done", self.notifications())                       # announced after publishing
+        self.assertEqual([e["event"] for e in self.hub_events()], ["go", "go"])  # the fallback GO, then this one
         self.assertEqual(json.loads(open(self.log).read().splitlines()[-1])["provider"], "codex")
         self.assertIn("model_reasoning_effort=high", self.last_argv())           # R4: final effort
         st = self.published()
@@ -1327,10 +1375,17 @@ done
         item = {"n": 1, "kind": "feature", "repo": "work", "repo_path": self.work, "slug": "tiny",
                 "actions": ["review"], "seen": owneractions.fingerprint(self.work, "tiny"), "session": None}
         digest, _ = hub.save([item], {"from": "build", "seconds": 1}, {"provider": "claude", "session_id": "s1"})
+        os.makedirs(hub.folder(), exist_ok=True)
+        hub._write_json(hub._sessions_path(), [{"provider": "claude", "session_id": "s1", "at": 1},
+                                               {"provider": "codex", "session_id": "h2", "at": 1}])
         self.enqueue_codex("GO")
         self.assertEqual(self.relay("hub", "act", f"{digest}.1", "review", "--relayed"), 0, self.last_err)
         self.assertIn("build GO from codex", self.last_out)
         self.assertEqual(self.published()["owner_actions"][-1]["relayed_by"], "claude session s1")
+        self.assertEqual(len(self.hub_events()), 2)                     # the hub review's GO is logged (D9) ...
+        from relaylib import notes
+        self.assertEqual(notes._load(notes.log_path("claude", "s1")), [])  # ... but not sent to the hub that ran it
+        self.assertEqual(len(notes._load(notes.log_path("codex", "h2"))), 1)  # another hub is told
 
     def test_a_branch_that_moved_during_the_review_is_not_overwritten(self):
         from relaylib import owneractions, reviewjobs
@@ -1341,10 +1396,11 @@ done
         helpers.sh(self.work, "git", "push", "-q")
         moved = self.head()
         self.enqueue_codex("GO")
-        announced = self.notifications()
+        announced, sent = self.notifications(), self.hub_events()
         result = job.run()
         self.assertFalse(result["ok"])
         self.assertEqual(self.notifications(), announced)                          # nothing announced
+        self.assertEqual(self.hub_events(), sent)                                  # no event either (D9)
         self.assertIn("the branch moved during the review", result["message"])
         helpers.sh(self.work, "git", "fetch", "-q")
         branch = self.st("tiny")["branch"]
