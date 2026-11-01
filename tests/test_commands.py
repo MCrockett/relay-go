@@ -1311,7 +1311,8 @@ done
         from relaylib import reviewjobs
         self.assertEqual(reviewjobs.status(self.work, "tiny")["state"], "done")
         self.assertIn("review done", self.notifications())                       # announced after publishing
-        self.assertEqual([e["event"] for e in self.hub_events()], ["go", "go"])  # the fallback GO, then this one
+        # plan task 4: a review job's event is sent after its lease push succeeds (the fallback GO, then this one)
+        self.assertEqual([e["event"] for e in self.hub_events()], ["go", "go"])
         self.assertEqual(json.loads(open(self.log).read().splitlines()[-1])["provider"], "codex")
         self.assertIn("model_reasoning_effort=high", self.last_argv())           # R4: final effort
         st = self.published()
@@ -1400,7 +1401,7 @@ done
         result = job.run()
         self.assertFalse(result["ok"])
         self.assertEqual(self.notifications(), announced)                          # nothing announced
-        self.assertEqual(self.hub_events(), sent)                                  # no event either (D9)
+        self.assertEqual(self.hub_events(), sent)  # plan task 4: a failed lease push sends no event (D9)
         self.assertIn("the branch moved during the review", result["message"])
         helpers.sh(self.work, "git", "fetch", "-q")
         branch = self.st("tiny")["branch"]

@@ -21,6 +21,7 @@ class SnapshotTest(unittest.TestCase):
         self.tmp = temp.name
         _, self.work = helpers.make_repo(self.tmp)
         helpers.sh(self.work, "git", "switch", "-qc", "feat/demo")
+        helpers.name_test_repos(self)
         self.st = state.new_state("demo", "project", {"provider": "codex", "session": "s1"}, "feat/demo")
         self.st.update(stage="spec", status="waiting-owner")
         self.folder = state.feature_dir(self.work, "demo")

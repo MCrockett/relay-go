@@ -107,11 +107,12 @@ def resolve(repo_dir, st):
         named = github_repo(repo_dir)  # never gh's default repository or GH_REPO: the answer is cached by origin
     except RelayError:
         named = None
+    if not named:  # gh would pick a repository from GH_REPO or its default: its answer is not about origin
+        return "unknown", "origin is not a GitHub repository, so relay cannot ask about its PR"
     try:
-        info = gitops.gh_json(repo_dir, ["pr", "view", str(pr), "--json", "state,baseRefName"]
-                              + (["-R", named] if named else []))
+        info = gitops.gh_json(repo_dir, ["pr", "view", str(pr), "--json", "state,baseRefName", "-R", named])
     except (RelayError, OSError) as e:
-        if NOT_FOUND not in str(e) or not named:  # gone only for the repository origin names
+        if NOT_FOUND not in str(e):
             return "unknown", str(e)
         reason = f"PR #{pr} is not in {named}"
         if st.get("repo") and st["repo"] != gitops.repo_name(repo_dir):

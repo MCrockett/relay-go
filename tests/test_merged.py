@@ -14,6 +14,7 @@ class MergedTest(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
         self.st = {"repo": "r", "status": "ready-to-merge", "pr": 4}
+        helpers.name_test_repos(self)
 
     def test_open_pr_is_not_done(self):
         helpers.write(self.data, '{"state": "OPEN"}')
@@ -201,6 +202,15 @@ class NamedRepositoryTest(ResolveTest):  # build review R1-2
                                           "RELAY_GH_BIN": helpers.fake_bin(self.tmp, "ghr", REPO_SENSITIVE_GH)}):
             self.assertEqual(merged.resolve(self.repo, self.st), ("open", None))
         self.assertFalse(os.path.exists(os.path.join(self.home, "prgone.json")))
+
+    def test_without_a_github_origin_gh_is_not_asked(self):
+        helpers.sh(self.repo, "git", "remote", "set-url", "origin", "/srv/git/upstream-studio.git")
+        helpers.write(self.data, '{"state": "MERGED", "baseRefName": "develop"}')   # what GH_REPO might answer
+        log = os.path.join(self.tmp, "gh.log")
+        with mock.patch.dict(os.environ, {"GH_REPO": "someone/else", "FAKE_GH_LOG": log}):
+            self.assertEqual(merged.resolve(self.repo, self.st)[0], "unknown")
+        self.assertFalse(os.path.exists(log))
+        self.assertEqual(merged._load(), {})
 
     def test_without_a_github_origin_not_found_is_unknown_and_not_cached(self):
         helpers.sh(self.repo, "git", "remote", "set-url", "origin", "/srv/git/upstream-studio.git")

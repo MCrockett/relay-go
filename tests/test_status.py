@@ -21,6 +21,7 @@ class StatusFixture(unittest.TestCase):
             "RELAY_GH_BIN": helpers.fake_bin(self.tmp, "gh", helpers.FAKE_GH), "FAKE_GH_JSON": self.gh_json})
         p.start()
         self.addCleanup(p.stop)
+        helpers.name_test_repos(self)
 
     def put(self, root, slug, **over):
         st = state.new_state(slug, os.path.basename(root), {"provider": "codex", "session": "x"}, f"feat/{slug}")
