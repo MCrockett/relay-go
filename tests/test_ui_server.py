@@ -19,6 +19,30 @@ from relaylib.errors import RelayError
 from relaylib.ui import server, snapshot
 
 
+def _stop_published_child(home):
+    """Stop the background dashboard named in ui.json. Reads the pid from the file, not running_info(), which
+    returns None when a busy child answers slowly and so left it running after the suite."""
+    try:
+        with open(os.path.join(home, "ui.json")) as f:
+            pid = json.load(f)["pid"]
+    except (OSError, ValueError, KeyError):
+        return
+    if not isinstance(pid, int) or pid <= 0 or pid == os.getpid():
+        return
+    for sig, wait in ((signal.SIGTERM, 10), (signal.SIGKILL, 2)):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return
+        until = time.monotonic() + wait
+        while time.monotonic() < until:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(.05)
+
+
 class ServerTest(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -920,10 +944,5 @@ console.log(JSON.stringify({merge:cardButtons(merge),decide:cardButtons(decide),
                 if process.poll() is None:
                     process.kill()
                     process.communicate()
-            info = server.running_info()
-            if info and info["pid"] != os.getpid():
-                os.kill(info["pid"], signal.SIGTERM)
-                until = time.monotonic() + 4
-                while os.path.exists(os.path.join(self.tmp, "ui.json")) and time.monotonic() < until:
-                    time.sleep(.05)
+            _stop_published_child(self.tmp)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "ui.json")))
