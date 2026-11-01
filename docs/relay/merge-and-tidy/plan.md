@@ -59,7 +59,8 @@ Every task is test first: write the failing test, run it, implement, run the ful
 - Gone reason: "PR #N is not in <owner/repo>" (`owneractions.github_repo`; the origin URL when that fails),
   plus "; this feature was copied from <st.repo>" when `st["repo"]` differs from this repo's name as
   `relay new` computes it (the same helper `cmd_new` uses).
-- Cache: `true` for merged (unchanged), `{"gone": reason}` for gone, nothing for closed. Readers check
+- Cache: `true` for merged in `merged.json` (unchanged), gone reasons in `prgone.json` (see Deployment),
+  nothing for closed. Readers check
   `is True`. Writes go through a file lock (`~/.relay/merged.lock`, `fcntl.flock`) as well as the thread lock,
   read-modify-write inside it.
 - `mark_merged(repo_dir, pr)` is the one claim (see "Event claim and ordering"): returns `(claimed,
@@ -234,3 +235,33 @@ Every task is test first: write the failing test, run it, implement, run the ful
 | R9 | 1, 2 |
 | R10 | 9 |
 | R11 | every task |
+
+## Deployment without interrupting sessions (owner, 2026-11-01)
+
+Owner: "build it now, I just want the deployment to not interrupt other working sessions when the time comes".
+The live `relay` is the main relay-go folder, so deploying is a pull there. Every hook run is a new process and
+picks up new code at its next event; long-running processes (the dashboard, a review in flight) keep old
+modules loaded and can lazily import new ones after the pull.
+
+- Old code must stay correct when it reads files the new code writes. So the `gone` cache lives in its own
+  file, `~/.relay/prgone.json`, not in `merged.json`: old `merged.is_done` and old `notices.merged_features`
+  treat any truthy `merged.json` value as merged, and would announce a gone PR as merged. `merged.json`
+  keeps holding only `true` (and the existing `@at` timestamps). This is a storage detail under spec D11;
+  the behavior D11 describes is unchanged.
+- Everything else new is additive and ignored by old code: hub log lines with `"command": "event"` (the old
+  code only appends to that log), notes with the "relay event:" prefix (delivered by the old hook like any
+  note), `merged.lock`.
+- New code reads every file old code writes (old `merged.json` entries, old hub log lines).
+
+### Task 11: Deploy check
+
+- Files: `tools/deploy-check` (new, a small Python script, standard library only), `tests/test_deploy_check.py`,
+  README (a short "Updating relay" paragraph).
+- `tools/deploy-check` prints whether it is safe to pull the live folder now: features `in-review` across
+  projects (from `status.scan`), review jobs holding a lock (`reviewjobs.status`), a held owner-action lock,
+  and relay processes running (`ps`, excluding itself), each with what to wait for. Exit 0 when nothing is in
+  flight. After the pull, the README step is: `relay ui` restart (stop the running dashboard, then
+  `relay ui --background`) so the dashboard runs one version; sessions need nothing.
+- Tests: in-review feature, held review lock and held owner-action lock each reported with exit 1; nothing in
+  flight exits 0.
+- Covers: owner deployment request (no spec requirement number).
