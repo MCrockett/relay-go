@@ -80,6 +80,37 @@ class StatusTest(StatusFixture):
         self.assertIn("No relay features", self.run_cmd("status"))
         self.assertEqual(json.loads(self.run_cmd("status", "--all", "--json"))[0]["status"], "done")
 
+    def test_a_copied_feature_whose_pr_is_not_here_is_hidden_with_why(self):  # merge-and-tidy D11, D12
+        root = self.repo("upstream-studio", {"clip-studio": {"repo": "UpstreamPartners", "stage": "build",
+                                                             "status": "ready-to-merge", "pr": 57}})
+        helpers.sh(root, "git", "remote", "add", "origin", "https://github.com/MCrockett/upstream-studio.git")
+        gone = helpers.fake_bin(self.tmp, "gh404", "#!/bin/sh\necho 'GraphQL: Could not resolve to a PullRequest "
+                                                    "with the number of 57.' >&2\nexit 1\n")
+        with mock.patch.dict(os.environ, {"RELAY_GH_BIN": gone}):
+            rows = status.scan(self.projects)
+            out = self.run_cmd("status")
+        self.assertEqual((rows[0]["stage"], rows[0]["waiting_on_owner"]), ("done", False))
+        self.assertIn("No relay features", out)
+        self.assertIn("Hidden: upstream-studio/clip-studio: PR #57 is not in MCrockett/upstream-studio; this feature "
+                      "was copied from UpstreamPartners", out)
+
+    def test_a_closed_pr_is_hidden_with_why_and_a_merged_one_without_a_line(self):
+        self.repo("alpha", {"one": {"stage": "build", "status": "ready-to-merge", "pr": 5},
+                            "two": {"stage": "build", "status": "ready-to-merge", "pr": 6}})
+        helpers.write(self.gh_json, '{"state": "CLOSED"}')
+        out = self.run_cmd("status")
+        self.assertEqual(out.count("Hidden: alpha/"), 2)
+        self.assertIn("Hidden: alpha/one: PR #5 was closed without merging", out)
+        helpers.write(self.gh_json, '{"state": "MERGED", "baseRefName": "develop"}')
+        self.assertNotIn("Hidden", self.run_cmd("status"))
+
+    def test_an_unreadable_pr_stays_visible(self):
+        self.repo("alpha", {"one": {"stage": "build", "status": "ready-to-merge", "pr": 5}})
+        os.remove(self.gh_json)                                   # gh fails: not known to be finished
+        rows = status.scan(self.projects)
+        self.assertEqual(rows[0]["stage"], "build")
+        self.assertIsNone(rows[0]["hidden"])
+
     def test_failed_fetch_never_reports_fresh(self):
         self.repo("alpha", {"one": {"stage": "build", "status": "ready-to-merge", "pr": 5}})  # no origin
         with mock.patch("relaylib.freshness.check", return_value=(True, "code and merge result unchanged")):

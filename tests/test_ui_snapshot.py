@@ -677,6 +677,21 @@ class SnapshotTest(unittest.TestCase):
         self.assertFalse(row["waiting_on_owner"])
         self.assertIsNone(detail["health"])
 
+    def test_a_closed_pr_leaves_the_inbox_and_is_listed_as_hidden(self):  # merge-and-tidy D12
+        self.st.update(stage="build", status="ready-to-merge", pr=7)
+        self.save()
+        reply = {"state": "CLOSED", "number": 7, "baseRefName": "develop", "headRefOid": "a" * 40,
+                 "statusCheckRollup": []}
+        with mock.patch("relaylib.gitops.gh_json", return_value=reply):
+            snap = snapshot.build()
+        self.assertFalse(snap["rows"][0]["waiting_on_owner"])
+        self.assertEqual(snap["hidden"], [{"repo": os.path.basename(self.work), "slug": "demo",
+                                           "reason": "PR #7 was closed without merging"}])
+        with open(os.path.join(os.path.dirname(snapshot.__file__), "page.html")) as f:
+            page = f.read()
+        self.assertIn('id="hidden-features"', page)
+        self.assertIn("renderHidden()", page)
+
     def test_done_and_unheld_features_have_no_health(self):
         self.st.update(stage="done", status="done", owner={})
         self.save()

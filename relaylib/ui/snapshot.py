@@ -495,8 +495,10 @@ def build():
         notes.add(scan_note)
     notes = sorted(notes)
     _attach_notes(others, run, left)
+    hidden = [{"repo": os.path.basename(r["checkout"]), "slug": r["feature"], "reason": r["hidden"]}
+              for r in rows if r.get("hidden")]  # closed or gone PRs: why they left the inbox (merge-and-tidy D12)
     return {"rows": rows, "features": details, "other_sessions": others, "left_off": left, "running": run, "usage": usage(), "session_hints": hints, "notes": notes,
-            "reviewers": _reviewers_or_error(repos), "writing": writing}
+            "reviewers": _reviewers_or_error(repos), "writing": writing, "hidden": hidden}
 
 
 class Cache:

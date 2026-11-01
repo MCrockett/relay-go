@@ -148,6 +148,8 @@ QUESTION_TOOLS = {"AskUserQuestion"}  # a question tool waits through a permissi
 
 
 def _feature_wanted(row):
+    if row.get("stage") == "done" or row.get("hidden"):  # merged, closed or gone (merge-and-tidy D12)
+        return False
     flags = row.get("flags") or []
     return bool(row.get("waiting_on_owner") or row.get("status") in ("waiting-owner", "ready-to-merge")
                 or any(f.startswith(("stale", "fallback GO")) for f in flags))
