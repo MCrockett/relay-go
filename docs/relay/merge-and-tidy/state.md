@@ -10,6 +10,19 @@
   "extra_rounds": {},
   "feature": "merge-and-tidy",
   "history": {
+    "build": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2",
+          "R1-3"
+        ],
+        "head": "66ee2793ea4b0fcc80c59379a7fd737cb6792c38",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ],
     "plan": [
       {
         "blocking_ids": [
@@ -87,9 +100,10 @@
   "skipped": [],
   "small": false,
   "stage": "build",
-  "status": "in-review",
-  "updated": "2026-11-01T12:49:30-05:00",
+  "status": "changes-requested",
+  "updated": "2026-11-01T12:56:40-05:00",
   "verdicts": {
+    "build": "NO-GO",
     "plan": "GO",
     "spec": "GO"
   }
