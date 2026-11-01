@@ -182,3 +182,18 @@ class ResolveTest(unittest.TestCase):
             claimed, warning = merged.mark_merged(self.repo, 58)
         self.assertFalse(claimed)
         self.assertIn("PR #58 is merged, but relay could not record it locally: read-only", warning)
+
+
+class GoneRecoveryTest(ResolveTest):  # merge-and-tidy F7: undoing a wrong gone
+    def test_removing_the_prgone_entry_asks_github_again(self):
+        with mock.patch.dict(os.environ, {"RELAY_GH_BIN": helpers.fake_bin(self.tmp, "gh404", NOT_FOUND_GH)}):
+            self.assertEqual(merged.resolve(self.repo, self.st)[0], "gone")
+        helpers.write(self.data, '{"state": "OPEN", "baseRefName": "develop"}')
+        self.assertEqual(merged.resolve(self.repo, self.st)[0], "gone")     # cached: GitHub is not asked
+        os.remove(os.path.join(self.home, "prgone.json"))                   # the README's recovery step
+        self.assertEqual(merged.resolve(self.repo, self.st)[0], "open")
+
+
+for _name in dir(ResolveTest):  # run only the recovery test here
+    if _name.startswith("test_") and _name not in GoneRecoveryTest.__dict__:
+        setattr(GoneRecoveryTest, _name, None)

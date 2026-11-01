@@ -40,6 +40,11 @@ class DeployCheckTest(StatusFixture):  # merge-and-tidy, deployment without inte
         blocking, _ = self.check(["7 /usr/bin/python3.11 /opt/relay/bin/relay submit"])
         self.assertEqual(blocking, ["relay submit (pid 7): wait for it to finish"])
 
+    def test_the_checker_itself_is_not_counted(self):
+        import os
+        blocking, _ = self.check([f"{os.getpid()} /usr/bin/python3.11 /opt/relay/bin/relay status"])
+        self.assertEqual(blocking, [])
+
     def test_main_exit_codes(self):
         with mock.patch.object(deploycheck, "check", return_value=([], [])), mock.patch("builtins.print"):
             self.assertEqual(deploycheck.main(), 0)
