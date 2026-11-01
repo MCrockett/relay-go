@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/merge-and-tidy",
   "extra_rounds": {},
   "feature": "merge-and-tidy",
@@ -29,9 +31,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-11-01T09:33:21-05:00",
+  "updated": "2026-11-01T09:34:28-05:00",
   "verdicts": {}
 }
 ---
