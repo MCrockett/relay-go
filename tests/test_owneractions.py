@@ -229,6 +229,79 @@ class OwnerActionsTest(OwnerFixture):
             self.assertIn("pr merge 7 -R owner/project", f.read())
 
 
+class MergeAndTidyTest(OwnerFixture):  # merge-and-tidy D3 to D7
+    def setUp(self):
+        super().setUp()
+        patch = mock.patch.dict(os.environ, {"RELAY_HOME": os.path.join(self.tmp, "relayhome")})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.ready()
+
+    def hub_events(self):
+        path = os.path.join(os.environ["RELAY_HOME"], "hub", "log.jsonl")
+        if not os.path.exists(path):
+            return []
+        with open(path) as f:
+            return [e for e in map(json.loads, f) if e.get("command") == "event"]
+
+    def merge(self, **kw):
+        with mock.patch("relaylib.gitops.ci_for_code", return_value="green"), \
+                mock.patch("relaylib.owneractions.github_repo", return_value="owner/project"):
+            return owneractions.merge(self.work, "demo", self.seen(), **kw)
+
+    def test_a_merge_records_tidies_and_announces_once(self):
+        done = self.merge()
+        self.assertEqual(gitops.current_branch(self.work), "develop")
+        self.assertIn("deleted local branch feat/demo", done["tidy"])
+        from relaylib import merged
+        self.assertTrue(merged.is_done(self.work, self.published_after_merge()))
+        (ev,) = self.hub_events()
+        self.assertEqual((ev["event"], ev["slug"], ev["pr"]), ("merged", "demo", 7))
+        self.assertIn("is merged into develop. Worktree removed, repo free.", ev["text"])
+
+    def published_after_merge(self):
+        return dict(self.st, pr=7)
+
+    def test_a_merge_into_main_is_a_release(self):
+        self.pr(baseRefName="main")
+        with mock.patch("relaylib.freshness.check", return_value=(True, "")):
+            self.merge()
+        self.assertEqual(self.hub_events()[0]["event"], "released")
+
+    def test_a_failed_merge_tidies_and_announces_nothing(self):
+        api = os.path.join(self.tmp, "api.json")
+        helpers.write(api, json.dumps({"pr merge": {"__rc": 1}}))
+        with mock.patch.dict(os.environ, {"FAKE_GH_API": api}), self.assertRaises(RelayError):
+            self.merge()
+        self.assertEqual(gitops.current_branch(self.work), "feat/demo")
+        self.assertEqual(self.hub_events(), [])
+
+    def test_a_refused_merge_changes_nothing(self):
+        with mock.patch("relaylib.freshness.check", return_value=(False, "stale GO")), \
+                self.assertRaisesRegex(RelayError, "stale"):
+            self.merge()
+        self.assertNotIn("pr merge", open(self.log).read())
+        self.assertEqual(gitops.current_branch(self.work), "feat/demo")
+        self.assertEqual(self.hub_events(), [])
+
+    def test_a_merge_a_resolver_announced_first_is_announced_once(self):
+        from relaylib import merged
+        self.assertEqual(merged.mark_merged(self.work, 7), (True, None))  # status saw it merged meanwhile
+        self.merge()
+        self.assertEqual(self.hub_events(), [])
+
+    def test_an_unwritable_cache_is_a_warning_and_still_announced(self):
+        with mock.patch("relaylib.merged._store", side_effect=OSError("read-only")):
+            done = self.merge()
+        self.assertIn("PR #7 is merged, but relay could not record it locally: read-only", done["warning"])
+        self.assertEqual(len(self.hub_events()), 1)
+
+    def test_a_relayed_session_merge_says_where_it_came_from(self):
+        self.merge(relayed_by="claude session s9", source="session")
+        self.assertIn("pr comment 7 -R owner/project --body Merged by the owner, relayed by claude session s9 in "
+                      "its conversation with the owner", open(self.log).read())
+
+
 class HubActTest(OwnerFixture):  # mobile-hub D5, D6, R9 to R12
     HUB = {"provider": "claude", "session_id": "hub1"}
 

@@ -236,9 +236,14 @@ def merge_readiness(repo, st, seen):
     return info
 
 
-def merge(repo, slug, seen, relayed_by=None):
-    """Merge a ready PR. With relayed_by (a hub), a PR comment records who passed the decision on: the merge
-    deletes the branch, so the feature's state cannot (mobile-hub D6)."""
+RELAYED_FROM = {"hub": " from the relay hub", "session": " in its conversation with the owner", "dashboard": ""}
+
+
+def merge(repo, slug, seen, relayed_by=None, source="hub", cause=None, cwd=None):
+    """Merge a ready PR, then tidy this machine (merge-and-tidy D4 to D7). With relayed_by, a PR comment records
+    who passed the decision on: the merge deletes the branch, so the feature's state cannot (mobile-hub D6). The
+    merged event is queued for the caller to deliver after it reports (D10)."""
+    from . import events, merged, tidy
     with action_lock():
         fresh, st = _validate(repo, slug, "merge", seen)
         info = merge_readiness(repo, st, fresh)
@@ -248,16 +253,29 @@ def merge(repo, slug, seen, relayed_by=None):
                                  "-R", remote, "--merge", "--match-head-commit", seen["pr_head"],
                                  "--delete-branch"], outside, timeout=gitops.GH_TIMEOUT_S)
             done = {"message": (result.stdout or result.stderr).strip() or f"Merged PR #{info['number']}"}
+            warnings = []
             if relayed_by:
                 try:
                     note = gitops.run([os.environ.get("RELAY_GH_BIN", "gh"), "pr", "comment", str(info["number"]),
                                        "-R", remote, "--body",
-                                       f"Merged by the owner, relayed by {relayed_by} from the relay hub"],
+                                       f"Merged by the owner, relayed by {relayed_by}{RELAYED_FROM.get(source, '')}"],
                                       outside, check=False, timeout=gitops.GH_TIMEOUT_S)
                     why = ((note.stderr or "").strip() or f"exit {note.returncode}") if note.returncode else None
                 except (RelayError, OSError) as e:
                     why = str(e)
                 if why:
-                    done["warning"] = (f"PR #{info['number']} is merged, but the comment recording who relayed "
-                                       f"it could not be posted: {why}")
+                    warnings.append(f"PR #{info['number']} is merged, but the comment recording who relayed "
+                                    f"it could not be posted: {why}")
+        claimed, warning = merged.mark_merged(repo, info["number"])
+        if warning:
+            warnings.append(warning)
+        tidied = tidy.run(repo, fresh["branch"], info["baseRefName"], seen["pr_head"], cwd)
+        done["tidy"] = tidied.lines
+        if claimed or warning:  # one event per PR: a resolver that saw the merge first already announced it
+            name = st.get("repo") or gitops.repo_name(repo)
+            events.queue("released" if info["baseRefName"] == "main" else "merged", name, slug, "build",
+                         info["number"], events.merged_text(name, slug, info["number"], info["baseRefName"],
+                                                            tidied.left, tidied=True), cause)
+        if warnings:
+            done["warning"] = "; ".join(warnings)
         return done

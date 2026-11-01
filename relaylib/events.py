@@ -10,8 +10,9 @@ PREFIX = "relay event:"
 
 
 class Batch:
-    def __init__(self):
+    def __init__(self, cause=None):
         self.events = []
+        self.cause = cause  # the (provider, session_id) running this operation: it is not told its own events
 
     def flush(self):
         """Deliver this operation's events; a list of warnings."""
@@ -26,15 +27,22 @@ _BATCH = contextvars.ContextVar("relay_events", default=None)
 
 
 @contextlib.contextmanager
-def collect():
+def collect(cause=None):
     """Events queued inside belong to this operation (one per request, job or command), so one operation's flush
     never delivers another's before that one has reported."""
-    batch = Batch()
+    batch = Batch(cause)
     token = _BATCH.set(batch)
     try:
         yield batch
     finally:
         _BATCH.reset(token)
+
+
+def set_cause(cause):
+    """Name the session running the current operation, so it is not told its own events (D10)."""
+    batch = _BATCH.get()
+    if batch is not None and cause:
+        batch.cause = cause
 
 
 def event(kind, repo, slug, stage, pr, text, cause=None):
@@ -45,8 +53,8 @@ def event(kind, repo, slug, stage, pr, text, cause=None):
 
 def queue(kind, repo, slug, stage, pr, text, cause=None):
     """Hold an event until the current operation flushes; delivered at once outside any collect()."""
-    ev = event(kind, repo, slug, stage, pr, text, cause)
     batch = _BATCH.get()
+    ev = event(kind, repo, slug, stage, pr, text, cause or (batch.cause if batch else None))
     if batch is None:
         return deliver(ev)
     batch.events.append(ev)
@@ -108,9 +116,10 @@ def waiting_text(repo, slug, stage, pr, reason, error=False):
     return f"relay: {pr_label(repo, slug, pr)} {stage} {what}: {reason}; waiting on the owner."
 
 
-def merged_text(repo, slug, pr, base, left=()):
+def merged_text(repo, slug, pr, base, left=(), tidied=False):
+    """`tidied`: relay merged it here and tidied this machine; otherwise the merge was found on GitHub."""
     head = (f"relay: {pr_label(repo, slug, pr)} is released to main." if base == "main"
             else f"relay: {pr_label(repo, slug, pr)} is merged into {base or 'its base'}.")
     if left:
-        return head + " Left to tidy: " + "; ".join(left)
-    return head
+        return head + " Left to tidy: " + "; ".join(left) + "."
+    return head + (" Worktree removed, repo free." if tidied else "")
