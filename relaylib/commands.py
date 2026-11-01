@@ -943,11 +943,13 @@ def cmd_hub_act(args):
             if not done["ok"]:
                 raise RelayError(done["message"])
         elif args.action == "merge":
-            done = owneractions.merge(repo, item["slug"], item["seen"], relayed_by)
+            done = owneractions.merge(repo, item["slug"], item["seen"], relayed_by, source="hub")
         else:
             done = owneractions.run_override(repo, item["slug"], args.action, item["seen"], relayed_by)
         result = "done" + ("; " + done["warning"] if done.get("warning") else "")
         print(f"relay: {done['message']}")
+        for line in done.get("tidy", []):
+            print(f"relay: {line}")
         if done.get("warning"):
             print(f"relay: warning: {done['warning']}", file=sys.stderr)
         return 0

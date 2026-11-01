@@ -375,6 +375,10 @@ class HubActTest(OwnerFixture):  # mobile-hub D5, D6, R9 to R12
     def test_a_hub_merge_comments_after_merging(self):
         self.ready()
         ref = self.digest(["merge"])
+        from relaylib import hub
+        os.makedirs(hub.folder(), exist_ok=True)
+        hub._write_json(hub._sessions_path(), [{"provider": "claude", "session_id": "hub1", "at": 1},
+                                               {"provider": "codex", "session_id": "hub2", "at": 1}])
         with mock.patch("relaylib.gitops.ci_for_code", return_value="green"), \
                 mock.patch("relaylib.owneractions.github_repo", return_value="owner/project"):
             self.assertEqual(self.act(ref, "merge", "--relayed"), 0, self.err)
@@ -383,6 +387,13 @@ class HubActTest(OwnerFixture):  # mobile-hub D5, D6, R9 to R12
         self.assertEqual(lines[merged + 1], "pr comment 7 -R owner/project --body Merged by the owner, relayed by "
                                             "claude session hub1 from the relay hub")
         self.assertEqual(self.err, "")
+        self.assertIn("relay: switched the main checkout to develop", self.out)  # the same tidy (merge-and-tidy D7)
+        from relaylib import hub, notes
+        log = os.path.join(hub.folder(), "log.jsonl")
+        with open(log) as f:
+            self.assertEqual([e["event"] for e in map(json.loads, f) if e.get("command") == "event"], ["merged"])
+        self.assertEqual(notes._load(notes.log_path("claude", "hub1")), [])  # the hub is not told its own merge
+        self.assertEqual(len(notes._load(notes.log_path("codex", "hub2"))), 1)
 
     def test_a_failed_comment_does_not_hide_the_merge_nor_does_a_failed_log(self):
         from relaylib import hub

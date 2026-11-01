@@ -16,7 +16,7 @@ import time
 from urllib.parse import parse_qs, urlencode, urlsplit
 import webbrowser
 
-from .. import config, identity, notes, owneractions, reviewjobs, reviewtables
+from .. import config, events, identity, notes, owneractions, reviewjobs, reviewtables
 from ..errors import RelayError
 from ..usage import atomic_write
 from . import snapshot
@@ -174,8 +174,10 @@ class Handler(BaseHTTPRequestHandler):
                         what = body["slug"] + (f"'s {stage}" if stage != "build" else "")
                         self.reply(202, {"job": job.id, "message": f"{reviewjobs.spec_id(job.spec)} is reviewing "
                                                                   f"{what}. This can take minutes."})
-                    elif action == "merge":
-                        self.reply(200, owneractions.merge(repo, body["slug"], body["seen"]))
+                    elif action == "merge":  # the same merge and tidy as relay merge (merge-and-tidy D7)
+                        with events.collect() as batch:
+                            self.reply(200, owneractions.merge(repo, body["slug"], body["seen"], source="dashboard"))
+                            batch.flush()  # after the reply (D10)
                     else:
                         self.reply(200, owneractions.run_override(repo, body["slug"], action, body["seen"]))
                 finally:

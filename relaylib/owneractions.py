@@ -17,7 +17,8 @@ EFFECTS = {
     "reset-rounds": "Reset the review rounds so the author can resubmit.",
     "release": "Release the session's ownership by publishing a handoff.",
     "review": "Run a fresh build review with the reviewer you choose. A NO-GO sends it back to the author.",
-    "merge": "Merge the PR and delete its branch on GitHub.",
+    "merge": "Merge the PR, delete its branch on GitHub, then tidy this machine: its worktree, local branch and "
+             "base branch.",
 }
 
 
