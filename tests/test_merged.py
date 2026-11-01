@@ -1,4 +1,4 @@
-import os, shutil, tempfile, unittest
+import json, os, shutil, tempfile, unittest
 from unittest import mock
 from relaylib import merged
 from tests import helpers
@@ -72,3 +72,113 @@ class MergedTest(unittest.TestCase):
         os.remove(self.data)  # gh would now fail loudly; it is not asked
         with mock.patch.object(merged.gitops, "gh_json", side_effect=AssertionError("asked again")):
             self.assertIsNone(merged.merged_at(self.tmp, {"status": "ready-to-merge", "pr": 7}))
+
+
+NOT_FOUND_GH = '''#!/usr/bin/env python3
+import sys
+sys.stderr.write("GraphQL: Could not resolve to a PullRequest with the number of 57. (repository.pullRequest)\\n")
+sys.exit(1)
+'''
+
+
+def _resolve_in_child(args):
+    repo, st, home = args
+    os.environ["RELAY_HOME"] = home
+    from relaylib import events, merged as m
+    with events.collect() as batch:
+        outcome = m.resolve(repo, st)[0]
+        batch.flush()
+    return outcome
+
+
+class ResolveTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(dir="/tmp")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.data = os.path.join(self.tmp, "pr.json")
+        self.home = os.path.join(self.tmp, "home")
+        p = mock.patch.dict(os.environ, {"RELAY_HOME": self.home, "FAKE_GH_JSON": self.data,
+                                         "RELAY_GH_BIN": helpers.fake_bin(self.tmp, "gh", helpers.FAKE_GH)})
+        p.start()
+        self.addCleanup(p.stop)
+        self.repo = os.path.join(self.tmp, "upstream-studio")
+        os.makedirs(self.repo)
+        helpers.sh(self.repo, "git", "init", "-q")
+        helpers.sh(self.repo, "git", "remote", "add", "origin", "https://github.com/MCrockett/upstream-studio.git")
+        self.st = {"repo": "upstream-studio", "feature": "clip-studio", "status": "ready-to-merge", "pr": 57}
+
+    def hub_events(self):
+        path = os.path.join(self.home, "hub", "log.jsonl")
+        if not os.path.exists(path):
+            return []
+        with open(path) as f:
+            return [json.loads(l) for l in f if '"event"' in l]
+
+    def test_outcomes(self):
+        for gh_state, outcome in (("OPEN", "open"), ("CLOSED", "closed"), ("MERGED", "merged")):
+            helpers.write(self.data, json.dumps({"state": gh_state, "baseRefName": "develop"}))
+            self.assertEqual(merged.resolve(self.repo, dict(self.st, pr=hash(gh_state) % 1000))[0], outcome)
+
+    def test_network_error_is_unknown_and_not_cached(self):
+        outcome, reason = merged.resolve(self.repo, self.st)  # no data file: gh fails
+        self.assertEqual(outcome, "unknown")
+        self.assertFalse(os.path.exists(os.path.join(self.home, "prgone.json")))
+
+    def test_gone_with_copied_reason_cached_in_its_own_file(self):
+        with mock.patch.dict(os.environ, {"RELAY_GH_BIN": helpers.fake_bin(self.tmp, "gh404", NOT_FOUND_GH)}):
+            outcome, reason = merged.resolve(self.repo, dict(self.st, repo="UpstreamPartners"))
+        self.assertEqual(outcome, "gone")
+        self.assertEqual(reason, "PR #57 is not in MCrockett/upstream-studio; this feature was copied from "
+                                 "UpstreamPartners")
+        self.assertEqual(merged._load(), {})  # older relay reads any merged.json value as merged
+        self.assertEqual(merged.resolve(self.repo, self.st), ("gone", reason))  # cached; gh not asked
+        self.assertFalse(merged.is_done(self.repo, self.st))
+
+    def test_gone_without_copy(self):
+        with mock.patch.dict(os.environ, {"RELAY_GH_BIN": helpers.fake_bin(self.tmp, "gh404", NOT_FOUND_GH)}):
+            self.assertEqual(merged.resolve(self.repo, self.st)[1], "PR #57 is not in MCrockett/upstream-studio")
+
+    def test_closed_is_asked_again(self):
+        helpers.write(self.data, '{"state": "CLOSED"}')
+        self.assertEqual(merged.resolve(self.repo, self.st), ("closed", "PR #57 was closed without merging"))
+        helpers.write(self.data, '{"state": "OPEN"}')
+        self.assertEqual(merged.resolve(self.repo, self.st)[0], "open")
+
+    def test_any_status_with_a_pr(self):
+        helpers.write(self.data, '{"state": "MERGED", "baseRefName": "develop"}')
+        self.assertTrue(merged.is_done(self.repo, dict(self.st, status="in-review")))
+
+    def test_discovery_through_is_done_announces_once(self):
+        helpers.write(self.data, '{"state": "MERGED", "baseRefName": "develop"}')
+        self.assertTrue(merged.is_done(self.repo, self.st))
+        self.assertTrue(merged.is_done(self.repo, self.st))
+        (ev,) = self.hub_events()
+        self.assertEqual((ev["event"], ev["slug"], ev["pr"]), ("merged", "clip-studio", 57))
+
+    def test_release_label_from_the_same_answer(self):
+        helpers.write(self.data, '{"state": "MERGED", "baseRefName": "main"}')
+        merged.resolve(self.repo, self.st)
+        self.assertEqual(self.hub_events()[0]["event"], "released")
+
+    def test_already_cached_merge_announces_nothing(self):
+        os.makedirs(self.home)
+        helpers.write(os.path.join(self.home, "merged.json"),
+                      json.dumps({"https://github.com/MCrockett/upstream-studio.git#57": True}))
+        self.assertTrue(merged.is_done(self.repo, self.st))
+        self.assertEqual(self.hub_events(), [])
+
+    def test_two_processes_deliver_one_event(self):
+        import multiprocessing
+        helpers.write(self.data, '{"state": "MERGED", "baseRefName": "develop"}')
+        with multiprocessing.get_context("spawn").Pool(4) as pool:
+            got = pool.map(_resolve_in_child, [(self.repo, self.st, self.home)] * 4)
+        self.assertEqual(got, ["merged"] * 4)
+        self.assertEqual(len(self.hub_events()), 1)
+
+    def test_mark_merged_claims_once_and_warns_when_unwritable(self):
+        self.assertEqual(merged.mark_merged(self.repo, 57), (True, None))
+        self.assertEqual(merged.mark_merged(self.repo, 57), (False, None))
+        with mock.patch.object(merged, "_store", side_effect=OSError("read-only")):
+            claimed, warning = merged.mark_merged(self.repo, 58)
+        self.assertFalse(claimed)
+        self.assertIn("PR #58 is merged, but relay could not record it locally: read-only", warning)
