@@ -102,7 +102,7 @@ def _run(r, repo, branch, base, pr_head, cwd):
     if p.returncode:
         r.skipped(f"fetch failed ({p.stderr.strip()}); run: git fetch --prune origin", "fetch")
     trees = worktrees(repo)
-    main, removed = trees[0]["path"], []
+    main, removed = trees[0]["path"], []  # every step after this runs from main, which is never removed
     for wt in trees[1:]:
         if wt["branch"] != branch:
             continue
@@ -126,7 +126,7 @@ def _run(r, repo, branch, base, pr_head, cwd):
         main_branch = _switch(r, main, base, branch)
     if main_branch == base:
         _pull(r, main, base)
-    elif not any(wt["branch"] == base for wt in worktrees(repo)):
+    elif not any(wt["branch"] == base for wt in worktrees(main)):
         p = gitops.network_git(main, "fetch", "origin", f"{base}:{base}")
         if p.returncode:
             r.skipped(f"left local {base} as it is ({p.stderr.strip()})", f"local {base}")
@@ -134,7 +134,7 @@ def _run(r, repo, branch, base, pr_head, cwd):
             r.done(f"fast-forwarded local {base} (the main checkout stays on {main_branch})")
     else:
         r.done(f"the main checkout stays on {main_branch}")
-    _delete_branch(r, repo, branch, pr_head)
+    _delete_branch(r, main, branch, pr_head)  # from main: the folder relay ran in may be gone now
     _git(main, "worktree", "prune")
     r.done("pruned worktrees")
     if cwd and any(_inside(cwd, path) for path in removed):

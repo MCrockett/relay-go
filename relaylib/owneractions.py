@@ -49,6 +49,18 @@ def published(repo, slug):
     raise RelayError(f"no published branch for {slug}; it may have been deleted")
 
 
+def find_by_pr(repo, number):
+    """The slug of the published feature whose PR is `number` (merge-and-tidy D1)."""
+    for ref in gitops.remote_branches(repo):
+        for path in gitops.ls_files(repo, ref, state.RELAY_DIR):
+            if not path.lower().endswith("/state.md"):
+                continue
+            st = state.parse_state(gitops.show(repo, ref, path) or "", path)
+            if st.get("pr") == number and ref == f"origin/{st.get('branch')}":
+                return st["feature"]
+    raise RelayError(f"PR #{number} is not a relay feature; merge it on GitHub")
+
+
 def fingerprint(repo, slug, fetch=True):
     if fetch:
         gitops.fetch(repo)
