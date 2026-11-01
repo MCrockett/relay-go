@@ -1,7 +1,8 @@
 ---
 {
   "authors": {
-    "idea": "claude"
+    "idea": "claude",
+    "spec": "claude"
   },
   "branch": "feat/merge-and-tidy",
   "extra_rounds": {},
@@ -17,6 +18,10 @@
     {
       "action": "owner joined idea",
       "at": "2026-11-01T09:33:21-05:00"
+    },
+    {
+      "action": "owner joined spec",
+      "at": "2026-11-01T11:20:41-05:00"
     }
   ],
   "pr": null,
@@ -28,12 +33,14 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "spec": 1
+  },
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "drafting",
-  "updated": "2026-11-01T09:34:28-05:00",
+  "status": "in-review",
+  "updated": "2026-11-01T11:20:41-05:00",
   "verdicts": {}
 }
 ---
