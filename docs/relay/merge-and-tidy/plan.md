@@ -32,6 +32,21 @@ Every task is test first: write the failing test, run it, implement, run the ful
   calls it on the request or job thread after the reply is sent; the hub-run review and merge after printing.
   So the result is always shown before any delivery wait.
 
+## Build order and plan review round 2 notes
+
+- Build order: task 3 (events) first, then 1, 2, 4 to 10. Task 1 uses `events.queue`.
+- Queue ownership: `events.queue` appends to a queue owned by the current operation, not the process. Each
+  operation opens one with `with events.collect() as batch:` (a `contextvars.ContextVar`, so each dashboard
+  request thread, review job thread and snapshot worker has its own) and calls `batch.flush()` after it has
+  reported its result. `queue` outside any `collect` delivers at once (no result to wait for). One
+  operation's flush never drains another's events. Test: two threads each collecting, one flushing, the
+  other's events still queued.
+- Task 4 also touches `relaylib/ui/snapshot.py` and `tests/test_ui_snapshot.py` (flush after each refresh).
+- Extra tests (task 4): the fallback GO's wording names the pending confirmation; `review-error` emits
+  `waiting`; a plan-stage stall emits with `pr` null; the CLI `relay submit` path and a hub-run review
+  (`relay hub act <n> review`) each emit once; across two competing processes exactly one merge event is
+  delivered to the hub log (count the log lines, not queued events).
+
 ## Tasks
 
 ### Task 1: PR resolver and cache (merged.py)
@@ -140,7 +155,7 @@ Every task is test first: write the failing test, run it, implement, run the ful
 - Files: `relaylib/owneractions.py`, `tests/test_owneractions.py`.
 - `merge(repo, slug, seen, relayed_by=None, source="hub", cause=None)`: unchanged readiness and `gh pr merge`
   (D3, D4); the relayed comment says "from the relay hub" or "from a session" by `source`; then
-  `merged.record_merged` (D6 warning on failure), `tidy.run`, and `events.emit` (`released` when the base is
+  `merged.mark_merged` (D6 warning on failure), `tidy.run`, and `events.queue` (`released` when the base is
   `main`, else `merged`; text lists what tidy left) through `events.queue`, only when `mark_merged`
   claimed or could not write (see "Event claim and ordering"). Returns `{"message", "tidy": [...],
   "warning"}`; delivery happens at the caller's flush.
