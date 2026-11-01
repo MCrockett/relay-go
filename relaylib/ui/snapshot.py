@@ -6,13 +6,14 @@ import datetime as dt
 import json
 import os
 import re
+import sys
 import threading
 import time
 import tomllib
 
-from .. import (agentask, availability, config, gitops, health, hookinstall, ledger, leftoff, merged, othersessions,
-               notes as ownernotes, owneractions, reviewjobs, reviewtables, sessions, state, status, usage as samples,
-               verdict, waiting, writerusage)
+from .. import (agentask, availability, config, events, gitops, health, hookinstall, ledger, leftoff, merged,
+               othersessions, notes as ownernotes, owneractions, reviewjobs, reviewtables, sessions, state, status,
+               usage as samples, verdict, waiting, writerusage)
 from ..errors import RelayError
 
 WORKERS = 8  # parallel fetches and feature details; gh and git are the wait, not the CPU
@@ -531,11 +532,14 @@ class Cache:
     def _run(self):
         while not self._stop.is_set():
             self._wake.clear()
-            try:
-                data = self.builder()
-                with self._lock:
-                    self._data, self._error, self._at, self._attempted = data, None, time.time(), True
-            except Exception as e:
-                with self._lock:
-                    self._error, self._attempted = str(e), True
+            with events.collect() as batch:  # merges a build discovers are announced after it is stored (D10)
+                try:
+                    data = self.builder()
+                    with self._lock:
+                        self._data, self._error, self._at, self._attempted = data, None, time.time(), True
+                except Exception as e:
+                    with self._lock:
+                        self._error, self._attempted = str(e), True
+                for warning in batch.flush():
+                    print(f"relay: warning: {warning}", file=sys.stderr)
             self._wake.wait(self.interval)

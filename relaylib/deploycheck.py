@@ -12,10 +12,13 @@ def _processes(lines=None):
     """(blocking, dashboards): relay commands running now, and running dashboards, from `ps` lines."""
     if lines is None:
         try:
-            lines = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True,
-                                   timeout=5).stdout.splitlines()
-        except (OSError, subprocess.SubprocessError):
-            return [], []
+            p = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError) as e:
+            return [f"could not list running processes ({e}); check by hand that no relay command runs"], []
+        if p.returncode:
+            return [f"could not list running processes (ps exit {p.returncode}); check by hand that no relay "
+                    "command runs"], []
+        lines = p.stdout.splitlines()
     blocking, dashboards = [], []
     for line in lines:
         pid, _, command = line.strip().partition(" ")

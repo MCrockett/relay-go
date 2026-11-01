@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -305,7 +306,8 @@ def start(job, on_done=None):
         try:
             with events.collect() as batch:  # delivered once the job recorded its outcome (merge-and-tidy D10)
                 job.run()
-                batch.flush()
+                for warning in batch.flush():  # the dashboard's log (F5)
+                    print(f"relay: warning: {warning}", file=sys.stderr)
         finally:
             with _JOBS_LOCK:
                 _JOBS.pop(threading.current_thread(), None)

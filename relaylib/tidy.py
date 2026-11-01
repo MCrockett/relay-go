@@ -171,9 +171,13 @@ def _switch(r, main, base, branch):
 
 
 def _pull(r, main, base):
+    """Fast-forward base to the origin commit whose tree was checked: no second fetch, no configured upstream."""
     try:
         changes = _changes(main, ignored=False)
-        hits = [] if changes else ignored_collisions(main, f"origin/{base}")
+        target = _git(main, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{base}^{{commit}}").stdout.strip()
+        if not target:
+            raise RelayError(f"origin/{base} is not known here")
+        hits = [] if changes else ignored_collisions(main, target)
     except RelayError as e:
         r.skipped(f"did not pull {base}: {e}", f"pull {base}")
         return
@@ -184,9 +188,9 @@ def _pull(r, main, base):
         r.skipped(f"did not pull {base}: it would overwrite ignored files ({_listed(hits)}). Move them, then run: "
                   "git pull --ff-only", f"pull {base}")
     else:
-        p = gitops.network_git(main, "pull", "--ff-only", "-q")
+        p = _git(main, "merge", "--ff-only", "-q", target)
         if p.returncode:
-            r.skipped(f"did not pull {base}: {p.stderr.strip()}", f"pull {base}")
+            r.skipped(f"did not pull {base}: {(p.stderr or p.stdout).strip()}", f"pull {base}")
         else:
             r.done(f"pulled {base}")
 

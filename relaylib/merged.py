@@ -77,19 +77,18 @@ def mark_merged(repo_dir, pr):
         return False, f"PR #{pr} is merged, but relay could not record it locally: {e}; status will find it on GitHub"
 
 
-def _github_name(repo_dir):
-    from .owneractions import github_repo
-    try:
-        return github_repo(repo_dir)
-    except RelayError:
-        return gitops.origin_url(repo_dir)
-
-
 def _queue_merge_event(repo_dir, st, base):
     from . import events
-    events.queue("released" if base == "main" else "merged", st.get("repo") or gitops.repo_name(repo_dir),
+    _warn(events.queue("released" if base == "main" else "merged", st.get("repo") or gitops.repo_name(repo_dir),
                  st.get("feature"), "build", st["pr"],
-                 events.merged_text(st.get("repo") or gitops.repo_name(repo_dir), st.get("feature"), st["pr"], base))
+                 events.merged_text(st.get("repo") or gitops.repo_name(repo_dir), st.get("feature"), st["pr"], base)))
+
+
+def _warn(warnings):
+    """Delivery warnings outside an operation's batch (an event delivered at once) go to stderr (F5)."""
+    import sys
+    for warning in warnings:
+        print(f"relay: warning: {warning}", file=sys.stderr)
 
 
 def resolve(repo_dir, st):
@@ -103,12 +102,18 @@ def resolve(repo_dir, st):
     gone = _read(_gone_path()).get(key)
     if isinstance(gone, str):
         return "gone", gone
+    from .owneractions import github_repo
     try:
-        info = gitops.gh_json(repo_dir, ["pr", "view", str(pr), "--json", "state,baseRefName"])
+        named = github_repo(repo_dir)  # never gh's default repository or GH_REPO: the answer is cached by origin
+    except RelayError:
+        named = None
+    try:
+        info = gitops.gh_json(repo_dir, ["pr", "view", str(pr), "--json", "state,baseRefName"]
+                              + (["-R", named] if named else []))
     except (RelayError, OSError) as e:
-        if NOT_FOUND not in str(e):
+        if NOT_FOUND not in str(e) or not named:  # gone only for the repository origin names
             return "unknown", str(e)
-        reason = f"PR #{pr} is not in {_github_name(repo_dir)}"
+        reason = f"PR #{pr} is not in {named}"
         if st.get("repo") and st["repo"] != gitops.repo_name(repo_dir):
             reason += f"; this feature was copied from {st['repo']}"
         try:

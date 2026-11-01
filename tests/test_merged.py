@@ -184,6 +184,36 @@ class ResolveTest(unittest.TestCase):
         self.assertIn("PR #58 is merged, but relay could not record it locally: read-only", warning)
 
 
+REPO_SENSITIVE_GH = '''#!/usr/bin/env python3
+import os, sys
+args = " ".join(sys.argv[1:])
+if "-R MCrockett/upstream-studio" in args:
+    sys.stdout.write('{"state": "OPEN", "baseRefName": "develop"}')
+    sys.exit(0)
+sys.stderr.write("GraphQL: Could not resolve to a PullRequest with the number of 57.\\n")
+sys.exit(1)
+'''
+
+
+class NamedRepositoryTest(ResolveTest):  # build review R1-2
+    def test_gh_is_asked_about_origins_repository_whatever_gh_repo_says(self):
+        with mock.patch.dict(os.environ, {"GH_REPO": "someone/else",
+                                          "RELAY_GH_BIN": helpers.fake_bin(self.tmp, "ghr", REPO_SENSITIVE_GH)}):
+            self.assertEqual(merged.resolve(self.repo, self.st), ("open", None))
+        self.assertFalse(os.path.exists(os.path.join(self.home, "prgone.json")))
+
+    def test_without_a_github_origin_not_found_is_unknown_and_not_cached(self):
+        helpers.sh(self.repo, "git", "remote", "set-url", "origin", "/srv/git/upstream-studio.git")
+        with mock.patch.dict(os.environ, {"RELAY_GH_BIN": helpers.fake_bin(self.tmp, "gh404", NOT_FOUND_GH)}):
+            self.assertEqual(merged.resolve(self.repo, self.st)[0], "unknown")
+        self.assertFalse(os.path.exists(os.path.join(self.home, "prgone.json")))
+
+
+for _name in dir(ResolveTest):
+    if _name.startswith("test_") and _name not in NamedRepositoryTest.__dict__:
+        setattr(NamedRepositoryTest, _name, None)
+
+
 class GoneRecoveryTest(ResolveTest):  # merge-and-tidy F7: undoing a wrong gone
     def test_removing_the_prgone_entry_asks_github_again(self):
         with mock.patch.dict(os.environ, {"RELAY_GH_BIN": helpers.fake_bin(self.tmp, "gh404", NOT_FOUND_GH)}):

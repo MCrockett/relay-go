@@ -177,7 +177,8 @@ class Handler(BaseHTTPRequestHandler):
                     elif action == "merge":  # the same merge and tidy as relay merge (merge-and-tidy D7)
                         with events.collect() as batch:
                             self.reply(200, owneractions.merge(repo, body["slug"], body["seen"], source="dashboard"))
-                            batch.flush()  # after the reply (D10)
+                            for warning in batch.flush():  # after the reply (D10); to ui.log (F5)
+                                print(f"relay: warning: {warning}", file=sys.stderr)
                     else:
                         self.reply(200, owneractions.run_override(repo, body["slug"], action, body["seen"]))
                 finally:

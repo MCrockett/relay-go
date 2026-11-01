@@ -139,6 +139,43 @@ class TidyTest(unittest.TestCase):
         self.assertTrue(any(l.startswith("did not pull develop: it would overwrite ignored files") for l in r.lines))
         self.assertIn("pull develop", r.left)
 
+    def test_a_different_upstream_is_not_pulled(self):  # build review R1-1
+        helpers.sh(self.github, "git", "pull", "-q")
+        helpers.sh(self.github, "git", "switch", "-q", "-c", "other")
+        helpers.write(os.path.join(self.github, "secret.cfg"), "theirs\n")
+        self.commit(self.github, "secret.cfg", "other tracks a config", force=True)
+        helpers.sh(self.github, "git", "push", "-q", "origin", "other")
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        helpers.sh(self.work, "git", "fetch", "-q", "origin")
+        helpers.sh(self.work, "git", "branch", "-q", "--set-upstream-to=origin/other", "develop")
+        helpers.write(os.path.join(self.work, "secret.cfg"), "mine\n")
+        r = self.tidy()
+        with open(os.path.join(self.work, "secret.cfg")) as f:
+            self.assertEqual(f.read(), "mine\n")
+        self.assertEqual(self.rev(self.work, "develop"), self.rev(self.work, "origin/develop"))
+        self.assertIn("pulled develop", r.lines)
+
+    def test_a_remote_that_moves_after_the_check_is_not_pulled_past_it(self):
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        helpers.write(os.path.join(self.work, "secret.cfg"), "mine\n")
+        checked = tidy.ignored_collisions
+
+        def check_then_move(checkout, target):
+            hits = checked(checkout, target)
+            helpers.sh(self.github, "git", "pull", "-q")
+            helpers.write(os.path.join(self.github, "secret.cfg"), "theirs\n")
+            self.commit(self.github, "secret.cfg", "track a config", force=True)
+            helpers.sh(self.github, "git", "push", "-q", "origin", "develop")
+            helpers.sh(self.work, "git", "fetch", "-q", "origin")   # even a fetch in between changes nothing
+            return hits
+        from unittest import mock
+        with mock.patch.object(tidy, "ignored_collisions", side_effect=check_then_move):
+            r = self.tidy()
+        with open(os.path.join(self.work, "secret.cfg")) as f:
+            self.assertEqual(f.read(), "mine\n")
+        self.assertIn("pulled develop", r.lines)
+        self.assertNotEqual(self.rev(self.work, "develop"), self.rev(self.work, "origin/develop"))
+
     def test_main_checkout_on_another_branch_stays_and_base_fast_forwards(self):
         helpers.sh(self.work, "git", "switch", "-q", "-c", "feat/other", "develop")
         before = self.rev(self.work, "develop")

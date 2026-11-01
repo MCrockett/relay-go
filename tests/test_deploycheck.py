@@ -45,6 +45,14 @@ class DeployCheckTest(StatusFixture):  # merge-and-tidy, deployment without inte
         blocking, _ = self.check([f"{os.getpid()} /usr/bin/python3.11 /opt/relay/bin/relay status"])
         self.assertEqual(blocking, [])
 
+    def test_a_process_scan_that_fails_blocks(self):  # build review R1-3
+        import subprocess
+        failed = subprocess.CompletedProcess(["ps"], 1, "", "ps: no")
+        with mock.patch("relaylib.deploycheck.subprocess.run", return_value=failed):
+            self.assertIn("could not list running processes (ps exit 1)", deploycheck._processes()[0][0])
+        with mock.patch("relaylib.deploycheck.subprocess.run", side_effect=subprocess.TimeoutExpired("ps", 5)):
+            self.assertIn("could not list running processes", deploycheck._processes()[0][0])
+
     def test_main_exit_codes(self):
         with mock.patch.object(deploycheck, "check", return_value=([], [])), mock.patch("builtins.print"):
             self.assertEqual(deploycheck.main(), 0)
