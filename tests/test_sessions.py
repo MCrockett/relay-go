@@ -315,6 +315,12 @@ class MergeNoticeTest(NoticeFixture):
         self.assertIn("PR #27 (other)", self.hook())
         self.assertEqual(self.hook(name="Stop"), "")            # only when the session starts work
 
+    def test_only_a_true_cache_value_is_a_merge(self):
+        self.feature("docker", 26)
+        with open(os.path.join(self.home, "merged.json"), "w") as f:  # anything but true is not a merge (D11)
+            json.dump({"https://example.test/proj.git#26": {"gone": "PR #26 is not in x"}}, f)
+        self.assertEqual(self.hook(), "")
+
     def test_codex_and_claude_session_start(self):
         self.feature("docker", 26)
         self.merged(26)

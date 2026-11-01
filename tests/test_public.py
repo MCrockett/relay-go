@@ -28,6 +28,12 @@ class PublicTest(unittest.TestCase):
                 hits += [f"{path}:{n}" for n, line in enumerate(f, 1) if PRIVATE.search(line)]
         self.assertEqual(hits, [])
 
+    def test_the_build_skill_says_how_an_owners_merge_is_carried_out(self):  # merge-and-tidy D8
+        with open(os.path.join(ROOT, "skills", "relay-build", "SKILL.md")) as f:
+            text = f.read()
+        self.assertIn("relay merge 23 --relayed", text)
+        self.assertIn("Never merge it yourself", text)
+
 
 if __name__ == "__main__":
     unittest.main()

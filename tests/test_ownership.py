@@ -16,6 +16,7 @@ class OwnershipTest(unittest.TestCase):
         self.origin, self.work = helpers.make_repo(self.tmp)
         self.gh = os.path.join(self.tmp, "pr.json")
         helpers.write(self.gh, '{"state": "OPEN"}')
+        helpers.name_test_repos(self)
         p = mock.patch.dict(os.environ, {"RELAY_HOME": os.path.join(self.tmp, "home"), "FAKE_GH_JSON": self.gh,
                                          "RELAY_GH_BIN": helpers.fake_bin(self.tmp, "gh", helpers.FAKE_GH)})
         p.start()

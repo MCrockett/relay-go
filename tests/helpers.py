@@ -167,3 +167,21 @@ def release(child):
     child.stdin.close()
     child.wait(10)
     child.stdout.close()
+
+
+def name_test_repos(test):
+    """Test repos have local or no origins; relay asks gh only about a named GitHub repository
+    (merge-and-tidy build review R1-2). Name them owner/<folder> unless origin is a GitHub URL."""
+    from unittest import mock
+    from relaylib import errors, gitops, owneractions
+    real = owneractions.github_repo
+
+    def named(repo):
+        try:
+            return real(repo)
+        except errors.RelayError:
+            url = gitops.origin_url(repo)
+            return "owner/" + os.path.basename((url or repo).rstrip("/")).removesuffix(".git")
+    patch = mock.patch.object(owneractions, "github_repo", side_effect=named)
+    patch.start()
+    test.addCleanup(patch.stop)

@@ -746,3 +746,14 @@ class SkillTest(unittest.TestCase):  # mobile-hub R15
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HiddenFeaturesTest(unittest.TestCase):  # merge-and-tidy D12
+    def test_closed_gone_and_merged_features_are_left_out(self):
+        data = {"rows": [
+            row("closed", status="done", stage="done", flags=["stale build GO"], hidden="PR #12 was closed"),
+            row("gone", status="done", stage="done", hidden="PR #12 is not in x/y"),
+            row("merged", status="done", stage="done"),
+            row("live", status="ready-to-merge"),
+        ], "other_sessions": [], "running": []}
+        self.assertEqual([i["slug"] for i in hub.items(data, hubs=set())], ["live"])

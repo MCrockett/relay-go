@@ -54,6 +54,17 @@ def _build_flags(repo_dir, st, fetched, ref=None):
     return flags
 
 
+def finished(repo_dir, st):
+    """(done, merged, hidden): done for a done stage or a merged, closed or gone PR; hidden is the reason a
+    closed or gone feature left the inbox and status (merge-and-tidy D11, D12). An unreadable PR stays."""
+    if st.get("status") == "done":
+        return True, False, None
+    if not st.get("pr"):
+        return False, False, None
+    outcome, reason = merged.resolve(repo_dir, st)
+    return outcome in ("merged", "closed", "gone"), outcome == "merged", reason if outcome in ("closed", "gone") else None
+
+
 def _row(repo_dir, slug, st, fetched):
     d = state.feature_dir(repo_dir, slug)
     flags, status = [], st.get("status")
@@ -67,7 +78,7 @@ def _row(repo_dir, slug, st, fetched):
             flags.append(("handoff (over 24h old)" if age_h > 24 else "handoff") + ": open a session and run `relay take`")
         else:  # still being written, or its push failed; relay take would refuse it
             flags.append("handoff drafted, not pushed yet")
-    done = merged.is_done(repo_dir, st)
+    done, was_merged, hidden = finished(repo_dir, st)
     if done:
         status = "done"
     else:
@@ -99,7 +110,7 @@ def _row(repo_dir, slug, st, fetched):
         "owner": (st.get("owner") or {}).get("provider"),
         "verdict": (st.get("verdicts") or {}).get(st.get("stage"), ""),
         "pr": st.get("pr"), "flags": flags, "path": d,
-        "owner_actions": len(st.get("owner_actions") or []) + (1 if done and st.get("pr") else 0),
+        "owner_actions": len(st.get("owner_actions") or []) + (1 if was_merged else 0), "hidden": hidden,
         "waiting_on_owner": (status in ("waiting-owner", "review-error")
                              or (status == "ready-to-merge" and not stale)
                              or any(f.startswith("handoff") and "take" in f for f in flags)),
@@ -131,7 +142,7 @@ def _remote_features(checkout):
 def _remote_row(checkout, ref, slug, st, has_handoff, fetched):
     """A feature that exists only on an origin branch nobody has checked out (for example, a PR waiting
     for the owner while the checkout moved on). A GO there is checked against that branch."""
-    done = merged.is_done(checkout, st)
+    done, was_merged, hidden = finished(checkout, st)
     status = "done" if done else st.get("status")
     flags = [f"on {ref} (not checked out)"]
     if has_handoff and not done:
@@ -157,7 +168,7 @@ def _remote_row(checkout, ref, slug, st, has_handoff, fetched):
         "owner": (st.get("owner") or {}).get("provider"),
         "verdict": (st.get("verdicts") or {}).get(st.get("stage"), ""),
         "pr": st.get("pr"), "flags": flags, "path": f"{ref}:{state.RELAY_DIR}/{slug}",
-        "owner_actions": len(st.get("owner_actions") or []) + (1 if done and st.get("pr") else 0),
+        "owner_actions": len(st.get("owner_actions") or []) + (1 if was_merged else 0), "hidden": hidden,
         "waiting_on_owner": not done and (status in ("waiting-owner", "review-error")
                                           or (status == "ready-to-merge" and not stale) or has_handoff),
         "updated": st.get("updated", ""), "checkout": checkout,
@@ -326,9 +337,12 @@ def cmd_status(args):
     root = projects_root()
     rows, claimed = scan_with_claims(root)
     waiting.one_ask_per_session(rows)  # here, not in the scan: the dashboard merges after its own enrichment
+    hidden = [] if args.all else [r for r in rows if r.get("hidden")]
     if not args.all:
         rows = [r for r in rows if r["stage"] != "done"]
     if args.json:  # unchanged: feature rows only, oldest wait first (other-sessions D5, running-now D8)
         print(json.dumps(sorted(rows, key=waiting.oldest_first_key), indent=2))
     else:
         print(render(sorted(rows, key=waiting.sort_key), other_sessions(root, claimed)))  # newest wait first
+        for r in hidden:  # why a closed or gone feature left the list (D12); named by the checkout it is in
+            print(f"Hidden: {os.path.basename(r['checkout'])}/{r['feature']}: {r['hidden']}")

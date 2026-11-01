@@ -280,6 +280,30 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(self.request("/api/action", "POST", payload)[0], 200)
             self.assertEqual(refresh.call_count, 4)
 
+    def test_a_merge_runs_merge_and_tidy_and_delivers_events_after_the_reply(self):  # merge-and-tidy D7, D10
+        payload = {"action": "merge", "repo": "/fixture", "slug": "demo", "seen": {"commit": "a" * 40}}
+        order = []
+
+        def merge(repo, slug, seen, **kw):
+            order.append(("merge", kw))
+            from relaylib import events
+            events.queue("merged", "r", "demo", "build", 7, "relay: merged")
+            return {"message": "Merged PR #7", "tidy": ["switched the main checkout to develop"]}
+        with mock.patch("relaylib.ui.snapshot.allowed_repo", return_value="/fixture"), \
+                mock.patch("relaylib.owneractions.merge", side_effect=merge), \
+                mock.patch("relaylib.events.deliver", side_effect=lambda ev: order.append(("deliver", ev["kind"])) or []), \
+                mock.patch.object(self.cache, "refresh"):
+            real_reply = server.Handler.reply
+
+            def reply(handler, code, body):
+                order.append(("reply", code))
+                return real_reply(handler, code, body)
+            with mock.patch.object(server.Handler, "reply", reply):
+                code, text = self.request("/api/action", "POST", payload)
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(text)["tidy"], ["switched the main checkout to develop"])
+        self.assertEqual(order, [("merge", {"source": "dashboard"}), ("reply", 200), ("deliver", "merged")])
+
     def test_review_requests_start_in_the_background(self):
         payload = {"action": "review", "repo": "/fixture", "slug": "demo", "seen": {"commit": "a" * 40},
                    "reviewer": "codex:gpt-6-astra"}

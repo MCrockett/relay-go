@@ -43,7 +43,7 @@ def merged_features(session_id, cwd):
     if not owned:
         return []
     url = gitops.origin_url(root)
-    return [(f"{url}#{pr}", slug, pr) for slug, pr in owned if cache.get(f"{url}#{pr}")]
+    return [(f"{url}#{pr}", slug, pr) for slug, pr in owned if cache.get(f"{url}#{pr}") is True]
 
 
 def render(event_name, features, extra=()):
