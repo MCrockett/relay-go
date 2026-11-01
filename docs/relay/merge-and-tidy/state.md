@@ -19,6 +19,15 @@
         "prior": {},
         "round": 1,
         "verdict": "NO-GO"
+      },
+      {
+        "blocking_ids": [
+          "R3-1"
+        ],
+        "head": "44309b2932e2c17e77e8cc70fb2ceee43ca898ef",
+        "prior": {},
+        "round": 3,
+        "verdict": "NO-GO"
       }
     ],
     "spec": [
@@ -51,7 +60,7 @@
     }
   ],
   "pr": null,
-  "refresh": true,
+  "refresh": false,
   "repo": "relay-go",
   "retried": false,
   "review_notes": {},
@@ -70,16 +79,16 @@
     }
   },
   "rounds": {
-    "plan": 2,
+    "plan": 3,
     "spec": 2
   },
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "in-review",
-  "updated": "2026-11-01T12:47:00-05:00",
+  "status": "changes-requested",
+  "updated": "2026-11-01T12:47:38-05:00",
   "verdicts": {
-    "plan": "GO",
+    "plan": "NO-GO",
     "spec": "GO"
   }
 }
