@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/hub-note",
   "extra_rounds": {},
   "feature": "hub-note",
@@ -29,9 +31,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-11-01T23:33:45-05:00",
+  "updated": "2026-11-01T23:34:00-05:00",
   "verdicts": {}
 }
 ---
