@@ -192,12 +192,52 @@ class NoteCommandTest(unittest.TestCase):  # hub-note R1 to R13
             self.assertEqual(self.relay("--hub", "--list", "--json"), 1)
         self.assertIn("could not read the hub sessions", self.err)
 
+    def test_an_empty_session_selector_never_sends(self):
+        fake = self.open_session("A")
+        self.register(("claude", "A"))
+        self.assertEqual(self.relay("--hub", "--session", "", "hi"), 1)
+        self.assertIn("not a registered hub session", self.err)
+        self.assertEqual(fake.got, [])
+        self.no_logs()
+
+    def test_a_socket_owned_by_someone_else_is_not_open(self):
+        fake = self.open_session("A")
+        self.register(("claude", "A"))
+        real = os.lstat
+        other = lambda p, *a, **k: os.stat_result((*real(p)[:4], os.getuid() + 1, *real(p)[5:]))
+        with mock.patch.object(notes.os, "lstat", side_effect=other):
+            self.assertEqual(self.relay("--hub", "--list", "--json"), 0, self.err)
+            self.assertEqual([x["open"] for x in json.loads(self.out)], [False])
+            self.assertEqual(self.relay("--hub", "--session", "A", "hi"), 1)
+        self.assertIn("not open", self.err)
+        self.assertEqual(fake.got, [])
+        self.no_logs()
+
+    def test_an_unreadable_record_is_not_open(self):
+        self.open_session("A")
+        with open(sessions.record_path("claude", "A"), "w") as f:
+            f.write("{broken")
+        self.register(("claude", "A"))
+        self.assertEqual(self.relay("--hub", "--list", "--json"), 0, self.err)
+        self.assertEqual(json.loads(self.out), [{"provider": "claude", "session_id": "A", "last_active": None,
+                                                 "open": False}])
+        self.assertEqual(self.relay("--hub", "--session", "A", "hi"), 1)
+        self.no_logs()
+
+    def test_bad_argument_mixes_read_nothing(self):
+        with mock.patch.object(commands, "_hub_statuses", side_effect=AssertionError("read")), \
+                mock.patch.object(notes, "send", side_effect=AssertionError("sent")):
+            for argv in (["--list", "--json"], ["--hub", "--list"], ["--hub", "--list", "--json", "hi"],
+                         ["--hub", "--list", "--json", "--session", ""], ["--hub", "--json", "hi"], ["--hub"]):
+                self.assertEqual(self.relay(*argv), 1, argv)
+
     # arguments
     def test_argument_rules(self):
         fake = self.open_session("A")
         self.register(("claude", "A"))
         bad = [[], ["--list", "--json"], ["--hub"], ["--hub", "--list"], ["--hub", "--list", "--json", "hi"],
-               ["--hub", "--list", "--json", "--session", "A"], ["--hub", "--json", "hi"],
+               ["--hub", "--list", "--json", "--session", "A"], ["--hub", "--list", "--json", "--session", ""],
+               ["--hub", "--json", "hi"],
                ["--hub", "--session", "A"], ["--session", "A", "hi"], ["hi"]]
         for argv in bad:
             try:

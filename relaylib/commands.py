@@ -936,7 +936,7 @@ def cmd_note(args):
     if not args.hub:
         raise RelayError("relay note needs --hub")
     if args.list:
-        if args.text is not None or args.session or not args.json:
+        if args.text is not None or args.session is not None or not args.json:
             raise RelayError("--list takes --json and nothing else")
         print(json.dumps([{k: x[k] for k in ("provider", "session_id", "last_active", "open")}
                           for x in _hub_statuses()]))
@@ -946,7 +946,7 @@ def cmd_note(args):
     if args.text is None:
         raise RelayError("relay note --hub needs the text to send, or --list --json")
     statuses = _hub_statuses()
-    if args.session:
+    if args.session is not None:
         found = [x for x in statuses if x["session_id"] == args.session]
         if not found:
             raise RelayError(f"{args.session} is not a registered hub session; nothing was sent")
