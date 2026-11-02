@@ -244,6 +244,8 @@ def merge_readiness(repo, st, seen):
     if ci == "not-started":
         raise RelayError("GitHub did not start CI for this code (a billing or spending-limit problem); fix it under "
                          "Settings, Billing and plans, rerun CI, then merge")
+    if ci == "none" and not config.load(repo)["build"]["require_ci"]:
+        return info  # a repo without PR CI (require_ci = false) merges on the GO and its local gates
     if ci != "green":
         raise RelayError(f"CI is {ci}; wait for green")
     return info
