@@ -66,6 +66,37 @@ def registered():
         return set()
 
 
+def entries():
+    """[(provider, session_id)] of hub sessions in the order of the hub file, without repeats; empty when the file
+    is missing or unreadable (hub-note D3). `registered()` is the same sessions as a set."""
+    try:
+        pairs = [(e["provider"], e["session_id"]) for e in _read_sessions()]
+    except (OSError, ValueError):
+        return []
+    return list(dict.fromkeys(pairs))
+
+
+def session_status(provider, session_id, alive):
+    """{provider, session_id, last_active, open, inbox} for one hub session, read live from its record (hub-note
+    D2, D3). Open: a Claude session whose record is well formed, is not shown as ended or stopped, and names an
+    inbox that is a socket owned by this user. last_active is the record's `at`, or None for anything unusable."""
+    from . import leftoff, notes, sessions
+    out = {"provider": provider, "session_id": session_id, "last_active": None, "open": False, "inbox": None}
+    try:
+        with open(sessions.record_path(provider, session_id)) as f:
+            record = json.load(f)
+    except (OSError, ValueError):
+        return out
+    if not sessions._valid(record) or (record["provider"], record["session_id"]) != (provider, session_id):
+        return out
+    out["last_active"] = record["at"]
+    inbox = record.get("inbox")
+    if (provider == "claude" and leftoff._shown_state(record, alive) not in ("ended", "stopped")
+            and isinstance(inbox, str) and notes.usable_socket(inbox)):
+        out.update(open=True, inbox=inbox)
+    return out
+
+
 def register(provider, session_id, records, now=None):
     """Record this session as a hub, dropping entries whose session record is gone or ended. A warning, or None;
     never raises (D9)."""

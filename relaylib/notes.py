@@ -19,6 +19,7 @@ MAX_CHARS = 2000
 KEEP_S = 7 * 86400
 SEND_WAIT_S, TAKE_WAIT_S, POST_TIMEOUT_S = 2.0, 0.1, 2.0
 STATUSES = {"queued", "delivered", "posted"}
+NOT_POSTED = "not posted"
 NOT_RECORDED = "Posted to the session, but relay could not record it."
 
 
@@ -126,12 +127,20 @@ def line(text, prefix=None):
     return json.dumps({"type": "user", "message": {"role": "user", "content": (prefix or PREFIX) + "\n" + text}}) + "\n"
 
 
+def usable_socket(path):
+    """True when `path` is a socket owned by this user: not a symlink, a regular file or someone else's socket."""
+    try:
+        st = os.lstat(path)
+    except (OSError, ValueError, TypeError):
+        return False
+    return stat.S_ISSOCK(st.st_mode) and st.st_uid == os.getuid()
+
+
 def post(inbox, text, prefix=None):
     """True when the session's inbox socket accepted the note (D3); False for anything else (D4)."""
     try:
-        st = os.lstat(inbox)
-        if not stat.S_ISSOCK(st.st_mode) or st.st_uid != os.getuid():
-            return False  # a symlink, a regular file or someone else's socket
+        if not usable_socket(inbox):
+            return False
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.settimeout(POST_TIMEOUT_S)
             s.connect(inbox)
@@ -141,11 +150,12 @@ def post(inbox, text, prefix=None):
         return False
 
 
-def send(provider, session_id, text, inbox=None, now=None, prefix=None):
+def send(provider, session_id, text, inbox=None, now=None, prefix=None, queue=True):
     """(note, message): the whole send under the notes lock (plan: send is one locked operation). Every write that
     can fail is prepared before the post, so a storage failure stops the send with nothing posted (F3); only the
     final rename can fail after a post, and then the note is left out of the log (F5). `inbox` is None when the
-    session must not be posted to (Codex, no recorded socket, or not running)."""
+    session must not be posted to (Codex, no recorded socket, or not running). With `queue=False` a note that is not
+    posted is never written to the log: (None, "not posted") comes back (hub-note D4.4)."""
     text = clean(text)
     now = time.time() if now is None else now
     with _locked(SEND_WAIT_S):
@@ -159,6 +169,8 @@ def send(provider, session_id, text, inbox=None, now=None, prefix=None):
         try:
             temps.append(_prepare(notes + [posted]))
             ok = provider == "claude" and bool(inbox) and post(inbox, text, prefix)
+            if not ok and not queue:
+                return None, NOT_POSTED
             try:
                 os.replace(temps[1] if ok else temps[0], path)
             except OSError:
