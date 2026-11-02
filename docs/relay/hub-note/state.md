@@ -2,6 +2,7 @@
 {
   "authors": {
     "idea": "claude",
+    "plan": "claude",
     "spec": "claude"
   },
   "branch": "feat/hub-note",
@@ -47,13 +48,14 @@
     }
   },
   "rounds": {
+    "plan": 1,
     "spec": 2
   },
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "drafting",
-  "updated": "2026-11-01T23:37:28-05:00",
+  "status": "in-review",
+  "updated": "2026-11-01T23:37:59-05:00",
   "verdicts": {
     "spec": "GO"
   }
