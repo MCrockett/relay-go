@@ -119,6 +119,37 @@ class NotesTest(unittest.TestCase):
         self.assertEqual(notes.send("codex", "s1", "hi", fake.path, NOW)[0]["status"], "queued")  # never Codex
         self.assertEqual(fake.got, [])
 
+    def test_usable_socket(self):  # hub-note R3
+        fake = self.inbox()
+        plain = os.path.join(self.tmp, "plain")
+        open(plain, "w").close()
+        link = os.path.join(self.tmp, "link.sock")
+        os.symlink(fake.path, link)
+        self.assertTrue(notes.usable_socket(fake.path))
+        for bad in (plain, link, os.path.join(self.tmp, "missing.sock"), None, ""):
+            self.assertFalse(notes.usable_socket(bad), bad)
+
+    def test_unqueued_send_writes_nothing_when_not_posted(self):  # hub-note D4.4, R8
+        fake = self.inbox()
+        plain = os.path.join(self.tmp, "plain")
+        open(plain, "w").close()
+        for inbox in (None, os.path.join(self.tmp, "missing.sock"), plain):
+            self.assertEqual(notes.send("claude", "s1", "hi", inbox, NOW, queue=False), (None, notes.NOT_POSTED))
+        with mock.patch.object(notes, "post", return_value=False):
+            self.assertEqual(notes.send("claude", "s1", "hi", fake.path, NOW, queue=False), (None, notes.NOT_POSTED))
+        self.assertEqual(notes.send("codex", "s1", "hi", fake.path, NOW, queue=False), (None, notes.NOT_POSTED))
+        self.assertFalse(os.path.exists(notes.log_path("claude", "s1")))
+        self.assertEqual(notes.take("claude", "s1", NOW), [])
+        self.assertEqual(fake.got, [])
+
+    def test_unqueued_send_posts_and_logs_like_any_other(self):  # hub-note D4.3
+        fake = self.inbox()
+        note, message = notes.send("claude", "s1", "go", fake.path, NOW, prefix="From a tool:", queue=False)
+        self.assertEqual((note["status"], message), ("posted", None))
+        [sent] = fake.wait()
+        self.assertEqual(json.loads(sent)["message"]["content"], "From a tool:\ngo")
+        self.assertEqual([(n["text"], n["status"]) for n in self.log()], [("go", "posted")])
+
     def test_take_delivers_once_and_remove_only_queued(self):
         a, _ = notes.send("claude", "s1", "one", None, NOW)
         b, _ = notes.send("claude", "s1", "two", None, NOW + 1)

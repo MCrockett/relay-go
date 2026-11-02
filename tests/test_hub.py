@@ -67,6 +67,79 @@ CANNED = {"rows": [], "features": [], "other_sessions": [], "running": [], "left
 TOKEN = "tok-secret-123"
 
 
+class SessionStatusTest(unittest.TestCase):  # hub-note D2, D3, R2, R3
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(dir="/tmp")  # short: macOS caps socket paths near 104 bytes
+        self.addCleanup(temp.cleanup)
+        self.tmp = temp.name
+        p = mock.patch.dict(os.environ, {"RELAY_HOME": os.path.join(self.tmp, "h")})
+        p.start()
+        self.addCleanup(p.stop)
+        self.now = time.time()
+
+    def record(self, sid, provider="claude", state="waiting", inbox=None, **extra):
+        r = {"provider": provider, "session_id": sid, "state": state, "since": self.now - 50, "at": self.now - 50,
+             "event": "Stop", "pending": [], "cwd": None, **extra}
+        if inbox:
+            r["inbox"] = inbox
+        os.makedirs(sessions.folder(), exist_ok=True)
+        with open(sessions.record_path(provider, sid), "w") as f:
+            json.dump(r, f)
+        return r
+
+    def inbox(self):
+        fake = FakeInbox(self.tmp)
+        self.addCleanup(fake.close)
+        return fake.path
+
+    def status(self, provider, sid, alive=None):
+        return hub.session_status(provider, sid, alive)
+
+    def test_open_session(self):
+        path = self.inbox()
+        self.record("A", inbox=path)
+        got = self.status("claude", "A")
+        self.assertEqual((got["open"], got["last_active"], got["inbox"]), (True, self.now - 50, path))
+
+    def test_not_open_cases(self):
+        path = self.inbox()
+        plain = os.path.join(self.tmp, "plain")
+        open(plain, "w").close()
+        self.record("codex1", provider="codex", inbox=path)
+        self.record("ended", state="ended", inbox=path)
+        self.record("dead", state="working", inbox=path, process={"pid": 99999, "started": "x"})
+        self.record("noinbox")
+        self.record("plain", inbox=plain)
+        self.record("gone", inbox=os.path.join(self.tmp, "gone.sock"))
+        cases = [("codex", "codex1"), ("claude", "ended"), ("claude", "dead"), ("claude", "noinbox"),
+                 ("claude", "plain"), ("claude", "gone")]
+        for provider, sid in cases:
+            got = self.status(provider, sid, alive=set())
+            self.assertEqual((sid, got["open"], got["inbox"]), (sid, False, None))
+            self.assertEqual(got["last_active"], self.now - 50, sid)
+
+    def test_missing_and_malformed_records_have_no_last_active(self):
+        self.assertEqual(self.status("claude", "none")["last_active"], None)
+        r = self.record("bad")
+        del r["at"]
+        with open(sessions.record_path("claude", "bad"), "w") as f:
+            json.dump(r, f)
+        with open(sessions.record_path("claude", "junk"), "w") as f:
+            f.write("{nope")
+        for sid in ("none", "bad", "junk"):
+            got = self.status("claude", sid)
+            self.assertEqual((got["last_active"], got["open"]), (None, False), sid)
+
+    def test_entries_keep_file_order_and_registered_is_unchanged(self):
+        self.assertEqual(hub.entries(), [])
+        os.makedirs(hub.folder(), exist_ok=True)
+        with open(os.path.join(hub.folder(), "sessions.json"), "w") as f:
+            json.dump([{"provider": "codex", "session_id": "z"}, {"provider": "claude", "session_id": "a"},
+                       {"provider": "codex", "session_id": "z"}, {"junk": 1}], f)
+        self.assertEqual(hub.entries(), [("codex", "z"), ("claude", "a")])
+        self.assertEqual(hub.registered(), {("codex", "z"), ("claude", "a")})
+
+
 class FakeDashboard:
     """A local stand-in for relay ui's /api/snapshot: mode picks how it answers."""
 
