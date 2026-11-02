@@ -202,6 +202,11 @@ class OwnerActionsTest(OwnerFixture):
         with mock.patch("relaylib.gitops.ci_for_code", return_value="not-started"):    # ci-on-submit R9
             with self.assertRaisesRegex(RelayError, "billing"):
                 owneractions.merge(self.work, "demo", self.seen())
+        with mock.patch("relaylib.gitops.ci_for_code", return_value="none"):
+            with self.assertRaisesRegex(RelayError, "CI is none"):
+                owneractions.merge_readiness(self.work, self.st, self.seen())
+            with mock.patch("relaylib.config.load", return_value={"build": {"require_ci": False}}):
+                self.assertEqual(owneractions.merge_readiness(self.work, self.st, self.seen())["number"], 7)
         with mock.patch("relaylib.freshness.check", return_value=(False, "stale GO")):
             with self.assertRaisesRegex(RelayError, "stale"):
                 owneractions.merge(self.work, "demo", self.seen())
