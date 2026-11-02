@@ -264,6 +264,19 @@ session's own terminal. The dialog lists the session's notes from the last 7 day
 note can be removed until the session takes it. relay never starts or resumes a session to deliver a note. Notes
 stay on this machine, in `~/.relay/notes`, and are pruned after 7 days.
 
+### Notes to a hub session from your own tools
+
+    relay note --hub --list --json                  JSON list of the registered hub sessions
+    relay note --hub [--session ID] "text"          send a note to one that is open
+
+For a local app of yours that talks to your hub session. `--list --json` prints `provider`, `session_id`,
+`last_active` (epoch seconds, or null when the session's record is missing or unusable) and `open` for each hub
+session, and `[]` when there are none. A session is open when it is a Claude session, is not shown as ended or
+stopped, and its inbox socket is present. The send goes only to a registered hub session that is open; with no
+`--session` it needs exactly one open, and otherwise says which are open. The note is cleaned and recorded like
+any other. Unlike the dashboard, this command never queues: if the note was not posted to the inbox socket it
+exits non-zero, says so, and leaves nothing waiting for the session's next prompt.
+
 Open a feature to see its stage history, reviews, owner decisions,
 session, handoff and CI. Reviews open even when their branch is not checked out. The All features table
 can include completed work. Models shows Codex and Claude weekly limits, daily carry-forward budgets, and the

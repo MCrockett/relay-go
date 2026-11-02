@@ -913,6 +913,69 @@ def cmd_hub_note(args):
         _hub_logged(entry, result)
 
 
+NOTE_PREFIX = "Note from the owner, sent with relay note:"
+
+
+def _hub_statuses():
+    from . import hub, sessions
+    try:
+        alive = sessions.alive(sessions.read_records())
+        return [hub.session_status(p, sid, alive) for p, sid in hub.entries()]
+    except (OSError, ValueError) as e:
+        raise RelayError(f"could not read the hub sessions: {e}")
+
+
+def _named(open_sessions):
+    return ", ".join(f"{x['provider']} session {x['session_id']}" for x in open_sessions)
+
+
+def cmd_note(args):
+    """hub-note: list the hub sessions, or send a note to one that is open. A note that is not posted is a failure
+    and is never queued."""
+    from . import notes
+    if not args.hub:
+        raise RelayError("relay note needs --hub")
+    if args.list:
+        if args.text is not None or args.session or not args.json:
+            raise RelayError("--list takes --json and nothing else")
+        print(json.dumps([{k: x[k] for k in ("provider", "session_id", "last_active", "open")}
+                          for x in _hub_statuses()]))
+        return 0
+    if args.json:
+        raise RelayError("--json goes with --list")
+    if args.text is None:
+        raise RelayError("relay note --hub needs the text to send, or --list --json")
+    statuses = _hub_statuses()
+    if args.session:
+        found = [x for x in statuses if x["session_id"] == args.session]
+        if not found:
+            raise RelayError(f"{args.session} is not a registered hub session; nothing was sent")
+        if len(found) > 1:
+            raise RelayError(f"{args.session} is registered for more than one provider; nothing was sent")
+        target = found[0]
+        if not target["open"]:
+            raise RelayError(f"{target['provider']} session {args.session} is not open; nothing was sent")
+    else:
+        open_sessions = [x for x in statuses if x["open"]]
+        if len(open_sessions) != 1:
+            raise RelayError("no hub session is open; nothing was sent" if not open_sessions else
+                             f"more than one hub session is open ({_named(open_sessions)}); "
+                             "choose one with --session; nothing was sent")
+        target = open_sessions[0]
+    try:
+        note, message = notes.send(target["provider"], target["session_id"], args.text, target["inbox"],
+                                   prefix=NOTE_PREFIX, queue=False)
+    except (OSError, ValueError) as e:
+        raise RelayError(f"could not send the note: {e}")
+    if note is None:
+        raise RelayError(f"the note was not delivered to {target['provider']} session {target['session_id']}; "
+                         "nothing is left waiting")
+    if message:
+        print(f"relay: warning: {message}", file=sys.stderr)
+    print(f"relay: posted to {target['provider']} session {target['session_id']}")
+    return 0
+
+
 HUB_REVIEWS = {"review": "build", "review-spec": "spec", "review-plan": "plan"}
 
 
@@ -1348,6 +1411,12 @@ def build_parser():
         sp.add_argument("--relayed", action="store_true",
                         help="required: pass on what the owner typed in the hub chat (recorded as relayed)")
         sp.add_argument("--by", help="claude or codex, when detection is ambiguous")
+    nt = add("note", cmd_note, "send a note to a hub session, or list them (--hub; for the owner's own tools)")
+    nt.add_argument("--hub", action="store_true", help="the target: the registered hub sessions")
+    nt.add_argument("--list", action="store_true", help="list the hub sessions (with --json)")
+    nt.add_argument("--json", action="store_true")
+    nt.add_argument("--session", help="the hub session id to send to; without it, the only open one")
+    nt.add_argument("text", nargs="?")
     try:
         from . import status
     except ImportError:
