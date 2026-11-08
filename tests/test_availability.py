@@ -55,6 +55,46 @@ class AvailabilityTest(unittest.TestCase):
         self.assertTrue(out)
         self.assertIn("out of usage", why)
 
+    def both_windows(self, five_used, five_reset, week_used, week_reset):
+        return json.dumps({"payload": {"rate_limits": {"limit_id": "codex",
+            "primary": {"used_percent": five_used, "window_minutes": 300, "resets_at": five_reset},
+            "secondary": {"used_percent": week_used, "window_minutes": 10080, "resets_at": week_reset}}}})
+
+    def remembered_until(self):
+        with open(os.path.join(self.tmp, "relay", "unavailable.json")) as f:
+            return json.load(f)["codex"]
+
+    def test_a_failure_with_weekly_room_waits_only_for_the_5_hour_reset(self):
+        now = int(time.time())
+        self.log(self.both_windows(100, now + 1800, 51, now + 3 * 86400))
+        availability.record_out("codex")
+        self.assertEqual(self.remembered_until(), now + 1800)
+
+    def test_a_failure_with_the_weekly_limit_used_up_waits_for_the_weekly_reset(self):
+        now = int(time.time())
+        self.log(self.both_windows(40, now + 1800, 100, now + 3 * 86400))
+        availability.record_out("codex")
+        self.assertEqual(self.remembered_until(), now + 3 * 86400)
+
+    def test_a_failure_with_a_past_5_hour_reset_waits_an_hour(self):
+        now = int(time.time())
+        self.log(self.both_windows(100, now - 60, 51, now + 3 * 86400))
+        availability.record_out("codex")
+        self.assertAlmostEqual(self.remembered_until(), now + 3600, delta=5)
+
+    def test_a_failure_with_only_a_weekly_window_that_has_room_waits_an_hour(self):
+        now = int(time.time())
+        self.log(session_line(51, now + 3 * 86400))
+        availability.record_out("codex")
+        self.assertAlmostEqual(self.remembered_until(), now + 3600, delta=5)
+
+    def test_a_line_without_windows_does_not_hide_an_older_one(self):
+        now = int(time.time())
+        empty = json.dumps({"payload": {"rate_limits": {"limit_id": "premium", "primary": None, "secondary": None}}})
+        self.log(self.both_windows(100, now + 1800, 51, now + 3 * 86400), empty)
+        availability.record_out("codex")
+        self.assertEqual(self.remembered_until(), now + 1800)
+
     def test_a_remembered_failure_expires(self):
         availability.record_out("claude", until=int(time.time()) - 1)
         self.assertFalse(availability.blocked("claude", LIMITS)[0])
