@@ -7,7 +7,20 @@
   "branch": "feat/five-hour-usage",
   "extra_rounds": {},
   "feature": "five-hour-usage",
-  "history": {},
+  "history": {
+    "spec": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2"
+        ],
+        "head": "c91dd453c286b110ab8b67c6eaffdf27ace2bf4b",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ]
+  },
   "owner": {
     "provider": "claude",
     "session": "e2663922-7743-45ce-bf9d-0fd0d7b6c32b",
@@ -33,6 +46,7 @@
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
+  "review_notes": {},
   "reviewed": {
     "build": null,
     "plan": null,
@@ -44,9 +58,11 @@
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "in-review",
-  "updated": "2026-11-08T18:34:20-05:00",
-  "verdicts": {}
+  "status": "changes-requested",
+  "updated": "2026-11-08T18:35:25-05:00",
+  "verdicts": {
+    "spec": "NO-GO"
+  }
 }
 ---
 
