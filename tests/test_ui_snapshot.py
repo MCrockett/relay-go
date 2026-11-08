@@ -432,6 +432,24 @@ class SnapshotTest(unittest.TestCase):
                 with open(os.path.join(dirpath, name), "rb") as f:
                     self.assertNotIn(b"PURPLE-GIRAFFE", f.read(), name)
 
+    def test_a_dead_session_asks_nothing_in_the_feature_detail(self):
+        self.st.update(stage="build", status="drafting")
+        self.save()
+        self.stopped(said="Approve this?")
+        record_path = sessions.record_path("codex", "s1")
+        data = json.load(open(record_path))
+        data.update(state="permission", process={"pid": 7, "started": "Thu Oct  8 15:13:49 2026"},
+                    pending=[{"tool_use_id": None, "tool_name": "AskUserQuestion", "input_sha1": "x"}])
+        json.dump(data, open(record_path, "w"))
+        with mock.patch.object(sessions, "alive", return_value={"s1"}):
+            self.assertEqual(snapshot.feature(self.work, "demo")["pending_tools"], ["AskUserQuestion"])
+        with mock.patch.object(sessions, "alive", return_value=set()):
+            detail = snapshot.feature(self.work, "demo")
+            row = snapshot.build()["rows"][0]
+        self.assertEqual(detail["pending_tools"], [])
+        self.assertTrue(detail["health"]["text"].startswith("session stopped"))
+        self.assertEqual([a["kind"] for a in row["asks"]], ["check"])
+
     def test_a_review_error_card_can_open_the_review_dialog(self):
         self.st.update(stage="build", status="review-error", pr=7)
         self.save()

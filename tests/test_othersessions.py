@@ -69,6 +69,16 @@ class ListedTest(Homes):
                    record("silent")]  # waiting, but never said anything
         self.assertEqual(self.listed(records, claimed={"claimed"}), [])
 
+    def test_a_session_whose_process_died_is_not_listed(self):
+        proc = {"pid": 7, "started": "Thu Oct  8 15:13:49 2026"}
+        records = [dict(record("dead", "permission", pending=("AskUserQuestion",)), process=proc),
+                   dict(record("live", "permission", pending=("Bash",)), process=proc),
+                   record("unknown", "permission", pending=("Bash",))]
+        with mock.patch.object(othersessions.sessions, "alive", return_value={"live"}):
+            self.assertEqual(sorted(e["session_id"] for e in self.listed(records)), ["live", "unknown"])
+        with mock.patch.object(othersessions.sessions, "alive", return_value=None):  # ps failed: listed as before
+            self.assertEqual(len(self.listed(records)), 3)
+
     def test_newest_wait_first_ties_by_id(self):
         for sid in ("b", "a", "c"):
             self.claude_said(sid, "x")

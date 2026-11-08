@@ -89,6 +89,30 @@ class SessionHealthTest(unittest.TestCase):
             self.assertEqual(health.session_health("/repo", dict(st, status="done"), [mine], 1000.0),
                              (None, None, None))
 
+    def test_a_waiting_session_whose_process_died_is_stopped_not_waiting(self):
+        st = {"status": "drafting", "stage": "build", "branch": "feat/x",
+              "owner": {"provider": "claude", "session": "S", "since": "2026-10-07T10:00:00-04:00"}}
+        proc = {"pid": 7, "started": "Thu Oct  8 15:13:49 2026"}
+        idle = {"last_activity": None, "unpushed": None, "origin": None}
+        for state_ in ("waiting", "permission"):
+            mine = dict(rec(state=state_, sid="S", since=100.0, at=100.0), process=proc)
+            for act, alive, text in ((idle, set(), "session stopped 3h"), (idle, {"S"}, None),
+                                     (idle, None, None), ({**idle, "last_activity": 10_600.0}, set(), "session stopped 3h")):
+                with mock.patch.object(config, "load", return_value={}), \
+                        mock.patch.object(health, "branch_checkouts", return_value=[]), \
+                        mock.patch.object(health, "activity", return_value=act), \
+                        mock.patch.object(health.sessions, "alive", return_value=alive):
+                    found, _, record = health.session_health("/repo", st, [mine], 10_900.0)
+                self.assertIs(record, mine)
+                with mock.patch.object(health.sessions, "alive", return_value=set()):  # died a minute ago
+                    recent = health.health(dict(mine, at=10_840.0), act, 1, 30, 10_900.0, dead=True)
+                self.assertEqual(recent["text"], "session stopped 1m")
+                if text is None:  # alive, or liveness unknown: the hook record decides, as before
+                    self.assertTrue(found["text"].startswith(("waiting on you", "needs permission")))
+                else:
+                    self.assertEqual(found["text"], text)
+                    self.assertEqual((found["kind"], found["since"], found.get("stopped")), ("attention", 100.0, True))
+
 
 class ActivityTest(unittest.TestCase):
     def setUp(self):
