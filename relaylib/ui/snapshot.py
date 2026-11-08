@@ -170,7 +170,8 @@ def feature(repo, slug, records=None):
             "review_defaults": review_defaults,
             "health": found, "unpushed": (act or {}).get("unpushed"), "origin_at": (act or {}).get("origin"),
             "local_error": local_error, "agent_text": agent_text, "stuck_reason": stuck,
-            "pending_tools": [p.get("tool_name") for p in (record or {}).get("pending") or [] if p.get("tool_name")],
+            "pending_tools": [] if (found or {}).get("stopped") else  # its approval died with it
+            [p.get("tool_name") for p in (record or {}).get("pending") or [] if p.get("tool_name")],
             "session_record": record}
 
 

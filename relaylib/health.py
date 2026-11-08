@@ -127,7 +127,10 @@ def age(seconds):
 def health(record, act, grace_min, quiet_min, now, dead=False):
     """{kind, text, since} by the spec's first matching rule, or None with nothing to go on (R5).
     dead: the record's process is known gone, so its waiting or permission state no longer asks anything."""
-    if record and not dead:
+    if record and dead:  # known death wins over any activity: nobody is left to answer it
+        return {"kind": "attention", "text": f"session stopped {age(now - record['at'])}", "since": record["at"],
+                "stopped": True}
+    if record:
         held = now - record["since"]
         if record["state"] == "permission" and held > grace_min * 60:
             return {"kind": "attention", "text": f"needs permission {age(held)}", "since": record["since"]}
@@ -140,8 +143,6 @@ def health(record, act, grace_min, quiet_min, now, dead=False):
         return None
     latest = max(candidates)
     if now - latest > quiet_min * 60:
-        if dead:
-            return {"kind": "attention", "text": f"session stopped {age(now - record['at'])}", "since": record["at"]}
         return {"kind": "attention", "text": f"no activity {age(now - latest)}", "since": latest}
     return {"kind": "ok", "text": f"active {age(now - latest)} ago", "since": latest}
 

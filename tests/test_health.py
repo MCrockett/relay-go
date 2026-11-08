@@ -97,18 +97,21 @@ class SessionHealthTest(unittest.TestCase):
         for state_ in ("waiting", "permission"):
             mine = dict(rec(state=state_, sid="S", since=100.0, at=100.0), process=proc)
             for act, alive, text in ((idle, set(), "session stopped 3h"), (idle, {"S"}, None),
-                                     (idle, None, None), ({**idle, "last_activity": 10_600.0}, set(), "active 5m ago")):
+                                     (idle, None, None), ({**idle, "last_activity": 10_600.0}, set(), "session stopped 3h")):
                 with mock.patch.object(config, "load", return_value={}), \
                         mock.patch.object(health, "branch_checkouts", return_value=[]), \
                         mock.patch.object(health, "activity", return_value=act), \
                         mock.patch.object(health.sessions, "alive", return_value=alive):
                     found, _, record = health.session_health("/repo", st, [mine], 10_900.0)
                 self.assertIs(record, mine)
+                with mock.patch.object(health.sessions, "alive", return_value=set()):  # died a minute ago
+                    recent = health.health(dict(mine, at=10_840.0), act, 1, 30, 10_900.0, dead=True)
+                self.assertEqual(recent["text"], "session stopped 1m")
                 if text is None:  # alive, or liveness unknown: the hook record decides, as before
                     self.assertTrue(found["text"].startswith(("waiting on you", "needs permission")))
                 else:
                     self.assertEqual(found["text"], text)
-                    self.assertEqual(found["kind"], "ok" if text.startswith("active") else "attention")
+                    self.assertEqual((found["kind"], found["since"], found.get("stopped")), ("attention", 100.0, True))
 
 
 class ActivityTest(unittest.TestCase):
