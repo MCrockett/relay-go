@@ -32,7 +32,8 @@ Nothing writes to `usage.jsonl`; `capture_claude` and `record_codex_sample` are 
 Test, `tests/test_availability.py`, new class `FiveHourTest` (same `CODEX_HOME`/`RELAY_HOME` setup):
 codex current; codex at exactly 60 minutes (current) and 61 (stale); codex past reset (state reset, used 0); codex
 with no `timestamp` (stale); codex with `resets_at` 0 (resets_at None, never reset); no codex log (unknown); claude
-current from a written `claude-usage.json`; claude file missing, not JSON, without `five_hour`, used 101, reset 0
+current, stale (sampled 61 minutes ago) and reset (reset in the past) from a written `claude-usage.json`; claude
+file unreadable (a directory at that path), missing, not JSON, without `five_hour`, used 101, reset 0
 (each unknown, no exception); a test that `usage.jsonl` is not created by any `five_hour` call.
 
 Covers: R1, R2.
@@ -48,6 +49,9 @@ Covers: R1, R2.
   - claude: `_claude_window("seven_day")` at 100 with a future reset gives ("weekly", reset); else
     `_claude_window("five_hour")` at 100 with a future reset gives ("5-hour", reset);
   - otherwise ("unknown", None).
+- `blocked` reads the store through `_entry` from this task on (`entry["until"] > now`), keeping today's
+  "out of usage until ..." wording; Task 3 changes only the wording and adds the live check. This keeps the suite green
+  after this task, since `blocked` would otherwise compare a dict with a number.
 - `record_out(provider, until=None)`: `until` as today (codex: the cause's reset, else now + 3600; claude: now + 3600;
   an explicit `until` wins), then stores `{"until", "limit", "resets_at"}`. Keeps today's unlocked read-modify-write
   (D3 last bullet).
@@ -56,7 +60,8 @@ Test, `tests/test_availability.py`: the existing `record_out` tests still pass, 
 `["until"]`; new tests: codex failure with 5-hour reset stores limit "5-hour" and that reset; codex with weekly used
 up stores "weekly"; codex with neither stores "unknown" and resets_at None; claude with `five_hour` at 100 stores
 "5-hour", the snapshot reset, and until about now + 3600; claude with no snapshot stores "unknown"; an old bare-number
-entry still blocks.
+entry still blocks; a new-format entry blocks through `blocked`; entries with an invalid `until` (a string, null, a
+dict without `until`) are ignored and do not raise.
 
 Covers: R3.
 
@@ -114,8 +119,10 @@ Covers: R6.
 
 `relaylib/hub.py`:
 - `usage_view(data)`: from `data.get("usage")`: not a dict with a `providers` dict gives `{"codex": None, "claude": None}`;
-  otherwise, per provider, `{"blocked", "reason", "weekly_pct", "five_hour"}` where `weekly_pct` is
-  `providers[p]["weekly"]["used_pct"]` or None, and a missing or malformed `five_hour` becomes the D2 unknown shape.
+  otherwise, per provider, one flat object, the D2 fields plus three:
+  `{"used_pct", "resets_at", "sampled_at", "state", "blocked", "reason", "weekly_pct"}`, where `weekly_pct` is
+  `providers[p]["weekly"]["used_pct"]` or None, and a missing or malformed `five_hour` gives the D2 unknown values
+  (state "unknown", the three numbers None). This flat object is the D5 JSON contract.
   Values are checked like `_clean` does (numbers via `_num`, strings via `_str`), so a malformed snapshot never raises.
 - `usage_lines(view, now)`: one line per provider in the D5 forms:
   `Codex: out of usage, <reason> · weekly 51% · 5-hour 100%, resets 18:40`,
@@ -130,11 +137,15 @@ Covers: R6.
   - `_page` / `hubpage.render(..., usage=view)` adds one escaped `<p class="usage">` per line after the closing
     paragraph, through the page's existing `_Text` redaction.
 
-Test, `tests/test_hub.py`, `OutputTest` and `tests/test_hubpage.py`: text ends with both provider lines for a
+Test, `tests/test_hub.py`, `OutputTest` and `tests/test_hubpage.py`. Their fixtures set both `RELAY_HOME` and
+`CODEX_HOME` to temporary folders (the shared `HubHome` fixture gains `CODEX_HOME`). JSON `usage` is asserted with
+exact equality for a populated provider (all seven keys) and for one without `five_hour` (state "unknown", numbers
+None). Text ends with both provider lines for a
 snapshot with usage; blocked codex line includes the reason; stale, reset, unknown and null-reset forms; a snapshot
 with no `usage` gives "usage not available" for both and JSON `{"codex": null, "claude": null}`; a provider without
 `five_hour` gives "5-hour unknown" and the unknown shape in JSON; a malformed `usage` (strings where numbers belong)
-does not abort the digest; the page shows the same lines (existing `test_page_matches_the_digest` extended).
+does not abort the digest; in each fallback case the digest's items and counts equal those of the same snapshot with
+full usage; the page shows the same lines (existing `test_page_matches_the_digest` extended).
 
 Covers: R7.
 
