@@ -1,7 +1,8 @@
 ---
 {
   "authors": {
-    "idea": "claude"
+    "idea": "claude",
+    "spec": "claude"
   },
   "branch": "feat/five-hour-usage",
   "extra_rounds": {},
@@ -22,6 +23,10 @@
       "action": "owner approved starting five-hour-usage while dead-session-asks is open",
       "at": "2026-11-08T16:39:09-05:00",
       "relayed_by": "claude session 28465dc7-46a4-4868-9c14-238f1ee6f34e"
+    },
+    {
+      "action": "owner joined spec",
+      "at": "2026-11-08T18:34:20-05:00"
     }
   ],
   "pr": null,
@@ -33,12 +38,14 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "spec": 1
+  },
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "drafting",
-  "updated": "2026-11-08T17:24:14-05:00",
+  "status": "in-review",
+  "updated": "2026-11-08T18:34:20-05:00",
   "verdicts": {}
 }
 ---
