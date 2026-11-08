@@ -12,6 +12,7 @@ from .config import relay_home
 USAGE_LIMIT = re.compile(r"usage limit|rate limit|out of usage|quota|limit reached|insufficient credits|\b429\b",
                          re.I)
 WEEK_MINUTES = 10080
+FIVE_HOUR_MINUTES = 300
 TAIL_BYTES = 256 * 1024
 
 
@@ -32,6 +33,11 @@ def _find(obj, key):
 
 def codex_weekly():
     """(used_percent, resets_at, source_time) from Codex logs, or None. Time may be unknown."""
+    return codex_window(WEEK_MINUTES)
+
+
+def codex_window(minutes):
+    """(used_percent, resets_at, source_time) for the Codex limit window of this length, or None."""
     files = sorted(glob.glob(os.path.join(_codex_home(), "sessions", "*", "*", "*", "*.jsonl")),
                    key=os.path.getmtime, reverse=True)
     for path in files[:5]:
@@ -49,8 +55,8 @@ def codex_weekly():
                 limits = _find(event, "rate_limits") or {}
             except json.JSONDecodeError:
                 continue
-            for window in (limits.get("primary"), limits.get("secondary")):  # the weekly one may be either
-                if isinstance(window, dict) and window.get("window_minutes") == WEEK_MINUTES \
+            for window in (limits.get("primary"), limits.get("secondary")):  # either slot may hold it
+                if isinstance(window, dict) and window.get("window_minutes") == minutes \
                         and "used_percent" in window:
                     try:
                         from .usage import timestamp
@@ -85,15 +91,27 @@ def is_usage_limit(error):
 
 
 def record_out(provider, until=None):
-    """Remember that a provider is out of usage: until its known reset, otherwise for an hour."""
+    """Remember that a provider is out of usage: until its known reset, otherwise for an hour.
+    For Codex that is the weekly reset only when the weekly limit is used up; otherwise the 5-hour reset."""
     if until is None:
-        weekly = codex_weekly() if provider == "codex" else None
-        until = weekly[1] if weekly and weekly[1] > time.time() else int(time.time()) + 3600
+        until = _codex_reset() if provider == "codex" else None
+        until = until or int(time.time()) + 3600
     data = _load()
     data[provider] = until
     os.makedirs(relay_home(), exist_ok=True)
     with open(_store(), "w") as f:
         json.dump(data, f)
+
+
+def _codex_reset():
+    now = time.time()
+    weekly = codex_weekly()
+    if weekly and weekly[0] >= 100 and weekly[1] > now:
+        return weekly[1]
+    five = codex_window(FIVE_HOUR_MINUTES)
+    if five and five[1] > now:
+        return five[1]
+    return None
 
 
 def blocked(provider, limits):
