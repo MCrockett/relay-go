@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "fix/dead-session-asks",
   "extra_rounds": {},
   "feature": "dead-session-asks",
@@ -17,7 +19,7 @@
       "at": "2026-11-08T16:29:16-05:00"
     }
   ],
-  "pr": null,
+  "pr": 28,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -26,15 +28,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-11-08T16:29:16-05:00",
+  "status": "in-review",
+  "updated": "2026-11-08T16:38:13-05:00",
   "verdicts": {}
 }
 ---
