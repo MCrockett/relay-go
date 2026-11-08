@@ -147,6 +147,18 @@ class LeftOffTest(test_status.StatusFixture):
         self.assertNotIn("stopped", {leftoff.state_word(e) for p in self.found(limit=None, alive=None)
                                      for e in p["sessions"]})
 
+    def test_a_waiting_or_approval_session_whose_process_died_is_stopped(self):
+        proc = lambda pid: {"pid": pid, "started": "Thu Oct  8 15:13:49 2026"}
+        self.rec("asked", "permission", 36000, pending=("AskUserQuestion",), process=proc(1))
+        self.rec("waits", "waiting", 36000, process=proc(2))
+        self.rec("lives", "waiting", 36000, process=proc(3))
+        words = {e["session_id"]: leftoff.state_word(e) for p in self.found(limit=None, alive={"lives"})
+                 for e in p["sessions"]}
+        self.assertEqual((words["asked"], words["waits"], words["lives"]), ("stopped", "stopped", "waiting on you"))
+        unknown = {e["session_id"]: leftoff.state_word(e) for p in self.found(limit=None, alive=None)
+                   for e in p["sessions"]}
+        self.assertEqual(unknown["asked"], "needs approval: AskUserQuestion")
+
     def turn(self, marker, quiet_s):
         return {"marker": marker, "mtime": NOW - quiet_s}
 

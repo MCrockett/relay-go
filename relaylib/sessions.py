@@ -102,6 +102,11 @@ def alive(records):
             if r.get("process") and running.get(r["process"]["pid"]) == r["process"]["started"]}
 
 
+def gone(record, alive):
+    """True when the record's process is known dead: a process was recorded and liveness could be checked."""
+    return bool(record.get("process")) and alive is not None and record["session_id"] not in alive
+
+
 def _valid(record):
     """The full R1 record shape; anything else is treated as absent and replaced."""
     if not (isinstance(record, dict) and isinstance(record.get("provider"), str) and record["provider"] in WAITING

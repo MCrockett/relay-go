@@ -2,7 +2,7 @@
 import datetime
 import os
 
-from . import config, gitops, state
+from . import config, gitops, sessions, state
 from .errors import RelayError
 
 UI_LIMITS = {"health_grace_minutes": (0, 60, 1), "quiet_minutes": (1, 1440, 30),
@@ -124,8 +124,12 @@ def age(seconds):
     return f"{seconds}s"
 
 
-def health(record, act, grace_min, quiet_min, now):
-    """{kind, text, since} by the spec's first matching rule, or None with nothing to go on (R5)."""
+def health(record, act, grace_min, quiet_min, now, dead=False):
+    """{kind, text, since} by the spec's first matching rule, or None with nothing to go on (R5).
+    dead: the record's process is known gone, so its waiting or permission state no longer asks anything."""
+    if record and dead:  # known death wins over any activity: nobody is left to answer it
+        return {"kind": "attention", "text": f"session stopped {age(now - record['at'])}", "since": record["at"],
+                "stopped": True}
     if record:
         held = now - record["since"]
         if record["state"] == "permission" and held > grace_min * 60:
@@ -167,4 +171,10 @@ def session_health(repo, st, records, now):
     except Exception:  # activity never hides what a hook record says (R4)
         checkouts, act = [], {"last_activity": None, "unpushed": None, "origin": None}
     record = match(records, owner.get("provider"), owner["session"], _since_ts(owner), checkouts)
-    return health(record, act, grace, quiet, now), act, record
+    dead = False
+    if record and record["state"] in ("waiting", "permission") and record.get("process"):
+        try:
+            dead = sessions.gone(record, sessions.alive([record]))
+        except Exception:  # unknown liveness: the hook record decides, as before
+            dead = False
+    return health(record, act, grace, quiet, now, dead), act, record

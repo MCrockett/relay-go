@@ -72,8 +72,9 @@ def codex_turns(records, alive, now):
 
 
 def _shown_state(record, alive):
-    """running-now D4: a working session that is not running is stopped when its process is known dead."""
-    if record["state"] == "working" and record.get("process") and alive is not None and record["session_id"] not in alive:
+    """running-now D4: a working session that is not running is stopped when its process is known dead. So is one
+    that was waiting on the owner or for approval: its question died with it (a restart, a closed terminal)."""
+    if record["state"] in ("working", "waiting", "permission") and sessions.gone(record, alive):
         return "stopped"
     return record["state"]
 

@@ -2,7 +2,7 @@
 session records as the hooks wrote them, last messages read live and never stored (D8)."""
 import os
 
-from . import agentask, gitops, health, hub
+from . import agentask, gitops, health, hub, sessions
 from .errors import RelayError
 
 
@@ -54,6 +54,12 @@ def listed(records, claimed, root, cfg, now):
                   if r.get("state") in ("waiting", "permission") and r["session_id"] not in claimed
                   and (r.get("provider"), r["session_id"]) not in hubs
                   and grace < now - r["since"] <= window]
+    if any(r.get("process") for r in candidates):  # a session that died cannot be answered
+        try:
+            alive = sessions.alive(candidates)
+        except Exception:
+            alive = None
+        candidates = [r for r in candidates if not sessions.gone(r, alive)]
     if not candidates:
         return []
     try:
