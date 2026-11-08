@@ -6,11 +6,12 @@
   "branch": "feat/five-hour-usage",
   "extra_rounds": {},
   "feature": "five-hour-usage",
+  "handed_over_from": "28465dc7-46a4-4868-9c14-238f1ee6f34e",
   "history": {},
   "owner": {
     "provider": "claude",
-    "session": "28465dc7-46a4-4868-9c14-238f1ee6f34e",
-    "since": "2026-11-08T16:39:09-05:00",
+    "session": "e2663922-7743-45ce-bf9d-0fd0d7b6c32b",
+    "since": "2026-11-08T17:23:18-05:00",
     "worktree": "five-hour-usage"
   },
   "owner_actions": [
@@ -38,7 +39,7 @@
   "small": false,
   "stage": "spec",
   "status": "drafting",
-  "updated": "2026-11-08T17:10:30-05:00",
+  "updated": "2026-11-08T17:23:18-05:00",
   "verdicts": {}
 }
 ---
