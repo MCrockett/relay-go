@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/five-hour-usage",
   "extra_rounds": {},
   "feature": "five-hour-usage",
@@ -34,9 +36,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-11-08T16:39:09-05:00",
+  "updated": "2026-11-08T16:40:06-05:00",
   "verdicts": {}
 }
 ---
