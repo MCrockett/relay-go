@@ -89,6 +89,27 @@ class SessionHealthTest(unittest.TestCase):
             self.assertEqual(health.session_health("/repo", dict(st, status="done"), [mine], 1000.0),
                              (None, None, None))
 
+    def test_a_waiting_session_whose_process_died_is_stopped_not_waiting(self):
+        st = {"status": "drafting", "stage": "build", "branch": "feat/x",
+              "owner": {"provider": "claude", "session": "S", "since": "2026-10-07T10:00:00-04:00"}}
+        proc = {"pid": 7, "started": "Thu Oct  8 15:13:49 2026"}
+        idle = {"last_activity": None, "unpushed": None, "origin": None}
+        for state_ in ("waiting", "permission"):
+            mine = dict(rec(state=state_, sid="S", since=100.0, at=100.0), process=proc)
+            for act, alive, text in ((idle, set(), "session stopped 3h"), (idle, {"S"}, None),
+                                     (idle, None, None), ({**idle, "last_activity": 10_600.0}, set(), "active 5m ago")):
+                with mock.patch.object(config, "load", return_value={}), \
+                        mock.patch.object(health, "branch_checkouts", return_value=[]), \
+                        mock.patch.object(health, "activity", return_value=act), \
+                        mock.patch.object(health.sessions, "alive", return_value=alive):
+                    found, _, record = health.session_health("/repo", st, [mine], 10_900.0)
+                self.assertIs(record, mine)
+                if text is None:  # alive, or liveness unknown: the hook record decides, as before
+                    self.assertTrue(found["text"].startswith(("waiting on you", "needs permission")))
+                else:
+                    self.assertEqual(found["text"], text)
+                    self.assertEqual(found["kind"], "ok" if text.startswith("active") else "attention")
+
 
 class ActivityTest(unittest.TestCase):
     def setUp(self):
