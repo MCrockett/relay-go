@@ -6,6 +6,7 @@
   "branch": "fix/dead-session-asks",
   "extra_rounds": {},
   "feature": "dead-session-asks",
+  "handed_over_from": "28465dc7-46a4-4868-9c14-238f1ee6f34e",
   "history": {
     "build": [
       {
@@ -22,9 +23,9 @@
   },
   "owner": {
     "provider": "claude",
-    "session": "28465dc7-46a4-4868-9c14-238f1ee6f34e",
-    "since": "2026-11-08T16:29:16-05:00",
-    "worktree": "dead-session-asks"
+    "session": "e2663922-7743-45ce-bf9d-0fd0d7b6c32b",
+    "since": "2026-11-08T17:23:12-05:00",
+    "worktree": "five-hour-usage"
   },
   "owner_actions": [
     {
@@ -60,7 +61,7 @@
   "small": true,
   "stage": "build",
   "status": "ready-to-merge",
-  "updated": "2026-11-08T17:08:43-05:00",
+  "updated": "2026-11-08T17:23:12-05:00",
   "verdicts": {
     "build": "GO"
   }
