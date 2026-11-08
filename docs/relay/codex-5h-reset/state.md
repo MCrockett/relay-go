@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "fix/codex-5h-reset",
   "extra_rounds": {},
   "feature": "codex-5h-reset",
@@ -17,7 +19,7 @@
       "at": "2026-11-08T09:54:46-05:00"
     }
   ],
-  "pr": null,
+  "pr": 27,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -26,15 +28,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-11-08T09:54:46-05:00",
+  "status": "in-review",
+  "updated": "2026-11-08T10:18:54-05:00",
   "verdicts": {}
 }
 ---
