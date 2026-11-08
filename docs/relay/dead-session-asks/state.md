@@ -6,7 +6,6 @@
   "branch": "fix/dead-session-asks",
   "extra_rounds": {},
   "feature": "dead-session-asks",
-  "handed_over_from": "28465dc7-46a4-4868-9c14-238f1ee6f34e",
   "history": {
     "build": [
       {
@@ -61,7 +60,7 @@
   "small": true,
   "stage": "build",
   "status": "ready-to-merge",
-  "updated": "2026-11-08T17:23:12-05:00",
+  "updated": "2026-11-08T17:24:05-05:00",
   "verdicts": {
     "build": "GO"
   }
