@@ -6,7 +6,6 @@
   "branch": "feat/five-hour-usage",
   "extra_rounds": {},
   "feature": "five-hour-usage",
-  "handed_over_from": "28465dc7-46a4-4868-9c14-238f1ee6f34e",
   "history": {},
   "owner": {
     "provider": "claude",
@@ -39,7 +38,7 @@
   "small": false,
   "stage": "spec",
   "status": "drafting",
-  "updated": "2026-11-08T17:23:18-05:00",
+  "updated": "2026-11-08T17:24:14-05:00",
   "verdicts": {}
 }
 ---
