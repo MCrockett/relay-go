@@ -6,7 +6,20 @@
   "branch": "fix/dead-session-asks",
   "extra_rounds": {},
   "feature": "dead-session-asks",
-  "history": {},
+  "history": {
+    "build": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2"
+        ],
+        "head": "b42f357c264fa82c52328ae4116cd2f03d2bd334",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ]
+  },
   "owner": {
     "provider": "claude",
     "session": "28465dc7-46a4-4868-9c14-238f1ee6f34e",
@@ -23,6 +36,7 @@
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
+  "review_notes": {},
   "reviewed": {
     "build": null,
     "plan": null,
@@ -37,9 +51,11 @@
   ],
   "small": true,
   "stage": "build",
-  "status": "in-review",
-  "updated": "2026-11-08T16:38:13-05:00",
-  "verdicts": {}
+  "status": "changes-requested",
+  "updated": "2026-11-08T16:55:07-05:00",
+  "verdicts": {
+    "build": "NO-GO"
+  }
 }
 ---
 
