@@ -2110,6 +2110,25 @@ done
         self.assertEqual(self.gh_calls(), ["pr ready 7"])
         self.assertEqual(self.st("tiny")["status"], "ready-to-merge")
 
+    def test_ci_started_by_marking_ready_does_not_strand_the_submit(self):  # submit-stuck
+        # require_ci = false: the gate passes with no result, then marking the PR ready starts CI. The review in the
+        # same submit must not run the gate again and stop on that pending run with the feature saved in-review.
+        self.draft(self.SKIPPED)
+        helpers.write(os.path.join(self.work, "docs/relay/config.toml"), "[build]\nrequire_ci = false\n")
+        helpers.sh(self.work, "git", "add", "docs/relay/config.toml")
+        helpers.sh(self.work, "git", "commit", "-q", "-m", "config")
+        helpers.sh(self.work, "git", "push", "-q")
+        self.pr(self.SKIPPED, isDraft=True)
+        real, calls = gitops.ci_for_code, []
+
+        def ci(*a, **k):  # ready_draft and the submit gate see no result; the run GitHub starts shows up after
+            calls.append(1)
+            return real(*a, **k) if len(calls) <= 2 else "pending"
+        self.enqueue_codex("GO")
+        with mock.patch.object(gitops, "ci_for_code", side_effect=ci):
+            self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertEqual(self.st("tiny")["status"], "ready-to-merge")
+
     def test_a_draft_whose_last_run_github_refused(self):
         self.draft(self.REFUSED, **{"check-runs/9/annotations": self.BILLING})
         head = self.head()
