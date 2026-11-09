@@ -399,14 +399,15 @@ def cmd_submit(args):
     ownership.check_can_write(c.root, me.session)
     if refresh_upstream(c, me):
         return review_current(c, args)
-    stage = c.st["stage"]
+    stage, gate = c.st["stage"], None
     if stage == "build" and c.st["status"] in ("drafting", "changes-requested"):
         ready_draft(c)
         try:
-            c.st["pr"] = require_pr_ready(c)["number"]
+            gate = require_pr_ready(c)
         except CiFailing as e:
             to_draft(c.root, e.pr)
             raise
+        c.st["pr"] = gate["number"]
     action = machine.submit(c.st, me.provider)
     if me.provider == "owner":
         record_owner_action(c.st, f"owner submitted {stage}")
@@ -416,7 +417,9 @@ def cmd_submit(args):
     if action == "no-review":
         print(f"relay: {stage} recorded; now at {c.st['stage']}")
         return 0
-    return review_current(c, args)
+    # The gate ran once, above: a second check here could stop on CI that marking the PR ready just started,
+    # after state.md was saved as in-review, leaving no reviewer running (submit-stuck).
+    return review_current(c, args, gate=gate)
 
 
 def cmd_commit(args):
@@ -474,7 +477,7 @@ def cmd_review(args):
     return review_current(c, args)
 
 
-def review_current(c, args, candidates=None, discard_errors=False, announce=True):
+def review_current(c, args, candidates=None, discard_errors=False, announce=True, gate=None):
     st, stage = c.st, c.st["stage"]
     if st["status"] != "in-review":
         raise RelayError(f"{stage} is {st['status']}; run `relay submit` first")
@@ -505,7 +508,7 @@ def review_current(c, args, candidates=None, discard_errors=False, announce=True
            "pr": st.get("pr") or "", "base_ref": "", "base_sha": "", "head_sha": head}
     name, base_ref = stage, None
     if stage == "build":
-        info = require_pr_ready(c)
+        info = gate or require_pr_ready(c)
         base_ref = "origin/" + info["baseRefName"]
         ctx.update(base_ref=base_ref, base_sha=gitops.head_sha(c.root, base_ref))
         if info["baseRefName"] == "main":

@@ -677,6 +677,17 @@ class UsageLineTest(HubHome):  # five-hour-usage D5, R7
             self.assertIn("Claude: ", out)
             json.loads(self.run_digest(self.with_usage(usage), as_json=True)[0])
 
+    def test_unrepresentable_times_do_not_abort(self):  # build review note: Infinity or 1e30 timestamps
+        usage = self.usage()
+        usage["providers"]["codex"]["five_hour"].update(resets_at=float("inf"), sampled_at=1e30)
+        usage["providers"]["claude"]["five_hour"].update(state="stale", sampled_at=float("-inf"))
+        text, _ = self.run_digest(self.with_usage(usage))
+        self.assertIn("Codex: out of usage", text)
+        self.assertIn("5-hour stale 12% as of unknown time", text)
+        self.page_run(self.with_usage(usage), False)
+        out = json.loads(self.run_digest(self.with_usage(usage), as_json=True)[0])
+        self.assertEqual((out["usage"]["codex"]["resets_at"], out["usage"]["codex"]["sampled_at"]), (None, None))
+
     def test_page_shows_the_same_lines(self):
         from relaylib import hubpage
         text, _ = self.page_run(self.with_usage(self.usage()), False)

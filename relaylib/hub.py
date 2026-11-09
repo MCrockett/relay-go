@@ -502,6 +502,17 @@ USAGE_PROVIDERS = ("codex", "claude")
 STATES = ("current", "stale", "reset", "unknown")
 
 
+def _time(value):
+    """A timestamp that can be shown as a local time, else None (a malformed snapshot may hold Infinity or 1e30)."""
+    import datetime
+    value = _num(value)
+    try:
+        datetime.datetime.fromtimestamp(value)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+    return value
+
+
 def usage_view(data):
     """Per provider, one flat object: the 5-hour window plus blocked, reason and weekly_pct; None when the snapshot
     has no usage at all. Malformed values never raise."""
@@ -515,7 +526,8 @@ def usage_view(data):
         weekly = value.get("weekly") if isinstance(value.get("weekly"), dict) else {}
         five = value.get("five_hour") if isinstance(value.get("five_hour"), dict) else {}
         state = five.get("state") if five.get("state") in STATES else "unknown"
-        numbers = {k: None if state == "unknown" else _num(five.get(k)) for k in ("used_pct", "resets_at", "sampled_at")}
+        numbers = {k: None if state == "unknown" else (_num if k == "used_pct" else _time)(five.get(k))
+                   for k in ("used_pct", "resets_at", "sampled_at")}
         if state != "unknown" and numbers["used_pct"] is None:
             state, numbers = "unknown", dict.fromkeys(numbers)
         view[p] = {**numbers, "state": state, "blocked": value.get("blocked") is True,
