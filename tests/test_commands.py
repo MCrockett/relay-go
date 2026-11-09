@@ -1024,7 +1024,10 @@ done
         availability.record_out("codex")
         self.assertEqual(self.relay("roles"), 0, self.last_err)
         self.assertIn("review.claude", self.last_out)
-        self.assertIn("codex: out of usage until", self.last_out)
+        self.assertIn("Codex: out of usage, a review failed on a usage limit; relay tries again", self.last_out)
+        self.assertIn("· weekly ", self.last_out)                                     # five-hour-usage D6, R8
+        self.assertIn("· 5-hour unknown", self.last_out)
+        self.assertIn("Claude: available", self.last_out)
         self.assertIn("effort medium; last round before you: high; release PRs: high", self.last_out)
         self.assertIn("require_ci True, skip_ci auto", self.last_out)                 # ci-skip-bookkeeping R4
 

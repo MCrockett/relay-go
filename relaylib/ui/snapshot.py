@@ -243,15 +243,23 @@ def other_session(data, provider, session_id):
             "not_running": _not_running(entry), "notes": ownernotes.list_for(provider, session_id)}
 
 
-def usage():
-    cfg, now = config.load(), time.time()
+def providers(cfg, now):
+    """Per provider: latest weekly sample, whether it is out of usage and why, today's budget and the live 5-hour
+    window (five-hour-usage R5)."""
     rows = samples.read()
-    providers = {}
+    out = {}
     for provider in config.PROVIDERS:
         weekly = max((s for s in rows if s["provider"] == provider), key=lambda s: s["sampled_at"], default=None)
         blocked, why = availability.blocked(provider, cfg["limits"])
-        providers[provider] = {"weekly": weekly, "blocked": blocked, "reason": why,
-                               "budget": samples.budget(provider, cfg, now)}
+        out[provider] = {"weekly": weekly, "blocked": blocked, "reason": why,
+                         "budget": samples.budget(provider, cfg, now),
+                         "five_hour": availability.five_hour(provider, now)}
+    return out
+
+
+def usage():
+    cfg, now = config.load(), time.time()
+    providers_now = providers(cfg, now)
     history = ledger.read()
     totals = {}
     for days in (7, 30):
@@ -275,7 +283,7 @@ def usage():
             for total in group.values():
                 total["cached_share"] = total["cached"] / total["input"] * 100 if total["input"] else 0
             totals[str(days)][kind] = sorted(group.values(), key=lambda r: r["name"])
-    return {"providers": providers, "ledger": totals}
+    return {"providers": providers_now, "ledger": totals}
 
 
 def _overriding(root, repos=None):

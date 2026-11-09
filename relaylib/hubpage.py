@@ -178,7 +178,7 @@ def _card(item, numbered, now, t):
     return f'<article class="{cls}"><h2>{lead}{title}</h2>{"".join(body)}</article>'
 
 
-def render(digest_id, source, found, counts, failed=(), now=None, ids=(), token=None):
+def render(digest_id, source, found, counts, failed=(), now=None, ids=(), token=None, usage=None):
     """The page for one digest: the same items, in the same order, as the text and JSON (R4 to R10)."""
     import html
     import time
@@ -207,6 +207,8 @@ def render(digest_id, source, found, counts, failed=(), now=None, ids=(), token=
     closing = html.escape(hub._closing({"features": counts.get("features") or 0,
                                         "sessions": counts.get("sessions") or 0}))
     cards = [_card(item, bool(digest_id), now, t) for item in found[:ITEMS_MAX]]
+    usage_html = "".join(f'<p class="usage">{t(line)}</p>' for line in hub.usage_lines(usage, now)) \
+        if usage is not None else ""  # five-hour-usage D5
 
     def page(shown):
         more = len(found) - shown
@@ -215,7 +217,7 @@ def render(digest_id, source, found, counts, failed=(), now=None, ids=(), token=
         return (f"<title>Relay hub</title><style>{STYLE}</style>"
                 f'<main id="hub" data-made="{int(now)}" data-expires="{int(expires)}">'
                 + "".join(top + cards[:shown] + rest)
-                + f"<p>{closing}</p><footer>{FOOTER}</footer></main><script>{SCRIPT}</script>\n")
+                + f"<p>{closing}</p>{usage_html}<footer>{FOOTER}</footer></main><script>{SCRIPT}</script>\n")
 
     shown = len(cards)
     out = page(shown)

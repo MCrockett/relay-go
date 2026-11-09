@@ -496,6 +496,68 @@ def _closing(c):
             f"{c['sessions']} session{'s' * (c['sessions'] != 1)} working.")
 
 
+# ---------------------------------------------------------------- usage lines (five-hour-usage D5)
+
+USAGE_PROVIDERS = ("codex", "claude")
+STATES = ("current", "stale", "reset", "unknown")
+
+
+def usage_view(data):
+    """Per provider, one flat object: the 5-hour window plus blocked, reason and weekly_pct; None when the snapshot
+    has no usage at all. Malformed values never raise."""
+    usage = data.get("usage") if isinstance(data, dict) else None
+    providers = usage.get("providers") if isinstance(usage, dict) else None
+    if not isinstance(providers, dict):
+        return {p: None for p in USAGE_PROVIDERS}
+    view = {}
+    for p in USAGE_PROVIDERS:
+        value = providers.get(p) if isinstance(providers.get(p), dict) else {}
+        weekly = value.get("weekly") if isinstance(value.get("weekly"), dict) else {}
+        five = value.get("five_hour") if isinstance(value.get("five_hour"), dict) else {}
+        state = five.get("state") if five.get("state") in STATES else "unknown"
+        numbers = {k: None if state == "unknown" else _num(five.get(k)) for k in ("used_pct", "resets_at", "sampled_at")}
+        if state != "unknown" and numbers["used_pct"] is None:
+            state, numbers = "unknown", dict.fromkeys(numbers)
+        view[p] = {**numbers, "state": state, "blocked": value.get("blocked") is True,
+                   "reason": _str(value.get("reason")) or "", "weekly_pct": _num(weekly.get("used_pct"))}
+    return view
+
+
+def _clock(at, now):
+    import datetime
+    when = datetime.datetime.fromtimestamp(at).astimezone()
+    today = datetime.datetime.fromtimestamp(now).astimezone().date()
+    return when.strftime("%H:%M" if when.date() == today else "%a %H:%M")
+
+
+def _pct(value):
+    return f"{value:.0f}%" if value is not None else "?"
+
+
+def usage_lines(view, now=None):
+    now = time.time() if now is None else now
+    lines = []
+    for p in USAGE_PROVIDERS:
+        name, v = ("Codex" if p == "codex" else "Claude"), view.get(p)
+        if not v:
+            lines.append(f"{name}: usage not available")
+            continue
+        head = f"out of usage, {v['reason']}" if v["blocked"] and v["reason"] else (
+            "out of usage" if v["blocked"] else "available")
+        resets = f", resets {_clock(v['resets_at'], now)}" if v["resets_at"] else ""
+        if v["state"] == "current":
+            five = f"5-hour {_pct(v['used_pct'])}{resets}"
+        elif v["state"] == "stale":
+            seen = _clock(v["sampled_at"], now) if v["sampled_at"] else "unknown time"
+            five = f"5-hour stale {_pct(v['used_pct'])} as of {seen}{resets}"
+        elif v["state"] == "reset":
+            five = "5-hour reset since last sample"
+        else:
+            five = "5-hour unknown"
+        lines.append(f"{name}: {head} · weekly {_pct(v['weekly_pct'])} · {five}")
+    return lines
+
+
 SCAN_FAILED = "Features could not be read"
 
 
@@ -504,7 +566,7 @@ def problems(data):
     return [n for n in data.get("notes") or [] if isinstance(n, str) and n.startswith(SCAN_FAILED)]
 
 
-def render_text(digest_id, source, found, c, now=None, failed=()):
+def render_text(digest_id, source, found, c, now=None, failed=(), usage=None):
     now = time.time() if now is None else now
     lines = [_header(digest_id, source)]
     for problem in failed:
@@ -514,21 +576,25 @@ def render_text(digest_id, source, found, c, now=None, failed=()):
     for item in found:
         lines += _item_lines(item, bool(digest_id), now)
     lines.append(_closing(c))
+    if usage is not None:
+        lines += usage_lines(usage, now)
     return "\n".join(lines) + "\n"
 
 
 NO_PAGE = object()
 
 
-def render_json(digest_id, source, found, c, warnings, page=NO_PAGE):
+def render_json(digest_id, source, found, c, warnings, page=NO_PAGE, usage=None):
     shown = [{k: v for k, v in item.items() if k not in PRIVATE} for item in found]
     out = {"digest": digest_id, "source": source, "items": shown, "counts": c, "warnings": list(warnings)}
+    if usage is not None:
+        out["usage"] = usage
     if page is not NO_PAGE:
         out["page"] = page  # only with --page (phone-artifact D2)
     return json.dumps(out, indent=1) + "\n"
 
 
-def _page(session, records, digest_id, source, found, c, failed, now):
+def _page(session, records, digest_id, source, found, c, failed, now, usage=None):
     """({path, url, published_digest, published_at}, warning or None). On a write failure `path` is None and the
     rest still says what this hub's link shows (phone-artifact D1, D2, F1, F6). An unsaved digest still gets an unnumbered page under its own name."""
     from . import hubpage
@@ -542,7 +608,7 @@ def _page(session, records, digest_id, source, found, c, failed, now):
     info = {"path": None, "url": link["url"], "published_digest": link["digest"], "published_at": link["at"]}
     try:
         page = hubpage.render(digest_id, source, found, c, failed, now, ids=hubpage.known_ids(found, records),
-                              token=hubpage.dashboard_token())
+                              token=hubpage.dashboard_token(), usage=usage)
         info["path"] = hubpage.write(digest_id or "unsaved-" + new_id(now * 1000), page)
     except OSError as e:
         return info, f"could not write the page: {e}"  # the link and what it still shows stay known (F1, F6)
@@ -570,17 +636,18 @@ def digest(session, records=None, as_json=False, now=None, page=False):
     warnings += failed
     found = items(data)
     c = counts(data, found)
+    view = usage_view(data)
     digest_id, warning = save(found, source, session, now)
     if warning:
         warnings.append(warning)
     info = NO_PAGE
     if page:
-        info, warning = _page(session, records, digest_id, source, found, c, failed, now)
+        info, warning = _page(session, records, digest_id, source, found, c, failed, now, view)
         if warning:
             warnings.append(warning)
     if as_json:
-        return render_json(digest_id, source, found, c, warnings, info), []
-    text = render_text(digest_id, source, found, c, now, failed)
+        return render_json(digest_id, source, found, c, warnings, info, view), []
+    text = render_text(digest_id, source, found, c, now, failed, view)
     if info is not NO_PAGE and info["path"]:
         text += f"page: {info['path']}\n" + (f"publish to: {info['url']}\n" if info["url"] else "")
     return text, [w for w in warnings if w not in failed]

@@ -17,7 +17,7 @@ One pipeline for every project: idea, spec, plan, build. Each stage after idea i
 - Built for one owner on one machine. Ownership, handoffs and usage history live in `~/.relay/` and in each project's `docs/relay/`; there is no shared server.
 - Reviews spend your Claude and Codex plan usage. `relay cost` and the dashboard show how much.
 - A reviewer's verdict is advice. relay stops the loop and shows you the findings; it does not prove the code correct. You still read the PR before you merge.
-- relay skips a reviewer whose weekly limit Codex's local logs show as used up, or one whose last review failed on a usage limit. Claude's limits appear in the dashboard once its status line is set up (see the end of this file), but relay learns Claude is out only when a review fails.
+- relay skips a reviewer whose weekly limit Codex's local logs show as used up, whose 5-hour window is at 100% (Codex's logs, or Claude's status line once it is set up; see the end of this file), or whose last review failed on a usage limit. The reason says which limit it was and when it comes back.
 
 ## Setup (once per machine)
 
@@ -161,7 +161,7 @@ At about 60% context, or when switching provider or machine: `relay handoff`, fi
 
 ## Reviewer preferences
 
-`[review.prefer]` in `~/.relay/config.toml` lists, for each stage author (claude, codex, owner), the reviewers in order of preference. relay uses the first one that is available. A provider is skipped while its weekly limit is used up (read from Codex's own logs) or after a review failed on a usage limit (remembered until the reset: for Codex, the weekly reset when its weekly limit is used up, otherwise the 5-hour reset from its logs, or an hour when neither is known); the next entry reviews in the same `relay submit`. Fallback and same-provider reviews are recorded in the review file, the commit and `relay status`. Reviewers run at `effort` (medium) each round, at `final_effort` (high) in the last round before a stage comes to you, and at `release_effort` (high) for a PR to main; an entry like `codex:gpt-6-astra@low` pins its own effort. A same-provider review on purpose (`--same-provider`) is your call: an agent passes it only when you ask, with `--relayed`, and it is recorded as your decision. `relay roles` shows the table and who is out right now; `relay roles set review.claude "codex:gpt-6-astra@high, claude:claude-fable-5-1"` changes it for every repo.
+`[review.prefer]` in `~/.relay/config.toml` lists, for each stage author (claude, codex, owner), the reviewers in order of preference. relay uses the first one that is available. A provider is skipped while its weekly limit is used up (read from Codex's own logs) or after a review failed on a usage limit (remembered until the reset: for Codex, the weekly reset when its weekly limit is used up, otherwise the 5-hour reset from its logs, or an hour when neither is known; for Claude, an hour, with the reason naming the limit and its reset when the status line shows it), or while its 5-hour window is at 100% until that window resets; the next entry reviews in the same `relay submit`. Fallback and same-provider reviews are recorded in the review file, the commit and `relay status`. Reviewers run at `effort` (medium) each round, at `final_effort` (high) in the last round before a stage comes to you, and at `release_effort` (high) for a PR to main; an entry like `codex:gpt-6-astra@low` pins its own effort. A same-provider review on purpose (`--same-provider`) is your call: an agent passes it only when you ask, with `--relayed`, and it is recorded as your decision. `relay roles` shows the table and who is out right now; `relay roles set review.claude "codex:gpt-6-astra@high, claude:claude-fable-5-1"` changes it for every repo.
 
 Changing a table is your decision: `relay roles set` and `relay roles end` run in your own terminal, and an agent passes them on only when you ask, with `--relayed` (logged with its session). A list may not name the same model twice, and an effort is one lowercase word (`low`, `high`, `xhigh`). Add `--until 23:00` (or an ISO date-time with a zone, at most 7 days away) to make a change temporary: relay keeps it in `~/.relay/review-until.json` and returns to your normal table by itself when the time passes, even if nothing is running then. A temporary table wins over a project's own `docs/relay/config.toml`, and setting the normal table leaves it in place. `relay roles end review.claude` (or `all`) ends it early. Every change is logged in `~/.relay/roles-log.jsonl`, and `relay roles` shows the latest one per author.
 
@@ -352,4 +352,11 @@ printf '%s' "$input" | ~/.local/bin/relay usage-snapshot claude >/dev/null 2>&1 
 The command is silent, ignores malformed input and saves the weekly and five-hour limits independently
 of the usage history append. It waits at most 100 ms for the history lock. Codex samples retain their
 original log timestamps. History is kept locally in `~/.relay/usage.jsonl` and pruned after 35 days.
+
+The 5-hour window is read live and never stored: Codex's from its newest `rate_limits` log line, Claude's from the
+snapshot above. Each dashboard Usage card shows it under the weekly limit, the top strip shows "5h N%", and
+`relay hub` and `relay roles` end with one line per provider, for example
+`Codex: out of usage, 5-hour limit used up until 18:40 · weekly 51% · 5-hour 100%, resets 18:40`.
+A sample is "stale" after 60 minutes, "reset since last sample" once its reset time has passed, and "unknown" when
+there is none. Like the weekly figure, it covers only this machine.
 Background server errors are in `~/.relay/ui.log`; stop the process listed in `~/.relay/ui.json` to stop it.

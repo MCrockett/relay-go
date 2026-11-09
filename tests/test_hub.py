@@ -1,3 +1,4 @@
+import html
 import json
 import os
 import shutil
@@ -17,7 +18,8 @@ class HubHome(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="relay-hub-")
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        p = mock.patch.dict(os.environ, {"RELAY_HOME": os.path.join(self.tmp, "relayhome")})
+        p = mock.patch.dict(os.environ, {"RELAY_HOME": os.path.join(self.tmp, "relayhome"),
+                                         "CODEX_HOME": os.path.join(self.tmp, "codexhome")})
         p.start()
         self.addCleanup(p.stop)
 
@@ -539,6 +541,8 @@ class OutputTest(HubHome):  # mobile-hub D2, R1 to R6
     session: isitev (claude) · permission
     open this session to answer
 Nothing else needs you: 1 feature in progress, 1 session working.
+Codex: usage not available
+Claude: usage not available
 """)
         self.assertEqual(hub.resolve(f"{digest}.3", S, now=self.NOW)["session"]["session_id"], "P1")
         self.assertEqual(hub.registered(), {("claude", "S")})
@@ -548,7 +552,8 @@ Nothing else needs you: 1 feature in progress, 1 session working.
         lines = out.splitlines()
         self.assertTrue(lines[0].startswith("relay hub · digest "))
         self.assertEqual(lines[1:], ["Nothing needs you right now.",
-                                     "Nothing else needs you: 1 feature in progress, 0 sessions working."])
+                                     "Nothing else needs you: 1 feature in progress, 0 sessions working.",
+                                     "Codex: usage not available", "Claude: usage not available"])
 
     def test_a_failed_scan_is_not_an_all_clear(self):
         # the shape snapshot.build returns when the feature scan fails (where-i-left-off F5)
@@ -593,6 +598,93 @@ Nothing else needs you: 1 feature in progress, 1 session working.
                 out, _ = hub.digest(None, records=[], as_json=as_json)
                 self.assertNotIn(TOKEN, out)
         self.assertEqual(hub.registered(), set())
+
+
+class UsageLineTest(HubHome):  # five-hour-usage D5, R7
+    NOW = OutputTest.NOW
+    data, run_digest, page_run = OutputTest.data, OutputTest.run_digest, OutputTest.page_run
+
+    def usage(self):
+        return {"providers": {
+            "codex": {"weekly": {"used_pct": 51}, "blocked": True, "reason": "5-hour limit used up until 18:40",
+                      "five_hour": {"used_pct": 100, "resets_at": self.NOW + 1800, "sampled_at": self.NOW - 60,
+                                    "state": "current"}},
+            "claude": {"weekly": {"used_pct": 34}, "blocked": False, "reason": "",
+                       "five_hour": {"used_pct": 12, "resets_at": self.NOW + 3600, "sampled_at": self.NOW - 60,
+                                     "state": "current"}}}}
+
+    def with_usage(self, usage):
+        data = self.data()
+        if usage is not None:
+            data["usage"] = usage
+        return data
+
+    def clock(self, at):
+        return hub._clock(at, self.NOW)
+
+    def test_text_ends_with_both_lines(self):
+        out, _ = self.run_digest(self.with_usage(self.usage()))
+        self.assertEqual(out.splitlines()[-2:], [
+            f"Codex: out of usage, 5-hour limit used up until 18:40 · weekly 51% · 5-hour 100%, resets "
+            f"{self.clock(self.NOW + 1800)}",
+            f"Claude: available · weekly 34% · 5-hour 12%, resets {self.clock(self.NOW + 3600)}"])
+
+    def test_state_forms(self):
+        view = hub.usage_view({"usage": self.usage()})
+        view["codex"].update(state="stale", used_pct=40, sampled_at=self.NOW - 7200, blocked=False)
+        view["claude"].update(state="reset", used_pct=0)
+        lines = hub.usage_lines(view, self.NOW)
+        self.assertEqual(lines[0], f"Codex: available · weekly 51% · 5-hour stale 40% as of "
+                                   f"{self.clock(self.NOW - 7200)}, resets {self.clock(self.NOW + 1800)}")
+        self.assertEqual(lines[1], "Claude: available · weekly 34% · 5-hour reset since last sample")
+        view["codex"].update(sampled_at=None, resets_at=None)
+        view["claude"].update(state="unknown")
+        lines = hub.usage_lines(view, self.NOW)
+        self.assertEqual(lines[0], "Codex: available · weekly 51% · 5-hour stale 40% as of unknown time")
+        self.assertEqual(lines[1], "Claude: available · weekly 34% · 5-hour unknown")
+
+    def test_json_contract(self):
+        out = json.loads(self.run_digest(self.with_usage(self.usage()), as_json=True)[0])
+        self.assertEqual(out["usage"]["codex"], {
+            "used_pct": 100, "resets_at": self.NOW + 1800, "sampled_at": self.NOW - 60, "state": "current",
+            "blocked": True, "reason": "5-hour limit used up until 18:40", "weekly_pct": 51})
+        usage = self.usage()
+        del usage["providers"]["claude"]["five_hour"]
+        out = json.loads(self.run_digest(self.with_usage(usage), as_json=True)[0])
+        self.assertEqual(out["usage"]["claude"], {
+            "used_pct": None, "resets_at": None, "sampled_at": None, "state": "unknown",
+            "blocked": False, "reason": "", "weekly_pct": 34})
+        text, _ = self.run_digest(self.with_usage(usage))
+        self.assertEqual(text.splitlines()[-1], "Claude: available · weekly 34% · 5-hour unknown")
+
+    def test_no_usage_falls_back_and_keeps_items(self):
+        full = json.loads(self.run_digest(self.with_usage(self.usage()), as_json=True)[0])
+        bare = json.loads(self.run_digest(self.with_usage(None), as_json=True)[0])
+        self.assertEqual(bare["usage"], {"codex": None, "claude": None})
+        strip = lambda items: [{k: v for k, v in i.items() if k != "n"} for i in items]
+        self.assertEqual((strip(bare["items"]), bare["counts"]), (strip(full["items"]), full["counts"]))
+        usage = self.usage()
+        del usage["providers"]["claude"]["five_hour"]
+        partial = json.loads(self.run_digest(self.with_usage(usage), as_json=True)[0])
+        self.assertEqual((strip(partial["items"]), partial["counts"]), (strip(full["items"]), full["counts"]))
+
+    def test_malformed_usage_does_not_abort(self):
+        for usage in ("x", {"providers": "x"}, {"providers": {"codex": "x", "claude": {
+                "weekly": "x", "blocked": "yes", "reason": 5,
+                "five_hour": {"used_pct": "lots", "resets_at": "soon", "state": "current"}}}}):
+            out, _ = self.run_digest(self.with_usage(usage))
+            self.assertIn("Codex: ", out)
+            self.assertIn("Claude: ", out)
+            json.loads(self.run_digest(self.with_usage(usage), as_json=True)[0])
+
+    def test_page_shows_the_same_lines(self):
+        from relaylib import hubpage
+        text, _ = self.page_run(self.with_usage(self.usage()), False)
+        digest = text.split("digest ", 1)[1].split(" ", 1)[0]
+        with open(os.path.join(hubpage.pages(), digest + ".html")) as f:
+            page = f.read()
+        for line in hub.usage_lines(hub.usage_view({"usage": self.usage()}), self.NOW):
+            self.assertIn(f'<p class="usage">{html.escape(line, quote=True)}</p>', page)
 
 
 HUB = {"provider": "claude", "session_id": "hub1"}
