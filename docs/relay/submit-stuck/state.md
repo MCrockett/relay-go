@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "feat/submit-stuck",
   "extra_rounds": {},
   "feature": "submit-stuck",
@@ -12,7 +14,7 @@
     "worktree": "submit-stuck"
   },
   "owner_actions": [],
-  "pr": null,
+  "pr": 30,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -21,15 +23,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-11-09T10:05:44-05:00",
+  "status": "in-review",
+  "updated": "2026-11-09T10:12:21-05:00",
   "verdicts": {}
 }
 ---
