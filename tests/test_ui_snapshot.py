@@ -116,6 +116,31 @@ class SnapshotTest(unittest.TestCase):
             self.assertEqual((total["runs"], total["cached_share"], total["minutes"]), (1, 40, 2))
             self.assertEqual(result["ledger"][days]["models"][0]["name"], "claude:model")
 
+    def test_usage_carries_the_five_hour_window(self):  # five-hour-usage R5
+        now = time.time()
+        reset = int(now) + 3600
+        helpers.write(os.path.join(self.tmp, "codex", "sessions", "2026", "11", "08", "rollout-x.jsonl"), json.dumps(
+            {"timestamp": now, "payload": {"rate_limits": {"primary": {
+                "used_percent": 40, "window_minutes": 300, "resets_at": reset}}}}) + "\n")
+        helpers.write(os.path.join(self.tmp, "relayhome", "claude-usage.json"), json.dumps(
+            {"sampled_at": now, "five_hour": {"used_pct": 12, "resets_at": reset},
+             "seven_day": {"used_pct": 30, "resets_at": reset + 86400}}))
+        providers = snapshot.usage()["providers"]
+        self.assertEqual((providers["codex"]["five_hour"]["state"], providers["codex"]["five_hour"]["used_pct"]),
+                         ("current", 40))
+        self.assertEqual((providers["claude"]["five_hour"]["state"], providers["claude"]["five_hour"]["used_pct"]),
+                         ("current", 12))
+        for value in providers.values():
+            self.assertEqual(set(value), {"weekly", "blocked", "reason", "budget", "five_hour"})
+
+    def test_page_shows_the_five_hour_window(self):  # five-hour-usage D4, R6
+        with open(os.path.join(os.path.dirname(snapshot.__file__), "page.html")) as f:
+            page = f.read()
+        for text in ("5-hour window", "of 5-hour limit", "Reset since last sample", "5-hour usage not available",
+                     "Stale sample", "Reset time unknown", "Sample time unknown", "'5h '",
+                     "fiveHour(value.five_hour)", "fiveShort(value.five_hour)"):
+            self.assertIn(text, page)
+
     def test_done_feature_remains_readable_after_its_branch_is_deleted(self):
         self.st.update(stage="done", status="done")
         self.save()

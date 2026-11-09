@@ -99,7 +99,7 @@ def _row(repo_dir, slug, st, fetched):
         out, why = availability.blocked(st.get("confirm_provider"), config.load()["limits"])
         if out:  # the first choice cannot confirm yet: merging on the fallback GO is the owner's call
             flags.append(f"fallback GO: confirm with {st['confirm_with']} before merging "
-                         f"({st.get('confirm_provider')} {why}; your call)")
+                         f"({st.get('confirm_provider')} out of usage: {why}; your call)")
         else:    # it can: the agent runs relay review first
             confirm_pending = True
             flags.append(f"fallback GO: confirm with {st['confirm_with']} before merging (agent: relay review)")
@@ -157,7 +157,7 @@ def _remote_row(checkout, ref, slug, st, has_handoff, fetched):
         out, why = availability.blocked(st.get("confirm_provider"), config.load()["limits"])
         if out:  # the first choice cannot confirm yet: merging on the fallback GO is the owner's call
             flags.append(f"fallback GO: confirm with {st['confirm_with']} before merging "
-                         f"({st.get('confirm_provider')} {why}; your call)")
+                         f"({st.get('confirm_provider')} out of usage: {why}; your call)")
         else:    # it can: the agent runs relay review first
             confirm_pending = True
             flags.append(f"fallback GO: confirm with {st['confirm_with']} before merging (agent: relay review)")

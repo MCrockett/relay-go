@@ -523,7 +523,7 @@ def review_current(c, args, candidates=None, discard_errors=False, announce=True
             cand = dataclasses.replace(cand, effort=effort)
         out, why = availability.blocked(cand.provider, c.cfg["limits"])
         if out:
-            skipped.append(f"{cand.provider}:{cand.model} {why}")
+            skipped.append(f"{cand.provider}:{cand.model} out of usage: {why}")
             continue
         spec, reviewer = cand, cand.provider
         env = identity.child_env(c.env, reviewer)
@@ -1176,9 +1176,17 @@ def cmd_roles(args):
     print(f"  effort {review.get('effort', 'medium')}; last round before you: {review.get('final_effort', 'high')}; "
           f"release PRs: {review.get('release_effort', 'high')} (an entry's own @effort wins)")
     print("\nAvailability now:")
-    for provider in config.PROVIDERS:
-        out, why = availability.blocked(provider, cfg["limits"])
-        print(f"  {provider}: {why if out else 'available'}")
+    import time
+    from . import hub, usage as samples
+    from .ui import snapshot
+    try:
+        samples.record_codex_sample()
+    except Exception:
+        pass  # as in the snapshot build: a failed sample leaves the latest one shown
+    now = time.time()
+    view = hub.usage_view({"usage": {"providers": snapshot.providers(cfg, now)}})
+    for line in hub.usage_lines(view, now):  # the same lines as the hub (five-hour-usage D6)
+        print(f"  {line}")
     print()
     print(f"max_rounds {cfg['limits']['max_rounds']}, review timeout {cfg['limits']['review_timeout_min']} min, "
           f"require_ci {cfg['build']['require_ci']}, skip_ci {cfg['build']['skip_ci']}")
