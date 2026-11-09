@@ -62,7 +62,16 @@
   "retried": false,
   "review_notes": {},
   "reviewed": {
-    "build": null,
+    "build": {
+      "base_ref": "origin/develop",
+      "base_sha": "c4705f189d57cf53f300ea4a2984268488c1993c",
+      "head": "265186a386bddc8abd0a3831888993d39fafa510",
+      "inputs": {
+        "plan": "cfa6dae7dfbf732011d378fa6944c1467ad99ef989f6af5f9a041f0374910bcf",
+        "spec": "ae362e5b957bed318dee17544775998f584db6e537b4de7bed448c0c62913258"
+      },
+      "merge": "ec984fbaa5cb9d14a05a764e2b1be5b416364946aa7916243a20e4e94e1fa8b0"
+    },
     "plan": {
       "inputs": {
         "plan": "cfa6dae7dfbf732011d378fa6944c1467ad99ef989f6af5f9a041f0374910bcf",
@@ -83,9 +92,10 @@
   "skipped": [],
   "small": false,
   "stage": "build",
-  "status": "in-review",
-  "updated": "2026-11-08T19:37:35-05:00",
+  "status": "ready-to-merge",
+  "updated": "2026-11-08T19:52:35-05:00",
   "verdicts": {
+    "build": "GO",
     "plan": "GO",
     "spec": "GO"
   }
