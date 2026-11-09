@@ -523,7 +523,7 @@ def review_current(c, args, candidates=None, discard_errors=False, announce=True
             cand = dataclasses.replace(cand, effort=effort)
         out, why = availability.blocked(cand.provider, c.cfg["limits"])
         if out:
-            skipped.append(f"{cand.provider}:{cand.model} {why}")
+            skipped.append(f"{cand.provider}:{cand.model} out of usage: {why}")
             continue
         spec, reviewer = cand, cand.provider
         env = identity.child_env(c.env, reviewer)
