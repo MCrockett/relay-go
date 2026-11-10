@@ -1,4 +1,4 @@
-import json, os, signal, tempfile, threading, time, unittest
+import json, os, signal, subprocess, tempfile, threading, time, unittest
 from unittest import mock
 from relaylib import gitops, localtests, state
 from tests import helpers
@@ -101,8 +101,10 @@ class LocalTestsTest(unittest.TestCase):
         a = localtests.start(self.repo, self.commit, self.code, "sleep 30", 5, "feat", "feat/x")
         b = localtests.start(self.repo, self.commit, self.code, "sleep 30", 5, "feat", "feat/x")
         self.assertEqual((a, b), ("started", "running"))
-        out = os.popen(f"pgrep -f 'relaylib.localtests run {self.repo}' | wc -l").read().strip()
-        self.assertEqual(int(out), 1)
+        # pgrep without a shell: a shell's own command line would match the pattern too (it did on Linux CI)
+        found = subprocess.run(["pgrep", "-f", f"relaylib.localtests run {self.repo}"],
+                               capture_output=True, text=True).stdout.split()
+        self.assertEqual(len(found), 1)
 
     def test_ensure_pass_running_and_rerun_of_fail(self):
         self.assertEqual(localtests.ensure(self.repo, self.commit, self.code, "false", 5, "feat", "feat/x"), "started")
