@@ -573,6 +573,73 @@ class CommandsTest(unittest.TestCase):
         self.assertIn("set [build] test_command", self.last_err)
         self.assertEqual(self.gh_calls(), [])
 
+    def local_pr(self, command="true"):
+        self.small_change()
+        self.base_config(f'[build]\nci = "local"\ntest_command = "{command}"\n' if command else '[build]\nci = "local"\n')
+        self.pr()
+
+    def test_relay_test_starts_and_status_reports(self):
+        self.local_pr("sleep 3")
+        self.assertEqual(self.relay("test"), 0, self.last_err)
+        self.assertIn("started", self.last_out)
+        self.assertIn("relay test --status", self.last_out)
+        self.assertIn("/relay/tests/", self.last_out)
+        self.assertEqual(self.relay("test"), 0, self.last_err)           # a live run: reported, nothing started
+        self.assertIn("running", self.last_out)
+        self.assertEqual(self.relay("test", "--status"), 0, self.last_err)
+        self.assertIn("tests: local, running since", self.last_out)
+        self.assertEqual(self.wait_record("sleep 3")["status"], "pass")
+        self.assertEqual(self.relay("test", "--status"), 0, self.last_err)
+        self.assertIn("tests: local, green at", self.last_out)
+
+    def test_relay_status_before_any_run_starts_nothing(self):
+        from relaylib import localtests
+        self.local_pr()
+        self.assertEqual(self.relay("test", "--status"), 0, self.last_err)
+        self.assertIn("tests: local, not run for", self.last_out)
+        self.assertEqual(localtests.records(self.work), [])
+
+    def test_relay_test_reports_pass_and_again_reruns(self):
+        counter = os.path.join(self.tmp, "count")
+        self.local_pr(f"echo x >> {counter}")
+        self.assertEqual(self.relay("test"), 0, self.last_err)
+        self.wait_record(f"echo x >> {counter}")
+        self.assertEqual(self.relay("test"), 0, self.last_err)
+        self.assertIn("--again", self.last_out)
+        self.assertEqual(self.relay("test", "--again"), 0, self.last_err)
+        self.assertIn("started", self.last_out)
+        import time
+        end = time.monotonic() + 15
+        while time.monotonic() < end and not (os.path.exists(counter) and len(open(counter).read().split()) == 2):
+            time.sleep(0.1)
+        self.assertEqual(len(open(counter).read().split()), 2)
+
+    def test_relay_test_no_command_message(self):  # R7
+        self.local_pr(None)
+        self.assertEqual(self.relay("test"), 1)
+        self.assertIn('set [build] test_command in docs/relay/config.toml on develop, or set ci = "none"',
+                      self.last_err)
+
+    def test_relay_test_wait_refused_in_agent(self):
+        self.local_pr()
+        self.assertEqual(self.relay("test", "--wait"), 1)
+        self.assertIn("--wait is for your own terminal; use relay test and relay test --status", self.last_err)
+
+    def test_relay_test_wait_in_owner_terminal(self):
+        self.local_pr()
+        with self.owner_env():
+            self.assertEqual(self.relay("test", "--wait"), 0, self.last_err)
+        self.assertIn("tests: local, green at", self.last_out)
+
+    def test_relay_test_other_modes_print_their_gate(self):
+        self.small_change()
+        self.pr()
+        self.assertEqual(self.relay("test"), 0, self.last_err)
+        self.assertIn("tests: GitHub CI", self.last_out)
+        self.base_config('[build]\nci = "none"\n')
+        self.assertEqual(self.relay("test"), 0, self.last_err)
+        self.assertIn("tests: not gated (ci = none)", self.last_out)
+
     def test_upstream_edit_sends_back_on_submit_and_review(self):
         self.to_spec()
         self.enqueue_codex("GO")

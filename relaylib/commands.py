@@ -436,6 +436,47 @@ def cmd_submit(args):
     return review_current(c, args, gate=gate)
 
 
+def cmd_test(args):
+    """relay test: start or report a background local test run for the PR head's code (ci-modes D9)."""
+    c = Ctx(args)
+    if args.wait and identity.in_agent_session(c.env):
+        raise RelayError("--wait is for your own terminal; use relay test and relay test --status")
+    gitops.fetch(c.root)
+    info = gitops.pr_info(c.root, c.st.get("pr"))
+    if info.get("state") != "OPEN":
+        raise RelayError("open the PR first, then relay test")
+    ci = cimode.settings(c.root, info["baseRefName"])
+    if ci.mode != "local":
+        print("tests: GitHub CI" if ci.mode == "pr" else "tests: not gated (ci = none)")
+        return 0
+    cimode.require_command(ci)
+    head = info.get("headRefOid") or ""
+    code = gitops.code_sha(c.root, freshness.bookkeeping_prefix(c.st), head)
+    run_args = (c.root, head, code, ci.test_command, ci.timeout_min, c.slug, c.branch)
+    rec = localtests.read(c.root, code, ci.test_command)
+    if args.status:
+        print(localtests.flag(rec, code))
+        if rec:
+            print(f"log: {rec['log']}" + (f" ({rec['reason']})" if rec.get("reason") else ""))
+        return 0
+    if args.wait:
+        rec = localtests.run(*run_args)
+    elif rec and rec["status"] == "pass" and not args.again:
+        print(f"{localtests.flag(rec, code)}\nlog: {rec['log']}\nrelay test --again runs it once more")
+        return 0
+    elif rec and rec["status"] == "running":
+        print(f"{localtests.flag(rec, code)}\nlog: {rec['log']}\ncheck with `relay test --status`")
+        return 0
+    else:
+        result = localtests.start(*run_args)
+        rec = localtests.read(c.root, code, ci.test_command)
+        print(f"tests {result} for {code[:8]}\nlog: {localtests.paths(c.root, localtests.key_id(code, ci.test_command))['log']}"
+              "\ncheck with `relay test --status`")
+        return 0
+    print(f"{localtests.flag(rec, code)}\nlog: {rec['log']}")
+    return 0 if rec["status"] == "pass" else 1
+
+
 def cmd_commit(args):
     """ci-on-submit D7a: commit and push the agent's own edits under the feature's relay folder, with the skip
     marker when ci-skip-bookkeeping D2 allows it. Nothing outside that folder is committed or touched."""
@@ -1334,6 +1375,11 @@ def build_parser():
                         help="agents only, with --same-provider: the owner asked for it in this conversation")
         if name == "submit":
             sp.add_argument("--with-owner", action="store_true", help="the owner took part in this stage")
+    t = add("test", cmd_test, "start or report the background local test run for this PR (ci = local)")
+    t.add_argument("--feature")
+    t.add_argument("--status", action="store_true", help="show the record for the current code; start nothing")
+    t.add_argument("--again", action="store_true", help="run again even when the code already passed")
+    t.add_argument("--wait", action="store_true", help="run in the foreground (owner terminal only)")
     cm = add("commit", cmd_commit, "commit and push your edits under docs/relay/<slug>/, skipping CI when it can")
     cm.add_argument("message")
     cm.add_argument("--feature")
