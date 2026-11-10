@@ -36,3 +36,29 @@ class ChoicesTest(unittest.TestCase):
 
     def test_no_default_when_the_author_has_no_preferences(self, _):
         self.assertEqual(reviewjobs.default(CFG, {"authors": {"build": "owner"}}), (None, "", ""))
+
+
+class WorkCtxLocalGateTest(unittest.TestCase):
+    """ci-modes build review R1-1: the dashboard's review job runs the same local gate as submit."""
+
+    def test_local_gate_on_workctx_uses_state_branch(self):
+        import os
+        import tempfile
+        from relaylib import cimode, commands, config, state
+        from tests import helpers
+        with tempfile.TemporaryDirectory() as tmp:
+            _, work = helpers.make_repo(tmp)
+            st = state.new_state("feat", "work", {"provider": "claude", "session": "s"}, "feat/x")
+            path = state.state_path(work, "feat")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            state.write_state(path, st)
+            c = reviewjobs.WorkCtx(work, "feat", config.DEFAULTS)
+            self.assertFalse(hasattr(c, "branch"))
+            local = cimode.Settings("local", "local", "true", 60, "develop")
+            info = {"headRefOid": helpers.sh(work, "git", "rev-parse", "HEAD").strip(), "baseRefName": "develop"}
+            with mock.patch.object(commands, "require_pr_open", return_value=(info, "docs/relay/feat/")), \
+                    mock.patch.object(cimode, "settings", return_value=local), \
+                    mock.patch.object(commands.localtests, "ensure", return_value="started") as ensure:
+                self.assertIs(commands.require_pr_ready(c), info)
+            self.assertEqual(ensure.call_args.args[-1], "feat/x")
+            self.assertEqual(c.tests, "started")

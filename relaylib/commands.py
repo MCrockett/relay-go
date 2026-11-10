@@ -161,7 +161,7 @@ def require_pr_ready(c):
     if c.ci.mode == "local":  # the gate is a background local run, never GitHub CI (ci-modes D8)
         cimode.require_command(c.ci)
         c.tests = localtests.ensure(c.root, head, gitops.code_sha(c.root, prefix, head), c.ci.test_command,
-                                    c.ci.timeout_min, c.slug, c.branch)
+                                    c.ci.timeout_min, c.slug, c.st["branch"])  # WorkCtx has no .branch
         return info
     ci = gitops.ci_for_code(c.root, head, prefix)
     if ci == "none" and c.ci.mode == "pr":
@@ -475,7 +475,7 @@ def cmd_test(args):
     cimode.require_command(ci)
     head = info.get("headRefOid") or ""
     code = gitops.code_sha(c.root, freshness.bookkeeping_prefix(c.st), head)
-    run_args = (c.root, head, code, ci.test_command, ci.timeout_min, c.slug, c.branch)
+    run_args = (c.root, head, code, ci.test_command, ci.timeout_min, c.slug, c.st["branch"])
     rec = localtests.read(c.root, code, ci.test_command)
     if args.status:
         print(localtests.flag(rec, code))
