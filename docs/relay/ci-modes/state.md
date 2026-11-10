@@ -65,7 +65,16 @@
     "spec": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra out of usage: weekly limit used up until Wed 10:25, same provider as the author"
   },
   "reviewed": {
-    "build": null,
+    "build": {
+      "base_ref": "origin/develop",
+      "base_sha": "54d1991d5a80d1241bb1d5001f101005f9b85485",
+      "head": "baa610294b88eb89f72dd72eca2f0c1fbdf48b44",
+      "inputs": {
+        "plan": "e1f4d649eb3d72a6c65513abd1397ae5b5efebcfd33251396fa8b13af467f43c",
+        "spec": "95cd81ee2cbe512efdf1bae7b07ba4803425a7a40fec1707079429d3108762a7"
+      },
+      "merge": "7615d40e29e5e58c7b452f4300b89bf8d547344aa3b78863bc172e3406fab6ea"
+    },
     "plan": {
       "inputs": {
         "plan": "e1f4d649eb3d72a6c65513abd1397ae5b5efebcfd33251396fa8b13af467f43c",
@@ -86,10 +95,10 @@
   "skipped": [],
   "small": false,
   "stage": "build",
-  "status": "in-review",
-  "updated": "2026-11-10T15:28:14-05:00",
+  "status": "ready-to-merge",
+  "updated": "2026-11-10T15:32:43-05:00",
   "verdicts": {
-    "build": "NO-GO",
+    "build": "GO",
     "plan": "GO",
     "spec": "GO"
   }
