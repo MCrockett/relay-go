@@ -51,13 +51,13 @@
     "spec": null
   },
   "rounds": {
-    "spec": 1
+    "spec": 2
   },
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "changes-requested",
-  "updated": "2026-11-10T10:37:50-05:00",
+  "status": "in-review",
+  "updated": "2026-11-10T10:39:32-05:00",
   "verdicts": {
     "spec": "NO-GO"
   }
