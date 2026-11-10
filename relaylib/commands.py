@@ -6,7 +6,7 @@ import os
 import re
 import sys
 
-from . import (availability, ciskip, config, events, freshness, gitops, identity, ledger, machine, merged, notify,
+from . import (availability, ciskip, cimode, config, events, freshness, gitops, identity, ledger, localtests, machine, merged, notify,
                ownership, prompts, reviewtables, runner, state, verdict)
 from .errors import RelayError
 from .progress import RoundRecord
@@ -157,9 +157,15 @@ def require_pr_ready(c):
     (gitops.ci_for_code explains why that result can sit on a bookkeeping commit)."""
     info, prefix = require_pr_open(c)
     head = info.get("headRefOid") or ""
+    c.ci = cimode.settings(c.root, info["baseRefName"])
+    if c.ci.mode == "local":  # the gate is a background local run, never GitHub CI (ci-modes D8)
+        cimode.require_command(c.ci)
+        c.tests = localtests.ensure(c.root, head, gitops.code_sha(c.root, prefix, head), c.ci.test_command,
+                                    c.ci.timeout_min, c.slug, c.st["branch"])  # WorkCtx has no .branch
+        return info
     ci = gitops.ci_for_code(c.root, head, prefix)
-    if ci == "none" and c.cfg["build"]["require_ci"]:
-        raise RelayError("this PR has no CI checks; add CI, or set [build] require_ci = false in docs/relay/config.toml")
+    if ci == "none" and c.ci.mode == "pr":
+        raise RelayError("this PR has no CI checks; add CI, or set [build] ci = \"none\" in docs/relay/config.toml")
     if ci == "not-started":
         raise RelayError(not_started_message(c, head))
     if ci == "failing":
@@ -167,6 +173,29 @@ def require_pr_ready(c):
     if ci == "pending":
         raise RelayError(f"CI is pending for the code at {head[:8]}; wait for green")
     return info
+
+
+PR_CI_LINE = "CI: read it with `gh pr view $pr --json statusCheckRollup`. Do not assume it passed."
+
+
+def ci_line(c, pr):
+    """The build prompt's CI line (ci-modes D13): in local mode the gate is a local run relay tracks itself."""
+    ci = getattr(c, "ci", None)
+    if ci is not None and ci.mode == "local":
+        return (f"Tests: this repo's gate is a local test run of `{ci.test_command}` that relay tracks separately. "
+                "Do not judge GitHub CI.")
+    return PR_CI_LINE.replace("$pr", str(pr or ""))
+
+
+def pending_local_tests(c, head):
+    """In local mode, the status word of the test record for HEAD's code when it is not a pass, else None
+    (ci-modes R17). Read after the GO is saved, so a run that ended meanwhile is seen."""
+    ci = getattr(c, "ci", None)
+    if ci is None or ci.mode != "local":
+        return None
+    code = gitops.code_sha(c.root, freshness.bookkeeping_prefix(c.st), head)
+    rec = localtests.read(c.root, code, ci.test_command)
+    return None if rec and rec["status"] == "pass" else (rec["status"] if rec else "not run")
 
 
 def to_draft(root, pr):
@@ -187,6 +216,11 @@ def ready_draft(c):
     if not info.get("isDraft"):
         return
     number, head = info["number"], info.get("headRefOid") or ""
+    mode = cimode.settings(c.root, info["baseRefName"])
+    if mode.mode == "local":  # no GitHub CI is read or started for the gate; refuse first without a command (R7)
+        cimode.require_command(mode)
+        mark_ready(c.root, number)
+        return
     ci = gitops.ci_for_code(c.root, head, prefix)
     if ci == "green":
         sha = ciskip.mark_head(c.root, c.st, c.cfg)
@@ -194,7 +228,7 @@ def ready_draft(c):
             ciskip.push(c.root, c.branch, sha)
         mark_ready(c.root, number)
         return
-    if ci == "none" and not c.cfg["build"]["require_ci"]:
+    if ci == "none" and mode.mode == "none":
         mark_ready(c.root, number)
         return
     mark_ready(c.root, number)
@@ -408,6 +442,9 @@ def cmd_submit(args):
             to_draft(c.root, e.pr)
             raise
         c.st["pr"] = gate["number"]
+        if c.ci.mode == "local":
+            for line in cimode.workflow_warnings(c.root, "HEAD", c.ci.base):
+                print(f"relay: warning: {line}", file=sys.stderr)
     action = machine.submit(c.st, me.provider)
     if me.provider == "owner":
         record_owner_action(c.st, f"owner submitted {stage}")
@@ -420,6 +457,47 @@ def cmd_submit(args):
     # The gate ran once, above: a second check here could stop on CI that marking the PR ready just started,
     # after state.md was saved as in-review, leaving no reviewer running (submit-stuck).
     return review_current(c, args, gate=gate)
+
+
+def cmd_test(args):
+    """relay test: start or report a background local test run for the PR head's code (ci-modes D9)."""
+    c = Ctx(args)
+    if args.wait and identity.in_agent_session(c.env):
+        raise RelayError("--wait is for your own terminal; use relay test and relay test --status")
+    gitops.fetch(c.root)
+    info = gitops.pr_info(c.root, c.st.get("pr"))
+    if info.get("state") != "OPEN":
+        raise RelayError("open the PR first, then relay test")
+    ci = cimode.settings(c.root, info["baseRefName"])
+    if ci.mode != "local":
+        print("tests: GitHub CI" if ci.mode == "pr" else "tests: not gated (ci = none)")
+        return 0
+    cimode.require_command(ci)
+    head = info.get("headRefOid") or ""
+    code = gitops.code_sha(c.root, freshness.bookkeeping_prefix(c.st), head)
+    run_args = (c.root, head, code, ci.test_command, ci.timeout_min, c.slug, c.st["branch"])
+    rec = localtests.read(c.root, code, ci.test_command)
+    if args.status:
+        print(localtests.flag(rec, code))
+        if rec:
+            print(f"log: {rec['log']}" + (f" ({rec['reason']})" if rec.get("reason") else ""))
+        return 0
+    if args.wait:
+        rec = localtests.run(*run_args)
+    elif rec and rec["status"] == "pass" and not args.again:
+        print(f"{localtests.flag(rec, code)}\nlog: {rec['log']}\nrelay test --again runs it once more")
+        return 0
+    elif rec and rec["status"] == "running":
+        print(f"{localtests.flag(rec, code)}\nlog: {rec['log']}\ncheck with `relay test --status`")
+        return 0
+    else:
+        result = localtests.start(*run_args)
+        rec = localtests.read(c.root, code, ci.test_command)
+        print(f"tests {result} for {code[:8]}\nlog: {localtests.paths(c.root, localtests.key_id(code, ci.test_command))['log']}"
+              "\ncheck with `relay test --status`")
+        return 0
+    print(f"{localtests.flag(rec, code)}\nlog: {rec['log']}")
+    return 0 if rec["status"] == "pass" else 1
 
 
 def cmd_commit(args):
@@ -500,7 +578,7 @@ def review_current(c, args, candidates=None, discard_errors=False, announce=True
     if stage == "build":
         info = gate or require_pr_ready(c)
         base_ref = "origin/" + info["baseRefName"]
-        ctx.update(base_ref=base_ref, base_sha=gitops.head_sha(c.root, base_ref))
+        ctx.update(base_ref=base_ref, base_sha=gitops.head_sha(c.root, base_ref), ci_line=ci_line(c, st.get("pr")))
         if info["baseRefName"] == "main":
             name = "release"
     snap = freshness.snapshot(c.root, st, base_ref)
@@ -580,8 +658,11 @@ def review_current(c, args, candidates=None, discard_errors=False, announce=True
         if st["status"] == "ready-to-merge":
             c.after_publish(lambda: events.queue("go", st["repo"], c.slug, stage, st.get("pr"),
                                                  events.go_text(st["repo"], c.slug, st.get("pr"), reviewer)))
+        waiting_on = pending_local_tests(c, head) if st["status"] == "ready-to-merge" else None  # after the save (N7)
         if not announce:  # the caller announces once its result is published
             pass
+        elif waiting_on:  # the runner sends the ready notification when its pass arrives (R17)
+            print(f"relay: build GO from {reviewer}. Tests are {waiting_on}; merge waits for a pass.")
         elif st["status"] == "ready-to-merge":
             notify.send(c.cfg, f"relay: {st['repo']} ready to merge",
                         f"{c.slug}: PR #{st.get('pr')} passed {reviewer}'s review")
@@ -1174,7 +1255,11 @@ def cmd_roles(args):
         print(f"  {line}")
     print()
     print(f"max_rounds {cfg['limits']['max_rounds']}, review timeout {cfg['limits']['review_timeout_min']} min, "
-          f"require_ci {cfg['build']['require_ci']}, skip_ci {cfg['build']['skip_ci']}")
+          f"skip_ci {cfg['build']['skip_ci']}")
+    build = cfg["build"]
+    print(f"ci {build['ci']}, {build['test_command'].strip() or 'no test command'}, "
+          f"timeout {build['test_timeout_min']:g} min")
+    print("(this is your working tree's config; PR gates use the base branch's config)")
 
 
 def cmd_rule(args):
@@ -1316,6 +1401,11 @@ def build_parser():
                         help="agents only, with --same-provider: the owner asked for it in this conversation")
         if name == "submit":
             sp.add_argument("--with-owner", action="store_true", help="the owner took part in this stage")
+    t = add("test", cmd_test, "start or report the background local test run for this PR (ci = local)")
+    t.add_argument("--feature")
+    t.add_argument("--status", action="store_true", help="show the record for the current code; start nothing")
+    t.add_argument("--again", action="store_true", help="run again even when the code already passed")
+    t.add_argument("--wait", action="store_true", help="run in the foreground (owner terminal only)")
     cm = add("commit", cmd_commit, "commit and push your edits under docs/relay/<slug>/, skipping CI when it can")
     cm.add_argument("message")
     cm.add_argument("--feature")

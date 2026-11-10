@@ -1,0 +1,3 @@
+[build]
+test_command = "python3.11 -m unittest discover -s tests -t ."
+test_timeout_min = 90

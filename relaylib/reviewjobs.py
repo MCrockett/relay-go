@@ -233,7 +233,7 @@ def prepare(repo, slug, seen, reviewer=None, relayed_by=None, stage="build"):
 
 
 def _run(job):
-    from .commands import record_owner_action, review_current  # commands imports this module for the CLI
+    from .commands import pending_local_tests, record_owner_action, review_current  # commands imports this module for the CLI
     who = spec_id(job.spec)
     with tempfile.TemporaryDirectory(prefix="relay-review-") as temp:
         work = os.path.join(temp, "work")
@@ -281,7 +281,9 @@ def _run(job):
             if job.stage != "build" and c.st["verdicts"].get(last) == "GO":
                 message = f"{job.slug}: {' and '.join(done)} GO from {who}; back at {c.st['stage']}, {c.st['status']}."
             elif c.st["status"] == "ready-to-merge":
-                message = f"{job.slug}: build GO from {who}; ready to merge."
+                tests = pending_local_tests(c, gitops.head_sha(c.root))
+                message = (f"{job.slug}: build GO from {who}; tests are {tests}, merge waits for a pass." if tests
+                           else f"{job.slug}: build GO from {who}; ready to merge.")
             elif c.st["status"] == "waiting-owner":
                 message = f"{job.slug}: {before}{last} NO-GO from {who}; the review loop stopped and waits on you."
             else:

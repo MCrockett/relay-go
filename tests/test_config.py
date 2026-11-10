@@ -36,7 +36,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(cfg["roles"]["spec"], "claude:claude-opus-5-5")  # default kept
         self.assertEqual(cfg["limits"]["max_rounds"], 3)                  # repo wins
         self.assertEqual(cfg["limits"]["handoff_context_pct"], 60)
-        self.assertTrue(cfg["build"]["require_ci"])
+        self.assertEqual(cfg["build"]["ci"], "pr")
         self.assertEqual(cfg["build"]["skip_ci"], "auto")
 
     def test_skip_ci_setting(self):                                       # ci-skip-bookkeeping R4
@@ -50,6 +50,60 @@ class ConfigTest(unittest.TestCase):
             f.write('[build]\nskip_ci = "sometimes"\n')
         with self.assertRaisesRegex(RelayError, "config.toml: \\[build\\] skip_ci must be auto or never"):
             config.load(repo)
+
+    def _repo_cfg(self, text):
+        repo = os.path.join(self.tmp, "repo")
+        os.makedirs(os.path.join(repo, "docs", "relay"), exist_ok=True)
+        path = os.path.join(repo, "docs", "relay", "config.toml")
+        with open(path, "w") as f:
+            f.write(text)
+        return repo, path
+
+    def _hub(self, text):
+        with open(self.hub, "w") as f:
+            f.write(text)
+
+    def test_ci_defaults_to_pr(self):
+        os.unlink(self.hub)
+        b = config.load()["build"]
+        self.assertEqual(b["ci"], "pr")
+        self.assertNotIn("require_ci", {k: v for k, v in b.items() if k != "require_ci"})
+        self.assertEqual(b["test_command"], "")
+        self.assertEqual(b["test_timeout_min"], 60)
+
+    def test_require_ci_maps_per_file(self):
+        self._hub("[build]\nrequire_ci = false\n")
+        self.assertEqual(config.load()["build"]["ci"], "none")
+        self._hub('[build]\nci = "release"\n')
+        repo, _ = self._repo_cfg("[build]\nrequire_ci = false\n")
+        self.assertEqual(config.load(repo)["build"]["ci"], "none")
+        self._hub("[build]\nrequire_ci = true\n")
+        self.assertEqual(config.load()["build"]["ci"], "pr")
+
+    def test_ci_wins_over_require_ci_in_same_file_with_one_warning(self):
+        self._hub('[build]\nci = "local"\nrequire_ci = true\n')
+        config._WARNED_PATHS.clear()
+        import io, contextlib
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(config.load()["build"]["ci"], "local")
+            config.load()
+        lines = err.getvalue().strip().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertIn(self.hub, lines[0])
+        self.assertIn("require_ci is ignored", lines[0])
+
+    def test_bad_build_values_refused(self):
+        with self.subTest("ci"):
+            self._hub('[build]\nci = "github"\n')
+            with self.assertRaisesRegex(RelayError, "config.toml.*pr, local, release, none"):
+                config.load()
+        for line in ('require_ci = "no"', "test_command = 5", "test_timeout_min = 0",
+                     "test_timeout_min = -1", 'test_timeout_min = "60"', "test_timeout_min = true"):
+            with self.subTest(line):
+                self._hub(f"[build]\n{line}\n")
+                with self.assertRaisesRegex(RelayError, "config.toml"):
+                    config.load()
 
     def test_reviewer_model(self):
         self.assertEqual(config.reviewer_model(config.load(), "claude").model, "claude-sonnet-5")

@@ -54,6 +54,31 @@ class AsksTest(unittest.TestCase):
         self.assertEqual(waiting.asks(row("ready-to-merge", ["stale build GO: code changed since the GO"], pr=6),
                                       s, None, None, None), [])
 
+    def merge_asks(self, flag, flags=()):
+        return waiting.asks(row("ready-to-merge", [flag, *flags], pr=6), st("ready-to-merge"), None, None, None)
+
+    def test_asks_tests_failed_replaces_merge(self):  # R16
+        asks = self.merge_asks("tests: local, failed at abc12345")
+        self.assertEqual([(a["kind"], a["text"]) for a in asks], [(
+            "tests", "Tests failed at abc12345: fix, push and relay review, or relay test for a flake")])
+
+    def test_asks_stopped_not_run_and_no_command(self):  # N4
+        self.assertEqual(texts(self.merge_asks("tests: local, stopped at abc12345")), ["Run tests: relay test"])
+        self.assertEqual(texts(self.merge_asks("tests: local, not run for abc12345")), ["Run tests: relay test"])
+        self.assertEqual(texts(self.merge_asks("tests: local, no test command")),
+                         ['Set [build] test_command in docs/relay/config.toml on the base branch, or set ci = "none"'])
+
+    def test_asks_running_has_no_merge_ask(self):  # N5
+        self.assertEqual(self.merge_asks("tests: local, running since 10:02"), [])
+
+    def test_asks_green_and_other_modes_keep_merge(self):
+        for flag in ("tests: local, green at abc12345", "tests: GitHub CI", "tests: not gated (ci = none)",
+                     "tests: unknown (offline)"):
+            self.assertEqual(texts(self.merge_asks(flag)), ["Merge PR #6"], flag)
+
+    def test_stale_go_hides_the_tests_asks_too(self):
+        self.assertEqual(self.merge_asks("tests: local, failed at abc12345", ["stale build GO: code changed"]), [])
+
     def test_take_a_handoff(self):
         asks = waiting.asks(row(flags=["handoff (over 24h old): open a session and run `relay take`"]), st(), None, None, None)
         self.assertEqual(asks, [{"kind": "take", "text": "Take the handoff: open a session and run relay take", "since": AT}])

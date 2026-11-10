@@ -4,6 +4,7 @@ import copy
 import fcntl
 import os
 import re
+import sys
 import tempfile
 import time
 import tomllib
@@ -32,7 +33,8 @@ DEFAULTS = {
         "budget_stale_hours": 6,
         "timezone": "America/Detroit",
     },
-    "build": {"require_ci": True, "skip_ci": "auto"},  # skip_ci: ci-skip-bookkeeping D3
+    # ci: one of CI_MODES (ci-modes D1); skip_ci: ci-skip-bookkeeping D3
+    "build": {"ci": "pr", "test_command": "", "test_timeout_min": 60, "skip_ci": "auto"},
     "review": {
         # reviewer effort, unless a preference entry names its own (provider:model@effort)
         "effort": "medium",           # every round
@@ -146,6 +148,34 @@ def _merge(base, over):
 
 
 SKIP_CI = ("auto", "never")
+CI_MODES = ("pr", "local", "release", "none")
+_WARNED_PATHS = set()
+
+
+def normalize_build(table, path):
+    """Validate one file's [build] table and map the legacy require_ci (ci-modes D2, R1 to R3).
+    Returns a new table without require_ci."""
+    table = dict(table)
+    if "require_ci" in table:
+        legacy = table.pop("require_ci")
+        if not isinstance(legacy, bool):
+            raise RelayError(f"{path}: [build] require_ci must be true or false")
+        if "ci" in table:
+            if path not in _WARNED_PATHS:
+                _WARNED_PATHS.add(path)
+                print(f"relay: {path}: [build] has both ci and require_ci; require_ci is ignored there",
+                      file=sys.stderr)
+        else:
+            table["ci"] = "pr" if legacy else "none"
+    if "ci" in table and table["ci"] not in CI_MODES:
+        raise RelayError(f"{path}: [build] ci must be one of {', '.join(CI_MODES)}")
+    if "test_command" in table and not isinstance(table["test_command"], str):
+        raise RelayError(f"{path}: [build] test_command must be a string")
+    if "test_timeout_min" in table:
+        t = table["test_timeout_min"]
+        if isinstance(t, bool) or not isinstance(t, (int, float)) or t <= 0:
+            raise RelayError(f"{path}: [build] test_timeout_min must be a number greater than zero")
+    return table
 
 
 def load(repo_root=None, timed=True):
@@ -158,9 +188,12 @@ def load(repo_root=None, timed=True):
         if os.path.isfile(path):
             with open(path, "rb") as f:
                 try:
-                    _merge(cfg, tomllib.load(f))
+                    data = tomllib.load(f)
                 except tomllib.TOMLDecodeError as e:
                     raise RelayError(f"{path}: {e}")
+            if isinstance(data.get("build"), dict):
+                data["build"] = normalize_build(data["build"], path)
+            _merge(cfg, data)
             if (cfg.get("build") or {}).get("skip_ci") not in SKIP_CI:
                 raise RelayError(f"{path}: [build] skip_ci must be auto or never")
     if timed:  # a temporary table wins over the owner's and the repo's tables until it ends (models-tab D3)

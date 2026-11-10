@@ -35,5 +35,7 @@ timezone            = "America/Detroit"
 enabled = true  # macOS notification when a feature needs you (ready to merge, stopped, error, handoff)
 
 [build]
-require_ci = true  # a repo without CI sets this to false in its docs/relay/config.toml
+ci = "pr"          # pr: GitHub CI must be green. local: relay runs test_command. release: pr into main, local elsewhere. none: no test gate
+test_command = ""  # a shell command; set it in a repo's docs/relay/config.toml for local and release modes
+test_timeout_min = 60  # a local run past this is ended and recorded as a failure
 skip_ci = "auto"   # "never" keeps CI running on relay's own commits; see README, CI on relay's commits

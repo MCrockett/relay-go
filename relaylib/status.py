@@ -5,8 +5,8 @@ import json
 import os
 import time
 
-from . import (agentask, config, freshness, gitops, health, merged, othersessions, ownership, sessions,
-               state, waiting)
+from . import (agentask, cimode, config, freshness, gitops, health, localtests, merged, othersessions, ownership,
+               sessions, state, waiting)
 from .errors import RelayError
 
 COLUMNS = ("repo", "feature", "stage", "status", "round", "owner", "verdict")
@@ -26,15 +26,41 @@ def checkouts(root_dir):
             trees = gitops.worktrees(repo_dir)
         except RelayError:
             trees = []
+        try:
+            runs = os.path.realpath(os.path.join(gitops.common_dir(repo_dir), "relay", "test-runs")) + os.sep
+        except RelayError:
+            runs = None
         for path in [repo_dir] + trees:
             real = os.path.realpath(path)
+            if runs and (real + os.sep).startswith(runs):
+                continue  # a local test run's own worktree (ci-modes R14)
             if real not in seen and os.path.isdir(path):
                 seen.add(real)
                 out.append(path)
     return out
 
 
-def _build_flags(repo_dir, st, fetched, ref=None):
+def tests_flag(repo_dir, st, info=None):
+    """The tests flag of a build-stage feature with a PR (ci-modes R15), or None. Reads the PR's base for the mode
+    (D3), so it reuses `info` when the row already fetched it. Any failure becomes an `unknown` flag."""
+    if st.get("stage") != "build" or not st.get("pr"):
+        return None
+    try:
+        info = info or gitops.pr_info(repo_dir, st["pr"])
+        mode = cimode.settings(repo_dir, info["baseRefName"])
+        if mode.mode == "pr":
+            return "tests: GitHub CI"
+        if mode.mode == "none":
+            return "tests: not gated (ci = none)"
+        if not mode.test_command.strip():
+            return "tests: local, no test command"
+        code = gitops.code_sha(repo_dir, freshness.bookkeeping_prefix(st), info["headRefOid"])
+        return localtests.flag(localtests.read(repo_dir, code, mode.test_command), code)
+    except (RelayError, OSError, KeyError) as e:
+        return f"tests: unknown ({e})"
+
+
+def _build_flags(repo_dir, st, fetched, ref=None, got=None):
     flags = []
     if repo_dir not in fetched:
         fetched[repo_dir] = None
@@ -45,7 +71,10 @@ def _build_flags(repo_dir, st, fetched, ref=None):
     if fetched[repo_dir]:
         return [f"stale GO: cannot confirm, fetch failed ({fetched[repo_dir]})"]
     try:
-        base = "origin/" + gitops.pr_info(repo_dir, st["pr"])["baseRefName"]
+        info = gitops.pr_info(repo_dir, st["pr"])
+        if got is not None:
+            got["info"] = info
+        base = "origin/" + info["baseRefName"]
         fresh, why = freshness.check(repo_dir, st, "build", base, ref=ref)
     except (RelayError, OSError) as e:
         fresh, why = False, str(e)
@@ -89,8 +118,12 @@ def _row(repo_dir, slug, st, fetched):
             flags.append(str(e))
         if up:
             flags.append(f"stale {up} GO: re-review before going on")
+        got = {}
         if status == "ready-to-merge":
-            flags += _build_flags(repo_dir, st, fetched)
+            flags += _build_flags(repo_dir, st, fetched, got=got)
+        tests = tests_flag(repo_dir, st, got.get("info"))
+        if tests:
+            flags.append(tests)
     if not done:  # fallback and same-provider reviews stay visible until the feature is merged
         for reviewed, note in (st.get("review_notes") or {}).items():
             flags.append(f"{reviewed} review: {note}")
@@ -138,8 +171,13 @@ def _remote_row(checkout, ref, slug, st, has_handoff, fetched):
     flags = [f"on {ref} (not checked out)"]
     if has_handoff and not done:
         flags.append("handoff: open a session and run `relay take`")
-    if status == "ready-to-merge":
-        flags += _build_flags(checkout, st, fetched, ref=ref)
+    if not done:
+        got = {}
+        if status == "ready-to-merge":
+            flags += _build_flags(checkout, st, fetched, ref=ref, got=got)
+        tests = tests_flag(checkout, st, got.get("info"))
+        if tests:
+            flags.append(tests)
     if not done:  # fallback and same-provider reviews stay visible until the feature is merged
         for reviewed, note in (st.get("review_notes") or {}).items():
             flags.append(f"{reviewed} review: {note}")

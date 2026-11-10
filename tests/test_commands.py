@@ -49,6 +49,28 @@ class CommandsTest(unittest.TestCase):
         os.chdir(self.work)
         self.addCleanup(os.chdir, cwd)
 
+    def tearDown(self):  # ci-modes N9: stop any background test run a test started
+        import signal, time
+        from relaylib import localtests
+        for rec in localtests.records(self.work):
+            if rec["status"] == "running":
+                for sig in (signal.SIGTERM, signal.SIGKILL):
+                    try:
+                        os.kill(rec["pid"], sig)
+                    except (ProcessLookupError, TypeError):
+                        break
+                    time.sleep(0.2)
+
+    def base_config(self, text, base="develop"):
+        """The gate reads the build settings from origin/<base> (ci-modes D3): push the repo config there."""
+        other = helpers.clone(self.origin, os.path.join(self.tmp, f"baseconf-{self.n}-{abs(hash(text))}"))
+        helpers.sh(other, "git", "switch", "-q", base)
+        helpers.write(os.path.join(other, "docs/relay/config.toml"), text)
+        helpers.sh(other, "git", "add", "-A")
+        helpers.sh(other, "git", "commit", "-q", "-m", "base config")
+        helpers.sh(other, "git", "push", "-q")
+        helpers.sh(self.work, "git", "fetch", "-q", "origin")
+
     # helpers
     def relay(self, *argv):
         out, err = io.StringIO(), io.StringIO()
@@ -436,13 +458,221 @@ class CommandsTest(unittest.TestCase):
 
     def test_repo_can_waive_ci(self):
         self.small_change()
-        helpers.write(os.path.join(self.work, "docs/relay/config.toml"), "[build]\nrequire_ci = false\n")
-        helpers.sh(self.work, "git", "add", "-A")
-        helpers.sh(self.work, "git", "commit", "-q", "-m", "no CI here")
-        helpers.sh(self.work, "git", "push", "-q")
+        self.base_config("[build]\nrequire_ci = false\n")
         self.pr(runs=[])
         self.enqueue_codex("GO")
         self.assertEqual(self.relay("submit"), 0, self.last_err)
+
+    FAILING = [{"status": "completed", "conclusion": "failure"}]
+
+    def local_code(self):
+        from relaylib import freshness
+        return gitops.code_sha(self.work, freshness.bookkeeping_prefix(self.st("tiny")), "HEAD")
+
+    def wait_record(self, command, status="pass", timeout=15):
+        import time
+        from relaylib import localtests
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            rec = localtests.read(self.work, self.local_code(), command)
+            if rec and rec["status"] == status:
+                return rec
+            time.sleep(0.1)
+        return localtests.read(self.work, self.local_code(), command)
+
+    def test_local_submit_ignores_github_ci_and_starts_run(self):  # review focus 4
+        self.small_change()
+        self.base_config('[build]\nci = "local"\ntest_command = "true"\n')
+        self.pr(runs=self.FAILING)
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertEqual(self.st("tiny")["status"], "ready-to-merge")
+        self.assertEqual(self.wait_record("true")["status"], "pass")
+
+    def test_local_submit_without_command_refused(self):  # R7
+        self.small_change()
+        self.base_config('[build]\nci = "local"\n')
+        self.pr()
+        before = self.st("tiny")
+        self.assertEqual(self.relay("submit"), 1)
+        self.assertIn('set [build] test_command in docs/relay/config.toml on develop, or set ci = "none"',
+                      self.last_err)
+        self.assertEqual(self.st("tiny"), before)
+
+    def test_local_review_starts_run_after_go_goes_stale(self):
+        self.small_change()
+        self.base_config('[build]\nci = "local"\ntest_command = "true"\n')
+        self.pr()
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.wait_record("true")
+        helpers.write(os.path.join(self.work, "app.py"), "print(2)\n")
+        helpers.sh(self.work, "git", "commit", "-qam", "more")
+        helpers.sh(self.work, "git", "push", "-q")
+        self.pr()
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("review"), 0, self.last_err)
+        self.assertEqual(self.wait_record("true")["status"], "pass")
+
+    def test_go_without_pass_holds_ready_notification(self):  # R17, N7
+        self.small_change()
+        self.base_config('[build]\nci = "local"\ntest_command = "sleep 3"\n')
+        self.pr()
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertEqual(self.st("tiny")["status"], "ready-to-merge")
+        self.assertNotIn("ready to merge", self.notifications())
+        self.assertIn("Tests are running; merge waits for a pass.", self.last_out)
+
+    def test_go_with_pass_sends_ready_notification(self):
+        self.small_change()
+        self.base_config('[build]\nci = "local"\ntest_command = "true"\n')
+        self.pr()
+        self.assertEqual(self.relay("test"), 0, self.last_err)
+        self.wait_record("true")
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertIn("ready to merge", self.notifications())
+
+    def test_build_prompt_ci_line_local_and_pr(self):
+        from argparse import Namespace
+        from relaylib import cimode, prompts
+        local = Namespace(ci=cimode.Settings("local", "local", "make test", 60, "develop"))
+        pr = Namespace(ci=cimode.Settings("pr", "pr", "", 60, "develop"))
+        self.assertIn("local test run of `make test` that relay tracks separately. Do not judge GitHub CI.",
+                      commands.ci_line(local, 5))
+        self.assertIn("gh pr view 5 --json statusCheckRollup", commands.ci_line(pr, 5))
+        ctx = {"feature_dir": "d", "round": 1, "prior_ids": "none", "pr": 5, "base_ref": "o", "base_sha": "a",
+               "head_sha": "b", "small": "no", "ci_line": commands.ci_line(local, 5)}
+        text = prompts.render("build", ctx)
+        self.assertIn("5. Tests: this repo's gate is a local test run", text)
+        self.assertNotIn("statusCheckRollup", text)
+
+    def test_concurrent_gates_one_run(self):  # review focus 2
+        import threading
+        from argparse import Namespace
+        from relaylib import localtests
+        self.small_change()
+        self.base_config('[build]\nci = "local"\ntest_command = "sleep 5"\n')
+        self.pr()
+        results = []
+
+        def gate():
+            c = commands.Ctx(Namespace(feature="tiny"))
+            commands.require_pr_ready(c)
+            results.append(c.tests)
+        threads = [threading.Thread(target=gate) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(sorted(results), ["running", "started"])
+        recs = localtests.records(self.work)
+        self.assertEqual([r["status"] for r in recs], ["running"])
+
+    def test_pr_mode_unchanged_without_checks(self):
+        self.small_change()
+        self.pr(runs=[])
+        self.assertEqual(self.relay("submit"), 1)
+        self.assertIn("this PR has no CI checks", self.last_err)
+        self.assertIn('[build] ci = "none"', self.last_err)
+
+    def test_local_submit_warns_about_workflow(self):
+        self.small_change()
+        wf = os.path.join(self.work, ".github/workflows/test.yml")
+        helpers.write(wf, "name: t\non:\n  pull_request:\n    types: [opened]\n  push:\n    branches: [main]\n")
+        helpers.sh(self.work, "git", "add", "-A")
+        helpers.sh(self.work, "git", "commit", "-q", "-m", "workflow")
+        helpers.sh(self.work, "git", "push", "-q")
+        self.base_config('[build]\nci = "local"\ntest_command = "true"\n')
+        self.pr()
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertEqual(self.last_err.count(".github/workflows/test.yml: runs on pull_request to develop"), 1)
+
+    def test_ready_draft_local_marks_ready_without_reading_ci(self):
+        self.draft(())
+        self.base_config('[build]\nci = "local"\ntest_command = "true"\n')
+        self.pr((), isDraft=True)
+        self.enqueue_codex("GO")
+        with mock.patch.object(gitops, "ci_for_code", side_effect=AssertionError("read CI")):
+            self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertEqual(self.gh_calls(), ["pr ready 7"])
+
+    def test_ready_draft_local_without_command_does_not_mark_ready(self):  # N8
+        self.draft(())
+        self.base_config('[build]\nci = "local"\n')
+        self.pr((), isDraft=True)
+        self.assertEqual(self.relay("submit"), 1)
+        self.assertIn("set [build] test_command", self.last_err)
+        self.assertEqual(self.gh_calls(), [])
+
+    def local_pr(self, command="true"):
+        self.small_change()
+        self.base_config(f'[build]\nci = "local"\ntest_command = "{command}"\n' if command else '[build]\nci = "local"\n')
+        self.pr()
+
+    def test_relay_test_starts_and_status_reports(self):
+        self.local_pr("sleep 3")
+        self.assertEqual(self.relay("test"), 0, self.last_err)
+        self.assertIn("started", self.last_out)
+        self.assertIn("relay test --status", self.last_out)
+        self.assertIn("/relay/tests/", self.last_out)
+        self.assertEqual(self.relay("test"), 0, self.last_err)           # a live run: reported, nothing started
+        self.assertIn("running", self.last_out)
+        self.assertEqual(self.relay("test", "--status"), 0, self.last_err)
+        self.assertIn("tests: local, running since", self.last_out)
+        self.assertEqual(self.wait_record("sleep 3")["status"], "pass")
+        self.assertEqual(self.relay("test", "--status"), 0, self.last_err)
+        self.assertIn("tests: local, green at", self.last_out)
+
+    def test_relay_status_before_any_run_starts_nothing(self):
+        from relaylib import localtests
+        self.local_pr()
+        self.assertEqual(self.relay("test", "--status"), 0, self.last_err)
+        self.assertIn("tests: local, not run for", self.last_out)
+        self.assertEqual(localtests.records(self.work), [])
+
+    def test_relay_test_reports_pass_and_again_reruns(self):
+        counter = os.path.join(self.tmp, "count")
+        self.local_pr(f"echo x >> {counter}")
+        self.assertEqual(self.relay("test"), 0, self.last_err)
+        self.wait_record(f"echo x >> {counter}")
+        self.assertEqual(self.relay("test"), 0, self.last_err)
+        self.assertIn("--again", self.last_out)
+        self.assertEqual(self.relay("test", "--again"), 0, self.last_err)
+        self.assertIn("started", self.last_out)
+        import time
+        end = time.monotonic() + 15
+        while time.monotonic() < end and not (os.path.exists(counter) and len(open(counter).read().split()) == 2):
+            time.sleep(0.1)
+        self.assertEqual(len(open(counter).read().split()), 2)
+
+    def test_relay_test_no_command_message(self):  # R7
+        self.local_pr(None)
+        self.assertEqual(self.relay("test"), 1)
+        self.assertIn('set [build] test_command in docs/relay/config.toml on develop, or set ci = "none"',
+                      self.last_err)
+
+    def test_relay_test_wait_refused_in_agent(self):
+        self.local_pr()
+        self.assertEqual(self.relay("test", "--wait"), 1)
+        self.assertIn("--wait is for your own terminal; use relay test and relay test --status", self.last_err)
+
+    def test_relay_test_wait_in_owner_terminal(self):
+        self.local_pr()
+        with self.owner_env():
+            self.assertEqual(self.relay("test", "--wait"), 0, self.last_err)
+        self.assertIn("tests: local, green at", self.last_out)
+
+    def test_relay_test_other_modes_print_their_gate(self):
+        self.small_change()
+        self.pr()
+        self.assertEqual(self.relay("test"), 0, self.last_err)
+        self.assertIn("tests: GitHub CI", self.last_out)
+        self.base_config('[build]\nci = "none"\n')
+        self.assertEqual(self.relay("test"), 0, self.last_err)
+        self.assertIn("tests: not gated (ci = none)", self.last_out)
 
     def test_upstream_edit_sends_back_on_submit_and_review(self):
         self.to_spec()
@@ -1029,7 +1259,9 @@ done
         self.assertIn("· 5-hour unknown", self.last_out)
         self.assertIn("Claude: available", self.last_out)
         self.assertIn("effort medium; last round before you: high; release PRs: high", self.last_out)
-        self.assertIn("require_ci True, skip_ci auto", self.last_out)                 # ci-skip-bookkeeping R4
+        self.assertIn("skip_ci auto", self.last_out)                                  # ci-skip-bookkeeping R4
+        self.assertIn("ci pr, no test command, timeout 60 min", self.last_out)        # ci-modes R4
+        self.assertIn("PR gates use the base branch's config", self.last_out)
 
     def owner_env(self):
         return mock.patch.dict(os.environ, {k: v for k, v in os.environ.items()
@@ -2088,10 +2320,7 @@ done
 
     def test_a_draft_without_ci_when_ci_is_not_required(self):
         self.draft(())
-        helpers.write(os.path.join(self.work, "docs/relay/config.toml"), "[build]\nrequire_ci = false\n")
-        helpers.sh(self.work, "git", "add", "docs/relay/config.toml")
-        helpers.sh(self.work, "git", "commit", "-q", "-m", "config")
-        helpers.sh(self.work, "git", "push", "-q")
+        self.base_config("[build]\nrequire_ci = false\n")
         self.pr((), isDraft=True)
         self.enqueue_codex("GO")
         self.assertEqual(self.relay("submit"), 0, self.last_err)
@@ -2102,10 +2331,7 @@ done
         # require_ci = false: the gate passes with no result, then marking the PR ready starts CI. The review in the
         # same submit must not run the gate again and stop on that pending run with the feature saved in-review.
         self.draft(self.SKIPPED)
-        helpers.write(os.path.join(self.work, "docs/relay/config.toml"), "[build]\nrequire_ci = false\n")
-        helpers.sh(self.work, "git", "add", "docs/relay/config.toml")
-        helpers.sh(self.work, "git", "commit", "-q", "-m", "config")
-        helpers.sh(self.work, "git", "push", "-q")
+        self.base_config("[build]\nrequire_ci = false\n")
         self.pr(self.SKIPPED, isDraft=True)
         real, calls = gitops.ci_for_code, []
 

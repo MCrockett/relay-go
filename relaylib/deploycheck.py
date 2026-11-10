@@ -1,10 +1,13 @@
 """Is it safe to update the live relay now? (merge-and-tidy, deployment.) Lists what is in flight: reviews running,
 a held owner-action lock and relay processes, each with what to wait for. The dashboard is not in flight; it only
 needs a restart after the pull."""
+import glob
 import os
 import subprocess
+import tomllib
 
-from . import owneractions, reviewjobs, status
+from . import gitops, owneractions, reviewjobs, status
+from .state import RELAY_DIR
 from .errors import RelayError
 
 
@@ -64,8 +67,35 @@ def check(root=None, ps_lines=None):
     return blocking, notes
 
 
+def needs_command(root_dir):
+    """Repo names under root_dir that would get ci-modes' "set test_command" message once the global config says
+    ci = "release" (R21, N12): no repo config on origin/develop (or origin/main) naming ci, require_ci or
+    test_command, or one that sets ci to local or release without a test_command."""
+    out = []
+    for repo in sorted(glob.glob(os.path.join(root_dir, "*"))):
+        if not os.path.exists(os.path.join(repo, ".git")):
+            continue
+        try:
+            text = next((t for t in (gitops.show(repo, f"origin/{b}", f"{RELAY_DIR}/config.toml")
+                                     for b in ("develop", "main")) if t is not None), None)
+            build = (tomllib.loads(text).get("build") if text else None) or {}
+        except (RelayError, OSError, tomllib.TOMLDecodeError):
+            continue  # an unreadable config is reported by relay itself
+        named = any(k in build for k in ("ci", "require_ci", "test_command"))
+        no_command = not str(build.get("test_command") or "").strip()
+        if not named or (build.get("ci") in ("local", "release") and no_command):
+            out.append(os.path.basename(repo))
+    return out
+
+
 def main():
     blocking, notes = check()
+    try:
+        names = needs_command(status.projects_root())
+    except Exception:  # advice only; never stops the check
+        names = []
+    if names:
+        notes.append('after you set ci = "release" globally, these repos need a test_command: ' + ", ".join(names))
     for line in blocking:
         print(f"wait: {line}")
     for line in notes:
