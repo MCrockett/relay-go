@@ -48,6 +48,7 @@
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
+  "review_error": "exit code 1; claude reported an error: You've hit your 5-hour limit \u00b7 resets 1:50pm (America/Detroit)",
   "review_notes": {
     "plan": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra out of usage: weekly limit used up until Wed 10:25, same provider as the author",
     "spec": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra out of usage: weekly limit used up until Wed 10:25, same provider as the author"
@@ -74,8 +75,8 @@
   "skipped": [],
   "small": false,
   "stage": "build",
-  "status": "in-review",
-  "updated": "2026-11-10T12:22:50-05:00",
+  "status": "review-error",
+  "updated": "2026-11-10T12:25:34-05:00",
   "verdicts": {
     "plan": "GO",
     "spec": "GO"
