@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "feat/fallback-go",
   "extra_rounds": {},
   "feature": "fallback-go",
@@ -12,7 +14,7 @@
     "worktree": "relay-go"
   },
   "owner_actions": [],
-  "pr": null,
+  "pr": 32,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -21,15 +23,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-11-09T22:56:28-05:00",
+  "status": "in-review",
+  "updated": "2026-11-09T23:01:47-05:00",
   "verdicts": {}
 }
 ---
