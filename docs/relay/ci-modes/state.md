@@ -6,7 +6,6 @@
   "branch": "feat/ci-modes",
   "extra_rounds": {},
   "feature": "ci-modes",
-  "handed_over_from": "e2663922-7743-45ce-bf9d-0fd0d7b6c32b",
   "history": {},
   "owner": {
     "provider": "claude",
@@ -34,7 +33,7 @@
   "small": false,
   "stage": "spec",
   "status": "drafting",
-  "updated": "2026-11-10T08:59:36-05:00",
+  "updated": "2026-11-10T08:59:54-05:00",
   "verdicts": {}
 }
 ---
