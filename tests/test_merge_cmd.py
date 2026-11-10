@@ -37,6 +37,13 @@ class MergeCommandTest(test_commands.CommandsTest):  # merge-and-tidy D1 to D5, 
         with open(self.gh_log) as f:
             self.assertIn("relayed by claude session s1 in its conversation with the owner", f.read())
 
+    def test_merge_in_local_mode_needs_a_local_result(self):
+        self.base_config('[build]\nci = "local"\ntest_command = "true"\n')
+        self.assertEqual(self.relay("merge", "7", "--relayed"), 1)
+        self.assertIn("no local test result for", self.last_err)
+        self.assertIn("on this machine; run `relay test`", self.last_err)
+        self.assertEqual(self.merged_calls(), [])
+
     def test_merge_by_slug(self):
         self.assertEqual(self.relay("merge", "tiny", "--relayed"), 0, self.last_err)
         self.assertEqual(len(self.merged_calls()), 1)

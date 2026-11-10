@@ -7,7 +7,7 @@ import tempfile
 import threading
 import time
 
-from . import ciskip, config, freshness, gitops, state
+from . import ciskip, cimode, config, freshness, gitops, localtests, state
 from .errors import RelayError
 
 ACTION_LOCK = threading.Lock()
@@ -222,6 +222,22 @@ def github_repo(repo):
     return match[1]
 
 
+def _require_local_pass(repo, mode, code):
+    cimode.require_command(mode)
+    rec = localtests.read(repo, code, mode.test_command)
+    sha8 = code[:8]
+    status = rec["status"] if rec else None
+    if status == "pass":
+        return
+    if status == "running":
+        raise RelayError(f"tests are running for {sha8} (started {localtests._hhmm(rec.get('started'))})")
+    if status == "fail":
+        raise RelayError(f"tests failed for {sha8}; see {rec['log']}")
+    if status == "stopped":
+        raise RelayError(f"tests stopped without a result for {sha8}; run `relay test`")
+    raise RelayError(f"no local test result for {sha8} on this machine; run `relay test`")
+
+
 def merge_readiness(repo, st, seen):
     if st.get("confirming"):  # a fresh review is still running; a fallback GO alone is a full GO
         raise RelayError("a review is still running")
@@ -240,12 +256,16 @@ def merge_readiness(repo, st, seen):
     if gitops.git(repo, "diff", "--quiet", seen["commit"], seen["pr_head"], "--", ".",
                   f":(exclude,icase){prefix}", check=False).returncode:
         raise RelayError("PR code differs from the published revision")
+    mode = cimode.settings(repo, info["baseRefName"])
+    if mode.mode == "local":  # ci-modes R10: GitHub CI is not read; a local pass for this code and command is
+        _require_local_pass(repo, mode, gitops.code_sha(repo, prefix, seen["commit"]))
+        return info
     ci = gitops.ci_for_code(repo, seen["commit"], prefix)
     if ci == "not-started":
         raise RelayError("GitHub did not start CI for this code (a billing or spending-limit problem); fix it under "
                          "Settings, Billing and plans, rerun CI, then merge")
-    if ci == "none" and not config.load(repo)["build"]["require_ci"]:
-        return info  # a repo without PR CI (require_ci = false) merges on the GO and its local gates
+    if ci == "none" and mode.mode == "none":
+        return info  # a repo without PR CI (ci = none) merges on the GO and its local gates
     if ci != "green":
         raise RelayError(f"CI is {ci}; wait for green")
     return info

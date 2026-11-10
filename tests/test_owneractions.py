@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from relaylib import freshness, gitops, owneractions, state
+from relaylib import cimode, freshness, gitops, localtests, owneractions, state
 from relaylib.errors import RelayError
 from tests import helpers
 
@@ -205,7 +205,7 @@ class OwnerActionsTest(OwnerFixture):
         with mock.patch("relaylib.gitops.ci_for_code", return_value="none"):
             with self.assertRaisesRegex(RelayError, "CI is none"):
                 owneractions.merge_readiness(self.work, self.st, self.seen())
-            with mock.patch("relaylib.config.load", return_value={"build": {"require_ci": False}}):
+            with mock.patch("relaylib.cimode.settings", return_value=cimode.Settings("none", "none", "", 60, "develop")):
                 self.assertEqual(owneractions.merge_readiness(self.work, self.st, self.seen())["number"], 7)
         with mock.patch("relaylib.freshness.check", return_value=(False, "stale GO")):
             with self.assertRaisesRegex(RelayError, "stale"):
@@ -232,6 +232,72 @@ class OwnerActionsTest(OwnerFixture):
         self.assertEqual(ci.call_args.args[1], seen["commit"])
         with open(self.log) as f:
             self.assertIn("pr merge 7 -R owner/project", f.read())
+
+
+class LocalMergeTest(OwnerFixture):  # ci-modes R10
+    CMD = "true"
+
+    def setUp(self):
+        super().setUp()
+        self.ready()
+        self.code = gitops.code_sha(self.work, freshness.bookkeeping_prefix(self.st), self.seen()["commit"])
+        self.local(self.CMD)
+
+    def local(self, command):
+        p = mock.patch("relaylib.cimode.settings",
+                       return_value=cimode.Settings("local", "local", command, 60, "develop"))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def record(self, status, command=None, **extra):
+        command = self.CMD if command is None else command
+        localtests.write(self.work, {"code": self.code, "command": command, "commit": "c", "status": status,
+                                     "exit": 0, "started": 1700000000, "finished": 1700000001, "slug": "demo",
+                                     "branch": "feat/demo", "repo_name": "r", "pid": 0,
+                                     "log": "/x/log", "lock": os.path.join(self.tmp, "lock"), "reason": "", **extra})
+
+    def refused(self):
+        with mock.patch("relaylib.gitops.ci_for_code", side_effect=AssertionError("read GitHub CI")):
+            with self.assertRaises(RelayError) as cm:
+                owneractions.merge_readiness(self.work, self.st, self.seen())
+        return str(cm.exception)
+
+    def test_no_record(self):
+        self.assertEqual(self.refused(), f"no local test result for {self.code[:8]} on this machine; run `relay test`")
+
+    def test_failed_and_stopped(self):
+        self.record("fail")
+        self.assertEqual(self.refused(), f"tests failed for {self.code[:8]}; see /x/log")
+        self.record("stopped")
+        self.assertEqual(self.refused(), f"tests stopped without a result for {self.code[:8]}; run `relay test`")
+
+    def test_running(self):
+        import fcntl
+        self.record("running")
+        os.makedirs(os.path.dirname(localtests.paths(self.work, localtests.key_id(self.code, self.CMD))["lock"]),
+                    exist_ok=True)
+        lock = open(localtests.paths(self.work, localtests.key_id(self.code, self.CMD))["lock"], "a")
+        self.addCleanup(lock.close)
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.assertRegex(self.refused(), rf"^tests are running for {self.code[:8]} \(started \d\d:\d\d\)$")
+
+    def test_empty_command(self):
+        self.local("")
+        self.assertIn("set [build] test_command in docs/relay/config.toml on develop", self.refused())
+
+    def test_pass_merges_even_with_failing_github(self):
+        self.record("pass")
+        with mock.patch("relaylib.gitops.ci_for_code", return_value="failing"):
+            self.assertEqual(owneractions.merge_readiness(self.work, self.st, self.seen())["number"], 7)
+
+    def test_green_github_without_pass_refused(self):  # review focus 4
+        with mock.patch("relaylib.gitops.ci_for_code", return_value="green"):
+            with self.assertRaisesRegex(RelayError, "no local test result"):
+                owneractions.merge_readiness(self.work, self.st, self.seen())
+
+    def test_pass_for_old_command_refused(self):
+        self.record("pass", command="echo old")
+        self.assertIn("no local test result", self.refused())
 
 
 class MergeAndTidyTest(OwnerFixture):  # merge-and-tidy D3 to D7

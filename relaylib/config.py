@@ -196,8 +196,6 @@ def load(repo_root=None, timed=True):
             _merge(cfg, data)
             if (cfg.get("build") or {}).get("skip_ci") not in SKIP_CI:
                 raise RelayError(f"{path}: [build] skip_ci must be auto or never")
-    # Derived until the gate reads cimode.settings everywhere (plan note N1); removed in Task 6.
-    cfg["build"]["require_ci"] = cfg["build"].get("ci") == "pr"
     if timed:  # a temporary table wins over the owner's and the repo's tables until it ends (models-tab D3)
         from . import reviewtables  # reviewtables imports config at module level
         for author, table in reviewtables.read()[0].items():
