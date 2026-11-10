@@ -118,10 +118,10 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(RelayError, "review.<author>"):
             config.set_role(self.hub, "review", "auto")
 
-    def test_sonnet_is_the_first_claude_fallback(self):
+    def test_fable_is_the_first_claude_fallback(self):
         os.environ["RELAY_CONFIG"] = os.path.join(self.tmp, "none.toml")      # built-in defaults only
         self.assertEqual([f"{p.provider}:{p.model}" for p in config.review_preferences(config.load(), "claude")],
-                         ["codex:gpt-6-astra", "claude:claude-sonnet-5", "claude:claude-fable-5-2"])
+                         ["codex:gpt-6-astra", "claude:claude-fable-5-2", "claude:claude-sonnet-5"])
 
     def test_validate_reviewers_one_rule_set(self):
         self.assertEqual(config.validate_reviewers([" codex:gpt-6-astra@xhigh", "", "claude:claude-fable-5-2"]),

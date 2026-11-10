@@ -266,7 +266,7 @@ class CommandsTest(unittest.TestCase):
             self.enqueue_codex("GO")
         os.environ["FAKE_SLEEP"] = "5"                  # every reviewer hangs
         self.assertEqual(self.relay("submit"), 2)
-        self.assertEqual(len(open(self.log).read().splitlines()), 6)   # codex, sonnet, fable: twice each
+        self.assertEqual(len(open(self.log).read().splitlines()), 6)   # codex, fable, sonnet: twice each
         self.assertIn("timed out twice", self.last_err)
         self.assertTrue(self.st()["retried"])
         self.assertTrue(os.path.exists(self.review("spec-1.codex.error.md")))
@@ -979,7 +979,7 @@ done
         self.assertEqual(self.relay("submit"), 0, self.last_err)
         call = json.loads(open(self.log).read().splitlines()[-1])
         self.assertEqual(call["provider"], "claude")
-        self.assertIn("claude-sonnet-5", call["argv"])        # the first Claude fallback
+        self.assertIn("claude-fable-5-2", call["argv"])       # the first Claude fallback
         st = self.st()
         self.assertIn("fallback", st["review_notes"]["spec"])
         self.assertIn("same provider", st["review_notes"]["spec"])
