@@ -48,11 +48,17 @@
   "repo": "relay-go",
   "retried": false,
   "review_notes": {
+    "plan": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra out of usage: weekly limit used up until Wed 10:25, same provider as the author",
     "spec": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra out of usage: weekly limit used up until Wed 10:25, same provider as the author"
   },
   "reviewed": {
     "build": null,
-    "plan": null,
+    "plan": {
+      "inputs": {
+        "plan": "ad91cf58802866b2a94a9178d77b506bfc2c39fe7e569d655416ad1c3838c214",
+        "spec": "95cd81ee2cbe512efdf1bae7b07ba4803425a7a40fec1707079429d3108762a7"
+      }
+    },
     "spec": {
       "inputs": {
         "spec": "95cd81ee2cbe512efdf1bae7b07ba4803425a7a40fec1707079429d3108762a7"
@@ -65,10 +71,11 @@
   },
   "skipped": [],
   "small": false,
-  "stage": "plan",
-  "status": "in-review",
-  "updated": "2026-11-10T10:44:41-05:00",
+  "stage": "build",
+  "status": "drafting",
+  "updated": "2026-11-10T10:47:51-05:00",
   "verdicts": {
+    "plan": "GO",
     "spec": "GO"
   }
 }
