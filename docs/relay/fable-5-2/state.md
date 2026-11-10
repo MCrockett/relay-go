@@ -21,17 +21,17 @@
   "repo": "relay-go",
   "retried": false,
   "review_notes": {
-    "build": "fallback: claude:claude-sonnet-5 because codex:gpt-6-astra out of usage: 5-hour limit used up until Mon 22:51, same provider as the author"
+    "build": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra out of usage: 5-hour limit used up until Mon 22:51, same provider as the author"
   },
   "reviewed": {
     "build": {
       "base_ref": "origin/develop",
       "base_sha": "3f7842e3da686550213760a7bb47d9f22b75fa9f",
-      "head": "84834634448f8cc775c51f0289c44b8ac47b893c",
+      "head": "5ad4d6b1ad172bcf2a27513b5ca01d6c7969942d",
       "inputs": {
         "idea": "cf6cf2197229e22c3d786bc2835a2559795e389d5bfa867e772fc2106f677bdf"
       },
-      "merge": "ff5c5dace132486db63d74c2b5fe36bb2e234b833fd06320d2928f5136f84e30"
+      "merge": "1af06b6c6c264123c28308be48f61b173fd2249caf2fa5d9dcc69aa06a5acea0"
     },
     "plan": null,
     "spec": null
@@ -46,7 +46,7 @@
   "small": true,
   "stage": "build",
   "status": "ready-to-merge",
-  "updated": "2026-11-09T20:30:20-05:00",
+  "updated": "2026-11-09T21:28:29-05:00",
   "verdicts": {
     "build": "GO"
   }
