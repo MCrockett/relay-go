@@ -229,3 +229,22 @@ Covers: R22 (every task's tests together), R5 and R6 (the full suite's existing 
 ## Rollout (after the owner merges; not part of the build review)
 
 - Deploy as usual (`tools/deploy_check.py`, fast-forward the live folder). Then, with the owner, change `~/.relay/config.toml` from `require_ci = false` to `ci = "release"` (Q4) and tell them the repos `needs_command` listed (R21).
+
+## Build notes from the plan review (round 1 GO)
+
+These amend the tasks above; where they conflict, these win.
+
+- N1 (order). Task 1 keeps a derived `cfg["build"]["require_ci"]` (true when `ci == "pr"`) so commands.py and owneractions.py keep working until Tasks 4 to 6 replace every read. Task 6 removes the derived key. Each task's "full suite" step must pass.
+- N2 (D9). `relay test` reports an existing pass and needs `--again` to rerun; `--wait` is refused in an agent session. Both are deliberate refinements of spec D9 (spec review note) and the README says so.
+- N3 (R13). The runner calls `cleanup` before `run`, not after. Add tests: a leftover worktree under `test-runs/` whose key is not live is removed; a live run's record survives cleanup.
+- N4 (R16). Add asks tests for stopped, not run and no test command.
+- N5 (waiting_on_owner). While tests run, no merge ask is emitted and the row is not waiting on the owner; the dashboard still shows the feature with a disabled merge reason from `merge_readiness`. Test it through `status.with_asks`.
+- N6 (R17). The runner's ready-to-merge notification on a pass also checks the feature's build GO is fresh for the tested code (`freshness.check` against the state on `origin/<branch>`, at the tested commit); a stale GO sends nothing.
+- N7 (R17 order). In `review_current`, read the test record after `c.save` publishes the GO.
+- N8 (R7). `ready_draft` calls `cimode.require_command` first in local mode, so a draft is not marked ready before submit refuses.
+- N9 (test hygiene). Tests that spawn runners set `RELAY_CONFIG`, `RELAY_HOME` and `RELAY_NOTIFY_BIN` (or the repo's existing notify override) to temp values before `start`, and stop live `sleep` runners in `tearDown`.
+- N10 (snapshot). In local mode the feature detail view in `relaylib/ui/snapshot.py` shows the tests flag instead of the GitHub CI result.
+- N11 (scan cost). `status.tests_flag` is computed only for build-stage features that are not done, and reuses a `pr_info` already fetched for the row.
+- N12 (deploycheck). `needs_command` also lists repos whose base config sets `ci` to `local` or `release` with no `test_command`.
+- N13 (message). The "this PR has no CI checks" message at commands.py:162 says `set [build] ci = "none"` instead of `require_ci = false`.
+- N14 (non-Python check). Before submit, run one local test start against a non-Python repo under the projects root (read-only: a throwaway temp clone) to confirm its runner finds tests under `<common>/relay/test-runs/`; record the result in the PR body. If it finds none, stop and tell the owner.
