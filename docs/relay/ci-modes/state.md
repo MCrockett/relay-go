@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/ci-modes",
   "extra_rounds": {},
   "feature": "ci-modes",
@@ -29,9 +31,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-11-09T23:52:07-05:00",
+  "updated": "2026-11-09T23:52:19-05:00",
   "verdicts": {}
 }
 ---
