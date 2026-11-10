@@ -2,6 +2,7 @@
 {
   "authors": {
     "idea": "claude",
+    "plan": "claude",
     "spec": "claude"
   },
   "branch": "feat/ci-modes",
@@ -36,6 +37,10 @@
     {
       "action": "owner joined spec",
       "at": "2026-11-10T10:35:08-05:00"
+    },
+    {
+      "action": "owner joined plan",
+      "at": "2026-11-10T10:44:41-05:00"
     }
   ],
   "pr": null,
@@ -55,13 +60,14 @@
     }
   },
   "rounds": {
+    "plan": 1,
     "spec": 2
   },
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "drafting",
-  "updated": "2026-11-10T10:41:37-05:00",
+  "status": "in-review",
+  "updated": "2026-11-10T10:44:41-05:00",
   "verdicts": {
     "spec": "GO"
   }
