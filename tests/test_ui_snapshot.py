@@ -802,10 +802,10 @@ class ReviewersTest(unittest.TestCase):
 
     def test_reviewers_object(self):
         from relaylib import reviewtables
-        reviewtables.save("claude", "timed", ["claude:claude-fable-5-1"], "23:59", "owner")
+        reviewtables.save("claude", "timed", ["claude:claude-fable-5-2"], "23:59", "owner")
         r = snapshot.reviewers()
         claude = r["authors"]["claude"]
-        self.assertEqual([e["id"] for e in claude["entries"]], ["claude:claude-fable-5-1"])
+        self.assertEqual([e["id"] for e in claude["entries"]], ["claude:claude-fable-5-2"])
         self.assertEqual([e["id"] for e in claude["permanent"]], ["codex:gpt-6-astra@high"])
         self.assertTrue(claude["until"] and claude["until_label"])
         self.assertRegex(claude["until_iso"], r"T23:59[-+]\d\d:\d\d$")

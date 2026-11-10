@@ -53,14 +53,14 @@ class TotalsTest(unittest.TestCase):
 
     def test_two_models_on_one_feature_and_stage_split_in_feature_models(self):
         attributed = [dict(turn(100, model=m), provider="claude", session="S1", repo="r", slug="a", stage="build",
-                           minutes=1) for m in ("claude-opus-5-5", "claude-fable-5-1")]
+                           minutes=1) for m in ("claude-opus-5-5", "claude-fable-5-2")]
         got = writerusage.totals(attributed, 86400, now=300)
         self.assertEqual(len(got["features"]), 1)
         self.assertEqual([r["name"] for r in got["feature_models"]],
-                         ["r · a · build (claude) · claude:claude-fable-5-1",
+                         ["r · a · build (claude) · claude:claude-fable-5-2",
                           "r · a · build (claude) · claude:claude-opus-5-5"])
         self.assertEqual(got["feature_models"][0]["feature"], "r · a · build (claude)")
-        self.assertEqual(got["feature_models"][0]["model"], "claude:claude-fable-5-1")
+        self.assertEqual(got["feature_models"][0]["model"], "claude:claude-fable-5-2")
 
     def test_unattributed_by_provider(self):
         attributed = [dict(turn(100), provider="codex", session="C1", repo=None, slug=None, stage=None, minutes=2)]

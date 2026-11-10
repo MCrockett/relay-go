@@ -370,14 +370,14 @@ class ServerTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"RELAY_CONFIG": cfg, "RELAY_ROOT": root}), \
                 mock.patch.object(self.cache, "refresh") as refresh:
             seen = snapshot.reviewers()["revision"]
-            body = {"author": "claude", "table": "timed", "entries": ["claude:claude-fable-5-1@high"],
+            body = {"author": "claude", "table": "timed", "entries": ["claude:claude-fable-5-2@high"],
                     "until": "23:59", "seen": seen}
             code, text = self.request("/api/roles", "POST", body)
             self.assertEqual(code, 200, text)
             result = json.loads(text)
             self.assertIn("until", result["message"])
             self.assertEqual(result["reviewers"]["authors"]["claude"]["entries"][0]["id"],
-                             "claude:claude-fable-5-1@high")
+                             "claude:claude-fable-5-2@high")
             self.assertGreaterEqual(refresh.call_count, 1)
             code, text = self.request("/api/roles", "POST", body)                       # seen is now stale
             self.assertEqual(code, 409, text)

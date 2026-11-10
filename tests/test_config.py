@@ -71,11 +71,11 @@ class ConfigTest(unittest.TestCase):
 
 
     def test_set_a_review_preference_list(self):
-        config.set_role(self.hub, "review.claude", "codex:gpt-6-astra@high, claude:claude-fable-5-1")
+        config.set_role(self.hub, "review.claude", "codex:gpt-6-astra@high, claude:claude-fable-5-2")
         prefs = config.review_preferences(config.load(), "claude")
         self.assertEqual([(p.provider, p.model) for p in prefs],
-                         [("codex", "gpt-6-astra"), ("claude", "claude-fable-5-1")])
-        self.assertIn('claude = ["codex:gpt-6-astra@high", "claude:claude-fable-5-1"]', open(self.hub).read())
+                         [("codex", "gpt-6-astra"), ("claude", "claude-fable-5-2")])
+        self.assertIn('claude = ["codex:gpt-6-astra@high", "claude:claude-fable-5-2"]', open(self.hub).read())
 
     def test_a_bad_review_preference_is_rejected(self):
         with self.assertRaises(RelayError):
@@ -105,10 +105,10 @@ class ConfigTest(unittest.TestCase):
     def test_editing_the_shipped_config_keeps_it_valid(self):
         import shutil
         shutil.copy(os.path.join(config.RELAY_HOME_DIR, "config.example.toml"), self.hub)
-        config.set_role(self.hub, "review.claude", "claude:claude-fable-5-1")
+        config.set_role(self.hub, "review.claude", "claude:claude-fable-5-2")
         config.set_role(self.hub, "reviewer.claude", "claude-opus-5-5")
         cfg = config.load()  # would raise TOMLDecodeError on a duplicated table
-        self.assertEqual([p.model for p in config.review_preferences(cfg, "claude")], ["claude-fable-5-1"])
+        self.assertEqual([p.model for p in config.review_preferences(cfg, "claude")], ["claude-fable-5-2"])
         self.assertEqual(config.reviewer_model(cfg, "claude").model, "claude-opus-5-5")
         text = open(self.hub).read()
         self.assertEqual(text.count("[review.prefer]"), 1)
@@ -121,11 +121,11 @@ class ConfigTest(unittest.TestCase):
     def test_sonnet_is_the_first_claude_fallback(self):
         os.environ["RELAY_CONFIG"] = os.path.join(self.tmp, "none.toml")      # built-in defaults only
         self.assertEqual([f"{p.provider}:{p.model}" for p in config.review_preferences(config.load(), "claude")],
-                         ["codex:gpt-6-astra", "claude:claude-sonnet-5", "claude:claude-fable-5-1"])
+                         ["codex:gpt-6-astra", "claude:claude-sonnet-5", "claude:claude-fable-5-2"])
 
     def test_validate_reviewers_one_rule_set(self):
-        self.assertEqual(config.validate_reviewers([" codex:gpt-6-astra@xhigh", "", "claude:claude-fable-5-1"]),
-                         ["codex:gpt-6-astra@xhigh", "claude:claude-fable-5-1"])
+        self.assertEqual(config.validate_reviewers([" codex:gpt-6-astra@xhigh", "", "claude:claude-fable-5-2"]),
+                         ["codex:gpt-6-astra@xhigh", "claude:claude-fable-5-2"])
         for bad, why in ((["gemini:pro"], "provider"), (["codex:"], "empty"), ([], "at least one"),
                          (["codex:a@High"], "lowercase"), (["codex:a@very high"], "lowercase"),
                          (["codex:a@low", "codex:a@high"], "twice")):

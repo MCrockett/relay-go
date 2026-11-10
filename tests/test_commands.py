@@ -1055,10 +1055,10 @@ done
     def test_roles_until_shows_temporary_then_permanent_and_ends(self):  # R1, R5, R6
         with self.owner_env():
             self.assertEqual(self.relay("roles", "set", "review.claude", "codex:gpt-6-astra"), 0, self.last_err)
-            self.assertEqual(self.relay("roles", "set", "review.claude", "claude:claude-fable-5-1",
+            self.assertEqual(self.relay("roles", "set", "review.claude", "claude:claude-fable-5-2",
                                         "--until", "23:59"), 0, self.last_err)
             self.assertEqual(self.relay("roles"), 0, self.last_err)
-            self.assertRegex(self.last_out, r"review\.claude\s+claude:claude-fable-5-1\s+temporary until \w{3} 23:59")
+            self.assertRegex(self.last_out, r"review\.claude\s+claude:claude-fable-5-2\s+temporary until \w{3} 23:59")
             self.assertRegex(self.last_out, r"then codex:gpt-6-astra")
             self.assertEqual(self.relay("roles", "set", "build", "claude:x", "--until", "23:59"), 1)
             self.assertIn("only review tables", self.last_err)
@@ -1329,7 +1329,7 @@ done
     def test_a_picked_reviewer_can_send_the_build_back(self):
         self.fallback_build_go()
         self.enqueue_claude("NO-GO", ["app.py:1 - a real bug"])
-        result = self.request(reviewer="claude:claude-fable-5-1")
+        result = self.request(reviewer="claude:claude-fable-5-2")
         self.assertTrue(result["ok"], result["message"])
         self.assertIn("back to the author", result["message"])
         st = self.published()
@@ -2405,7 +2405,7 @@ class CostTest(unittest.TestCase):
                                     "turns": turns, "input": 1000, "cached": 900, "output": 50, "minutes": 2.5,
                                     "cached_share": 90.0}
         writing = {"0.5": {"features": [], "models": [],
-                           "feature_models": [row("claude:claude-fable-5-1", 2), row("claude:claude-opus-5-5", 3)],
+                           "feature_models": [row("claude:claude-fable-5-2", 2), row("claude:claude-opus-5-5", 3)],
                            "unattributed": {"claude": {"turns": 4, "input": 10, "cached": 0, "output": 1, "minutes": 1.0}}},
                    "unreadable": [{"provider": "claude", "session": "abcdef1234567", "reason": "log not found"}],
                    "notes": ["usage cache not saved"]}
@@ -2416,7 +2416,7 @@ class CostTest(unittest.TestCase):
         text = out.getvalue()
         self.assertIn("no reviewer runs", text)
         self.assertLess(text.index("no reviewer runs"), text.index("WRITING"))
-        for piece in ("claude:claude-fable-5-1", "claude:claude-opus-5-5", "unattributed claude: 4 turns",
+        for piece in ("claude:claude-fable-5-2", "claude:claude-opus-5-5", "unattributed claude: 4 turns",
                       "unreadable claude session abcdef12: log not found", "note: usage cache not saved"):
             self.assertIn(piece, text)
         self.assertEqual(text.count(feature), 2)                         # the full name, on each model's row
