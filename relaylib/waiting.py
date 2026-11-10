@@ -30,6 +30,23 @@ def _stale(flags):
     return any(f.startswith("stale") for f in flags)
 
 
+def _merge_asks(row, flags, at):
+    """The merge ask, or what stands in for it while a local-mode feature's tests are not green (ci-modes R16).
+    While tests run there is no ask: nothing waits on the owner (the merge button shows why it is disabled)."""
+    local = next((f for f in flags if f.startswith("tests: local,")), "")
+    rest = local[len("tests: local,"):].strip()
+    sha8 = rest.rsplit(" ", 1)[-1]
+    if rest.startswith("green") or not local:
+        return [_ask("merge", f"Merge PR #{row.get('pr')}" if row.get("pr") else "Merge the PR", at)]
+    if rest.startswith("running"):
+        return []
+    if rest.startswith("failed"):
+        return [_ask("tests", f"Tests failed at {sha8}: fix, push and relay review, or relay test for a flake", at)]
+    if rest.startswith("no test command"):
+        return [_ask("tests", 'Set [build] test_command in docs/relay/config.toml on the base branch, or set ci = "none"', at)]
+    return [_ask("tests", "Run tests: relay test", at)]  # stopped, or not run for this code
+
+
 def asks(row, st, health, record, stuck_reason):
     """Asks in D4's order. `health` may come from local activity alone, with no hook record (F2)."""
     flags = row.get("flags") or []
@@ -44,7 +61,7 @@ def asks(row, st, health, record, stuck_reason):
         why = (st or {}).get("review_error")
         out.append(_ask("review-failed", f"Review failed: {why}" if why else "Review failed", at))
     if status == "ready-to-merge" and not _stale(flags):
-        out.append(_ask("merge", f"Merge PR #{row.get('pr')}" if row.get("pr") else "Merge the PR", at))
+        out += _merge_asks(row, flags, at)
     if any(f.startswith("handoff") and "relay take" in f for f in flags):
         out.append(_ask("take", "Take the handoff: open a session and run relay take", at))
     if (health or {}).get("kind") == "attention":

@@ -155,6 +155,70 @@ class LocalTestsTest(unittest.TestCase):
         self.assertEqual(localtests.flag({"status": "stopped"}, c), "tests: local, stopped at abcdef12")
         self.assertEqual(localtests.flag(None, c), "tests: local, not run for abcdef12")
 
+    def notified(self):
+        log = os.path.join(self.tmp, "notify.log")
+        return open(log).read() if os.path.exists(log) else ""
+
+    def use_notify_log(self):
+        log = os.path.join(self.tmp, "notify.log")
+        notify = helpers.fake_bin(self.tmp, "logging-notify",
+                                  f"#!/bin/sh\necho \"$@\" >> '{log}'\n")
+        p = mock.patch.dict(os.environ, {"RELAY_NOTIFY_BIN": notify})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def publish_state(self, stage="build", status="ready-to-merge"):
+        sh(self.repo, "git", "checkout", "-q", "-b", "feat/x")
+        st = state.new_state("x", "r", "claude", "feat/x")
+        st.update(stage=stage, status=status, pr=7)
+        state.write_state(state.state_path(self.repo, "x"), st)
+        sh(self.repo, "git", "add", "-A")
+        sh(self.repo, "git", "commit", "-q", "-m", "state")
+        sh(self.repo, "git", "push", "-q", "origin", "feat/x")
+        sh(self.repo, "git", "checkout", "-q", "develop")
+
+    def rec(self, status):
+        return {"code": self.code, "command": "true", "commit": self.commit, "status": status, "slug": "x",
+                "branch": "feat/x", "repo_name": "r", "log": "/tmp/x.log"}
+
+    def test_runner_fail_notifies(self):  # R17
+        self.use_notify_log()
+        localtests.notify_finished(self.repo, self.rec("fail"))
+        self.assertIn("relay: r tests failed", self.notified())
+        self.assertIn(f"x: {self.code[:8]}, log /tmp/x.log", self.notified())
+        localtests.notify_finished(self.repo, self.rec("stopped"))
+        self.assertEqual(self.notified().count("tests failed"), 1)
+
+    def test_runner_pass_after_go_notifies_ready(self):  # R17, N6
+        self.use_notify_log()
+        self.publish_state()
+        with mock.patch("relaylib.freshness.check", return_value=(True, "ok")):
+            localtests.notify_finished(self.repo, self.rec("pass"))
+        self.assertIn("relay: r ready to merge", self.notified())
+
+    def test_runner_pass_with_stale_go_or_no_go_sends_nothing(self):
+        self.use_notify_log()
+        self.publish_state()
+        with mock.patch("relaylib.freshness.check", return_value=(False, "code changed since the GO")):
+            localtests.notify_finished(self.repo, self.rec("pass"))
+        self.assertEqual(self.notified(), "")
+        sh(self.repo, "git", "push", "-q", "origin", "--delete", "feat/x")
+        localtests.notify_finished(self.repo, self.rec("pass"))
+        self.assertEqual(self.notified(), "")
+
+    def test_pass_before_go_sends_nothing(self):
+        self.use_notify_log()
+        self.publish_state(status="in-review")
+        localtests.notify_finished(self.repo, self.rec("pass"))
+        self.assertEqual(self.notified(), "")
+
+    def test_run_survives_a_removed_calling_worktree(self):
+        temp = os.path.join(self.tmp, "wt")
+        sh(self.repo, "git", "worktree", "add", "--detach", temp, self.commit)
+        localtests.start(temp, self.commit, self.code, "true", 5, "feat", "feat/x")
+        sh(self.repo, "git", "worktree", "remove", "--force", temp)
+        self.assertTrue(wait_for(lambda: (localtests.read(self.repo, self.code, "true") or {}).get("status") == "pass"))
+
     def test_write_is_atomic(self):
         rec = {"code": self.code, "command": "true", "status": "pass"}
         localtests.write(self.repo, rec)

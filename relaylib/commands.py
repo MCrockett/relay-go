@@ -175,6 +175,29 @@ def require_pr_ready(c):
     return info
 
 
+PR_CI_LINE = "CI: read it with `gh pr view $pr --json statusCheckRollup`. Do not assume it passed."
+
+
+def ci_line(c, pr):
+    """The build prompt's CI line (ci-modes D13): in local mode the gate is a local run relay tracks itself."""
+    ci = getattr(c, "ci", None)
+    if ci is not None and ci.mode == "local":
+        return (f"Tests: this repo's gate is a local test run of `{ci.test_command}` that relay tracks separately. "
+                "Do not judge GitHub CI.")
+    return PR_CI_LINE.replace("$pr", str(pr or ""))
+
+
+def pending_local_tests(c, head):
+    """In local mode, the status word of the test record for HEAD's code when it is not a pass, else None
+    (ci-modes R17). Read after the GO is saved, so a run that ended meanwhile is seen."""
+    ci = getattr(c, "ci", None)
+    if ci is None or ci.mode != "local":
+        return None
+    code = gitops.code_sha(c.root, freshness.bookkeeping_prefix(c.st), head)
+    rec = localtests.read(c.root, code, ci.test_command)
+    return None if rec and rec["status"] == "pass" else (rec["status"] if rec else "not run")
+
+
 def to_draft(root, pr):
     """ci-on-submit D3: turn the PR back into a draft, so fix pushes start no CI. A failure is one warning."""
     try:
@@ -555,7 +578,7 @@ def review_current(c, args, candidates=None, discard_errors=False, announce=True
     if stage == "build":
         info = gate or require_pr_ready(c)
         base_ref = "origin/" + info["baseRefName"]
-        ctx.update(base_ref=base_ref, base_sha=gitops.head_sha(c.root, base_ref))
+        ctx.update(base_ref=base_ref, base_sha=gitops.head_sha(c.root, base_ref), ci_line=ci_line(c, st.get("pr")))
         if info["baseRefName"] == "main":
             name = "release"
     snap = freshness.snapshot(c.root, st, base_ref)
@@ -635,8 +658,11 @@ def review_current(c, args, candidates=None, discard_errors=False, announce=True
         if st["status"] == "ready-to-merge":
             c.after_publish(lambda: events.queue("go", st["repo"], c.slug, stage, st.get("pr"),
                                                  events.go_text(st["repo"], c.slug, st.get("pr"), reviewer)))
+        waiting_on = pending_local_tests(c, head) if st["status"] == "ready-to-merge" else None  # after the save (N7)
         if not announce:  # the caller announces once its result is published
             pass
+        elif waiting_on:  # the runner sends the ready notification when its pass arrives (R17)
+            print(f"relay: build GO from {reviewer}. Tests are {waiting_on}; merge waits for a pass.")
         elif st["status"] == "ready-to-merge":
             notify.send(c.cfg, f"relay: {st['repo']} ready to merge",
                         f"{c.slug}: PR #{st.get('pr')} passed {reviewer}'s review")

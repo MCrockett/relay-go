@@ -13,7 +13,7 @@ class PromptsTest(unittest.TestCase):
 
     def test_every_prompt_renders(self):
         ctx = {"feature_dir": "d", "round": 1, "prior_ids": "none", "pr": 3, "base_ref": "origin/develop",
-               "base_sha": "a", "head_sha": "b", "small": "no"}
+               "base_sha": "a", "head_sha": "b", "small": "no", "ci_line": "c"}
         for name in ("spec", "plan", "build", "release"):
             self.assertNotIn("$", prompts.render(name, ctx).split("## Owner rules")[0], name)
 

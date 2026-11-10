@@ -100,7 +100,7 @@ def feature(repo, slug, records=None):
     handoff_path = next((p for p in files if p.lower().endswith("/handoff.md")), None)
     handoff = gitops.show(repo, commit, handoff_path) if handoff_path else None
     actions, reasons = [] if archived else owneractions.applicable(st), {}
-    info, ci = {"number": st.get("pr"), "state": "none", "url": None}, "none"
+    info, ci, tests = {"number": st.get("pr"), "state": "none", "url": None}, "none", None
     if st.get("pr") and (archived or merged.is_done(repo, st)):  # merged: nothing on GitHub can change
         info["state"], ci = "MERGED", "merged"
         try:
@@ -116,7 +116,12 @@ def feature(repo, slug, records=None):
                 info["url"] = f"https://github.com/{owneractions.github_repo(repo)}/pull/{st['pr']}"
             except RelayError:
                 pass
-            ci = gitops.ci_for_code(repo, commit, f"{state.RELAY_DIR}/")
+            tests = status.tests_flag(repo, st, info)
+            if tests and tests.startswith("tests: local,"):  # local mode: the gate is the test run, not GitHub CI
+                ci = "local"
+            else:
+                tests = None
+                ci = gitops.ci_for_code(repo, commit, f"{state.RELAY_DIR}/")
         except (RelayError, OSError) as e:
             info["state"], ci = "unknown", "unknown"
             reasons["merge"] = f"GitHub is unknown: {e}"
@@ -162,7 +167,7 @@ def feature(repo, slug, records=None):
     stuck = (waiting.stuck_reason(repo, commit, slug, st.get("stage"))
              if st.get("status") == "waiting-owner" else None)
     return {"repo_path": repo, "feature": slug, "seen": seen, "state": st, "actions": actions,
-            "action_reasons": reasons, "pr_info": info, "ci": ci, "timeline": timeline, "reviews": reviews,
+            "action_reasons": reasons, "pr_info": info, "ci": ci, "tests": tests, "timeline": timeline, "reviews": reviews,
             "owner_actions": st.get("owner_actions", []), "owner_session": st.get("owner"),
             "handoff": {"path": handoff_path, "text": handoff, "published": True} if handoff is not None else None,
             "local_handoff": local, "local_changes": changed,
@@ -387,7 +392,7 @@ def _enrich(row, errors, fetched, records):
         if gitops.current_branch(repo) == seen["branch"]:
             published["flags"] = [f for f in published["flags"] if "not checked out" not in f]
         row.update(published)
-        for key in ("seen", "actions", "action_reasons", "pr_info", "ci", "review_job", "health", "review_choices",
+        for key in ("seen", "actions", "action_reasons", "pr_info", "ci", "tests", "review_job", "health", "review_choices",
                     "review_default", "review_defaults"):  # the card's Request review opens the same dialog as the details
             row[key] = detail[key]
         asks = waiting.asks(row, st, detail["health"], detail["session_record"], detail["stuck_reason"])

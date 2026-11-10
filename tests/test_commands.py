@@ -514,6 +514,40 @@ class CommandsTest(unittest.TestCase):
         self.assertEqual(self.relay("review"), 0, self.last_err)
         self.assertEqual(self.wait_record("true")["status"], "pass")
 
+    def test_go_without_pass_holds_ready_notification(self):  # R17, N7
+        self.small_change()
+        self.base_config('[build]\nci = "local"\ntest_command = "sleep 3"\n')
+        self.pr()
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertEqual(self.st("tiny")["status"], "ready-to-merge")
+        self.assertNotIn("ready to merge", self.notifications())
+        self.assertIn("Tests are running; merge waits for a pass.", self.last_out)
+
+    def test_go_with_pass_sends_ready_notification(self):
+        self.small_change()
+        self.base_config('[build]\nci = "local"\ntest_command = "true"\n')
+        self.pr()
+        self.assertEqual(self.relay("test"), 0, self.last_err)
+        self.wait_record("true")
+        self.enqueue_codex("GO")
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.assertIn("ready to merge", self.notifications())
+
+    def test_build_prompt_ci_line_local_and_pr(self):
+        from argparse import Namespace
+        from relaylib import cimode, prompts
+        local = Namespace(ci=cimode.Settings("local", "local", "make test", 60, "develop"))
+        pr = Namespace(ci=cimode.Settings("pr", "pr", "", 60, "develop"))
+        self.assertIn("local test run of `make test` that relay tracks separately. Do not judge GitHub CI.",
+                      commands.ci_line(local, 5))
+        self.assertIn("gh pr view 5 --json statusCheckRollup", commands.ci_line(pr, 5))
+        ctx = {"feature_dir": "d", "round": 1, "prior_ids": "none", "pr": 5, "base_ref": "o", "base_sha": "a",
+               "head_sha": "b", "small": "no", "ci_line": commands.ci_line(local, 5)}
+        text = prompts.render("build", ctx)
+        self.assertIn("5. Tests: this repo's gate is a local test run", text)
+        self.assertNotIn("statusCheckRollup", text)
+
     def test_concurrent_gates_one_run(self):  # review focus 2
         import threading
         from argparse import Namespace

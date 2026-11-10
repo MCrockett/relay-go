@@ -72,6 +72,55 @@ class StatusTest(StatusFixture):
         self.assertTrue(rows[0]["waiting_on_owner"])
         self.assertEqual((rows[1]["round"], rows[1]["owner"]), (1, "codex"))
 
+    def settings(self, mode, command="make test"):
+        from relaylib import cimode
+        return cimode.Settings(mode, mode, command, 60, "develop")
+
+    def test_status_tests_flag_each_text(self):  # R15
+        st = {"stage": "build", "pr": 5}
+        info = {"baseRefName": "develop", "headRefOid": "abcdef1234567890"}
+        cases = [("pr", "make test", None, "tests: GitHub CI"),
+                 ("none", "", None, "tests: not gated (ci = none)"),
+                 ("local", "", None, "tests: local, no test command"),
+                 ("local", "make test", {"status": "pass"}, "tests: local, green at abcdef12"),
+                 ("local", "make test", {"status": "running", "started": 0}, None),
+                 ("local", "make test", {"status": "fail"}, "tests: local, failed at abcdef12"),
+                 ("local", "make test", {"status": "stopped"}, "tests: local, stopped at abcdef12"),
+                 ("local", "make test", None, "tests: local, not run for abcdef12")]
+        for mode, command, rec, want in cases:
+            with mock.patch("relaylib.cimode.settings", return_value=self.settings(mode, command)), \
+                    mock.patch("relaylib.gitops.code_sha", return_value="abcdef1234567890"), \
+                    mock.patch("relaylib.localtests.read", return_value=rec):
+                got = status.tests_flag("/x", st, info)
+            if want is None:
+                self.assertRegex(got, r"^tests: local, running since \d\d:\d\d$")
+            else:
+                self.assertEqual(got, want)
+
+    def test_status_tests_flag_is_unknown_on_error_and_absent_outside_build(self):
+        self.assertIsNone(status.tests_flag("/x", {"stage": "spec", "pr": 5}))
+        self.assertIsNone(status.tests_flag("/x", {"stage": "build"}))
+        with mock.patch("relaylib.cimode.settings", side_effect=status.RelayError("bad base config")):
+            self.assertEqual(status.tests_flag("/x", {"stage": "build", "pr": 5}, {"baseRefName": "develop"}),
+                             "tests: unknown (bad base config)")
+
+    def test_checkouts_skip_test_runs(self):  # R14
+        root = self.repo("alpha", {}, commit=True)
+        helpers.sh(root, "git", "worktree", "add", "-q", "--detach", os.path.join(self.tmp, "real-wt"))
+        run = os.path.join(root, ".git", "relay", "test-runs", "abc-1")
+        helpers.sh(root, "git", "worktree", "add", "-q", "--detach", run)
+        found = [os.path.realpath(p) for p in status.checkouts(self.projects)]
+        self.assertIn(os.path.realpath(os.path.join(self.tmp, "real-wt")), found)
+        self.assertNotIn(os.path.realpath(run), found)
+
+    def test_running_tests_leave_the_row_not_waiting_on_the_owner(self):  # N5
+        row = {"repo": "r", "feature": "f", "stage": "build", "status": "ready-to-merge", "pr": 5,
+               "flags": ["tests: local, running since 10:02"], "checkout": self.tmp}
+        st = {"stage": "build", "status": "ready-to-merge", "updated": "2026-10-07T10:00:00-04:00"}
+        out = status.with_asks(row, st, "HEAD", [], time.time())
+        self.assertEqual(out["asks"], [])
+        self.assertFalse(out["waiting_on_owner"])
+
     def test_merged_pr_is_done_and_hidden(self):
         self.repo("alpha", {"one": {"stage": "build", "status": "ready-to-merge", "pr": 5,
                                     "owner_actions": [{"action": "override go"}]}})

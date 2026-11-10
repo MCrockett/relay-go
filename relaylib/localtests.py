@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 
-from . import config, gitops
+from . import config, gitops, notify
 from .errors import RelayError
 from .state import RELAY_DIR
 
@@ -209,7 +209,10 @@ def _start_locked(repo, commit, code, command, timeout_min, slug, branch, kid):
                 pass
     since = _now() - 1  # a record older than this belongs to an earlier run
     env = dict(os.environ, **{ENV_COMMAND: command, ENV_TIMEOUT: str(timeout_min)})
-    subprocess.Popen([sys.executable, "-m", "relaylib.localtests", "run", repo, commit, code, slug, branch],
+    anchor = repo  # a linked worktree may be temporary (a dashboard review); the runner uses the main checkout
+    if not os.path.isdir(os.path.join(repo, ".git")):
+        anchor = gitops.worktrees(repo)[0]
+    subprocess.Popen([sys.executable, "-m", "relaylib.localtests", "run", anchor, commit, code, slug, branch],
                      cwd=config.RELAY_HOME_DIR, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, start_new_session=True)
     _wait_started(repo, kid, since)
@@ -306,8 +309,37 @@ def _main(argv):
 
 
 def notify_finished(repo, rec):
-    """Hook for the Task 7 notifications (R17): a fail sends "needs you"; a pass after a fresh GO sends
-    "ready to merge". Nothing is sent yet."""
+    """R17: a fail sends "needs you"; a pass sends "ready to merge" when the feature's build GO on origin is still
+    fresh for the tested code (N6). A stopped run sends nothing. Never raises."""
+    try:
+        cfg = config.load(repo)
+        name, slug, sha8 = rec.get("repo_name"), rec.get("slug"), (rec.get("code") or "")[:8]
+        if rec.get("status") == "fail":
+            notify.send(cfg, f"relay: {name} tests failed", f"{slug}: {sha8}, log {rec.get('log')}")
+        elif rec.get("status") == "pass" and _go_is_fresh(repo, rec):
+            st = _origin_state(repo, rec)
+            notify.send(cfg, f"relay: {name} ready to merge",
+                        f"{slug}: PR #{st.get('pr')} passed review and local tests")
+    except Exception:
+        pass
+
+
+def _origin_state(repo, rec):
+    from . import state
+    text = gitops.show(repo, f"origin/{rec.get('branch')}", f"{RELAY_DIR}/{rec.get('slug')}/state.md")
+    return state.parse_state(text) if text else None
+
+
+def _go_is_fresh(repo, rec):
+    from . import freshness
+    try:
+        gitops.fetch(repo)
+    except RelayError:
+        pass  # the last fetch is what there is
+    st = _origin_state(repo, rec)
+    if not st or st.get("stage") != "build" or st.get("status") != "ready-to-merge":
+        return False
+    return freshness.check(repo, st, "build", ref=rec["commit"])[0]
 
 
 if __name__ == "__main__":

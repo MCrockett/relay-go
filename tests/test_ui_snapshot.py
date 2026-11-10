@@ -220,6 +220,22 @@ class SnapshotTest(unittest.TestCase):
         with open(os.path.join(os.path.dirname(snapshot.__file__), "page.html")) as f:
             self.assertIn("not started by GitHub (billing)", f.read())
 
+    def test_local_mode_detail_shows_the_tests_flag_not_github_ci(self):          # ci-modes N10
+        self.st.update(stage="build", status="ready-to-merge", pr=7)
+        self.save()
+        head = helpers.sh(self.work, "git", "rev-parse", "HEAD").strip()
+        reply = {"state": "OPEN", "number": 7, "baseRefName": "develop", "headRefOid": head, "statusCheckRollup": []}
+        with mock.patch("relaylib.gitops.gh_json", return_value=reply), \
+                mock.patch("relaylib.status.tests_flag", return_value="tests: local, failed at abc12345"), \
+                mock.patch("relaylib.gitops.ci_for_code", side_effect=AssertionError("GitHub CI was read")), \
+                mock.patch("relaylib.owneractions.merge_readiness", side_effect=RelayError("tests failed for abc12345")), \
+                mock.patch("relaylib.freshness.check", return_value=(True, "")):
+            detail = snapshot.feature(self.work, "demo")
+        self.assertEqual(detail["action_reasons"]["merge"], "tests failed for abc12345")
+        self.assertEqual(detail["tests"], "tests: local, failed at abc12345")
+        with open(os.path.join(os.path.dirname(snapshot.__file__), "page.html")) as f:
+            self.assertIn("d.tests||", f.read())
+
     def test_request_review_is_offered_for_an_open_ready_build_and_hidden_while_one_runs(self):
         self.st.update(stage="build", status="ready-to-merge", pr=7)
         self.save()
