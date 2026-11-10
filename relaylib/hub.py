@@ -183,7 +183,7 @@ def _feature_wanted(row):
         return False
     flags = row.get("flags") or []
     return bool(row.get("waiting_on_owner") or row.get("status") in ("waiting-owner", "ready-to-merge")
-                or any(f.startswith(("stale", "fallback GO")) for f in flags))
+                or any(f.startswith("stale") for f in flags))
 
 
 def _feature_session(row):
@@ -204,7 +204,7 @@ def _feature_item(row):
     return {"kind": "feature", "repo": row.get("repo"), "repo_path": row.get("repo_path"), "slug": row.get("feature"),
             "stage": row.get("stage"), "status": row.get("status"),
             "asks": [{"kind": a.get("kind"), "text": a.get("text")} for a in row.get("asks") or []],
-            "flags": [f for f in row.get("flags") or [] if f.startswith(("stale", "fallback GO"))],
+            "flags": [f for f in row.get("flags") or [] if f.startswith("stale")],
             "wait_since": row.get("wait_since"), "pr": row.get("pr"), "pr_state": info.get("state"),
             "ci": row.get("ci"), "actions": list(row.get("actions") or []), "session": session,
             "answer_here": bool(session and session["state"] == "permission"), "seen": row.get("seen")}

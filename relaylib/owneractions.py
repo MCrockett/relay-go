@@ -223,8 +223,8 @@ def github_repo(repo):
 
 
 def merge_readiness(repo, st, seen):
-    if st.get("confirm_with") or st.get("confirming"):
-        raise RelayError("fallback confirmation is still pending")
+    if st.get("confirming"):  # a fresh review is still running; a fallback GO alone is a full GO
+        raise RelayError("a review is still running")
     if seen.get("github_error"):
         raise RelayError(f"GitHub is unknown: {seen['github_error']}")
     info = gitops.pr_info(repo, st.get("pr"))

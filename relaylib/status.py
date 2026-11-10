@@ -5,7 +5,7 @@ import json
 import os
 import time
 
-from . import (agentask, availability, config, freshness, gitops, health, merged, othersessions, ownership, sessions,
+from . import (agentask, config, freshness, gitops, health, merged, othersessions, ownership, sessions,
                state, waiting)
 from .errors import RelayError
 
@@ -94,16 +94,7 @@ def _row(repo_dir, slug, st, fetched):
     if not done:  # fallback and same-provider reviews stay visible until the feature is merged
         for reviewed, note in (st.get("review_notes") or {}).items():
             flags.append(f"{reviewed} review: {note}")
-    confirm_pending = False
-    if status == "ready-to-merge" and st.get("confirm_with") and not done:
-        out, why = availability.blocked(st.get("confirm_provider"), config.load()["limits"])
-        if out:  # the first choice cannot confirm yet: merging on the fallback GO is the owner's call
-            flags.append(f"fallback GO: confirm with {st['confirm_with']} before merging "
-                         f"({st.get('confirm_provider')} out of usage: {why}; your call)")
-        else:    # it can: the agent runs relay review first
-            confirm_pending = True
-            flags.append(f"fallback GO: confirm with {st['confirm_with']} before merging (agent: relay review)")
-    stale = any(f.startswith("stale") for f in flags) or confirm_pending
+    stale = any(f.startswith("stale") for f in flags)
     return {
         "repo": st.get("repo"), "feature": slug, "stage": "done" if done else st.get("stage"), "status": status,
         "round": (st.get("rounds") or {}).get(st.get("stage"), 0),
@@ -152,16 +143,7 @@ def _remote_row(checkout, ref, slug, st, has_handoff, fetched):
     if not done:  # fallback and same-provider reviews stay visible until the feature is merged
         for reviewed, note in (st.get("review_notes") or {}).items():
             flags.append(f"{reviewed} review: {note}")
-    confirm_pending = False
-    if status == "ready-to-merge" and st.get("confirm_with") and not done:
-        out, why = availability.blocked(st.get("confirm_provider"), config.load()["limits"])
-        if out:  # the first choice cannot confirm yet: merging on the fallback GO is the owner's call
-            flags.append(f"fallback GO: confirm with {st['confirm_with']} before merging "
-                         f"({st.get('confirm_provider')} out of usage: {why}; your call)")
-        else:    # it can: the agent runs relay review first
-            confirm_pending = True
-            flags.append(f"fallback GO: confirm with {st['confirm_with']} before merging (agent: relay review)")
-    stale = any(f.startswith("stale") for f in flags) or confirm_pending
+    stale = any(f.startswith("stale") for f in flags)
     return {
         "repo": st.get("repo"), "feature": slug, "stage": "done" if done else st.get("stage"), "status": status,
         "round": (st.get("rounds") or {}).get(st.get("stage"), 0),

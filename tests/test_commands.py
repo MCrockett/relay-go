@@ -1204,41 +1204,40 @@ done
         self.assertEqual(self.relay("submit"), 0, self.last_err)
         return availability
 
-    def test_a_fallback_build_go_waits_for_the_first_choice_to_confirm(self):
+    def test_a_fallback_build_go_is_a_full_go(self):
         availability = self.fallback_build_go()
-        st = self.st("tiny")
-        self.assertEqual((st["status"], st["confirm_with"]), ("ready-to-merge", "codex:gpt-6-astra"))
-        self.assertIn("reviewed by fallback", self.notifications())
-        (ev,) = self.hub_events()                          # merge-and-tidy D9: the event says it is a fallback
-        self.assertIn("a fallback reviewer; codex:gpt-6-astra still confirms it", ev["text"])
-        row = self.status_row("tiny")                      # codex still out: the owner decides
-        self.assertTrue(row["waiting_on_owner"])
-        self.assertTrue(any("confirm with codex:gpt-6-astra" in f and "out of usage" in f for f in row["flags"]))
-        calls = len(open(self.log).read().splitlines())
-        self.assertEqual(self.relay("review"), 0, self.last_err)
-        self.assertIn("still out", self.last_out)          # nothing to run yet
-        self.assertEqual(len(open(self.log).read().splitlines()), calls)
-        availability.record_out("codex", until=0)          # codex is back
-        row = self.status_row("tiny")
-        self.assertFalse(row["waiting_on_owner"])          # the agent confirms first
-        self.enqueue_codex("GO")
-        self.assertEqual(self.relay("review"), 0, self.last_err)
-        self.assertEqual(json.loads(open(self.log).read().splitlines()[-1])["provider"], "codex")
         st = self.st("tiny")
         self.assertEqual(st["status"], "ready-to-merge")
         self.assertNotIn("confirm_with", st)
-        with open(self.review("build-1r.codex.md", "tiny")) as f:
-            self.assertTrue(state.parse_state(f.read())["confirmation"])
+        self.assertIn("fallback", st["review_notes"]["build"])          # still recorded
+        self.assertIn("ready to merge", self.notifications())
+        (ev,) = self.hub_events()
+        self.assertIn("waiting for the owner's merge", ev["text"])
+        row = self.status_row("tiny")
+        self.assertTrue(row["waiting_on_owner"])
+        self.assertFalse(any("confirm with" in f for f in row["flags"]))
+        self.assertTrue(any(f.startswith("build review: fallback") for f in row["flags"]))
+        availability.record_out("codex", until=0)                         # codex is back: nothing to confirm
+        calls = len(open(self.log).read().splitlines())
+        self.assertEqual(self.relay("review"), 0, self.last_err)
+        self.assertIn("still fresh", self.last_out)
+        self.assertEqual(len(open(self.log).read().splitlines()), calls)
         self.assertTrue(self.status_row("tiny")["waiting_on_owner"])
 
-    def test_the_confirmation_can_block_on_what_the_fallback_missed(self):
-        availability = self.fallback_build_go()
-        availability.record_out("codex", until=0)
-        self.enqueue_codex("NO-GO", ["app.py:1 - a bug the fallback reviewer missed"])   # untagged, new
+    def test_a_go_clears_a_confirmation_an_older_relay_stored(self):
+        from argparse import Namespace
+        self.fallback_build_go()
+        c = commands.Ctx(Namespace(feature="tiny"))
+        c.st["confirm_with"], c.st["confirm_provider"] = "codex:gpt-6-astra", "codex"
+        c.save("test: a state written by an older relay")
+        self.assertFalse(any("confirm with" in f for f in self.status_row("tiny")["flags"]))
+        helpers.write(os.path.join(self.work, "app.py"), "print('changed')\n")
+        helpers.sh(self.work, "git", "commit", "-qam", "code after the GO")
+        helpers.sh(self.work, "git", "push", "-q")
+        self.pr()
+        self.enqueue_claude("GO")
         self.assertEqual(self.relay("review"), 0, self.last_err)
-        st = self.st("tiny")
-        self.assertEqual(st["status"], "changes-requested")
-        self.assertNotIn("confirm_with", st)
+        self.assertNotIn("confirm_with", self.st("tiny"))
 
     def test_a_stale_fallback_go_is_re_reviewed_even_while_the_first_choice_is_out(self):
         self.fallback_build_go()                              # codex stays out
@@ -1251,18 +1250,7 @@ done
         self.assertEqual(self.relay("review"), 0, self.last_err)
         self.assertIn("stale", self.last_out)
         self.assertEqual(len(open(self.log).read().splitlines()), calls + 1)
-        self.assertEqual(self.st("tiny")["confirm_with"], "codex:gpt-6-astra")   # still a fallback GO
-
-    def test_a_confirmation_that_errors_stays_independent_on_retry(self):
-        availability = self.fallback_build_go()
-        availability.record_out("codex", until=0)
-        os.environ["FAKE_RC"] = "1"
-        self.enqueue_codex("GO")
-        self.assertEqual(self.relay("review"), 2)                    # the confirmation run errors
-        del os.environ["FAKE_RC"]
-        self.enqueue_codex("NO-GO", ["app.py:1 - a bug the fallback reviewer missed"])   # untagged, new
-        self.assertEqual(self.relay("review"), 0, self.last_err)
-        self.assertEqual(self.st("tiny")["status"], "changes-requested")
+        self.assertNotIn("confirm_with", self.st("tiny"))                       # a fallback GO, and a full one
 
     def test_explicit_reviewers_run_alone_and_can_leave_state_untouched(self):
         from argparse import Namespace
@@ -1303,7 +1291,7 @@ done
         branch = self.st(slug)["branch"]
         return state.parse_state(gitops.show(self.work, f"origin/{branch}", f"{state.RELAY_DIR}/{slug}/state.md"))
 
-    def test_an_owner_request_confirms_the_fallback_go_and_publishes_by_lease(self):
+    def test_an_owner_request_after_a_fallback_go_publishes_by_lease(self):
         availability = self.fallback_build_go()
         availability.record_out("codex", until=0)
         before = self.head()
@@ -1321,7 +1309,7 @@ done
         st = self.published()
         self.assertEqual(st["status"], "ready-to-merge")
         self.assertNotIn("confirm_with", st)
-        self.assertIn("owner requested a build review from codex:gpt-6-astra (confirms the fallback GO)",
+        self.assertIn("owner requested a build review from codex:gpt-6-astra (default)",
                       [a["action"] for a in st["owner_actions"]])
         self.assertEqual(self.head(), before)                                     # the session is untouched
         self.assertEqual(len(helpers.sh(self.work, "git", "worktree", "list").splitlines()), 1)

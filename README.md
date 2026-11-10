@@ -113,7 +113,7 @@ Two ways to make one:
     relay merge <pr number|feature>   merge a ready feature's PR, then tidy this machine
 
 `relay merge` checks the PR the way the dashboard's Merge button does: the build GO is fresh for the PR's code,
-CI is green, the PR head is the reviewed code, and no fallback confirmation is pending. If anything fails, it
+CI is green, the PR head is the reviewed code, and no review is still running. If anything fails, it
 refuses and changes nothing. Otherwise it merges with a merge commit (GitHub deletes the branch) and tidies the
 copy of the repo on this machine:
 
@@ -161,7 +161,7 @@ At about 60% context, or when switching provider or machine: `relay handoff`, fi
 
 ## Reviewer preferences
 
-`[review.prefer]` in `~/.relay/config.toml` lists, for each stage author (claude, codex, owner), the reviewers in order of preference. relay uses the first one that is available. A provider is skipped while its weekly limit is used up (read from Codex's own logs) or after a review failed on a usage limit (remembered until the reset: for Codex, the weekly reset when its weekly limit is used up, otherwise the 5-hour reset from its logs, or an hour when neither is known; for Claude, an hour, with the reason naming the limit and its reset when the status line shows it), or while its 5-hour window is at 100% until that window resets; the next entry reviews in the same `relay submit`. Fallback and same-provider reviews are recorded in the review file, the commit and `relay status`. Reviewers run at `effort` (medium) each round, at `final_effort` (high) in the last round before a stage comes to you, and at `release_effort` (high) for a PR to main; an entry like `codex:gpt-6-astra@low` pins its own effort. A same-provider review on purpose (`--same-provider`) is your call: an agent passes it only when you ask, with `--relayed`, and it is recorded as your decision. `relay roles` shows the table and who is out right now; `relay roles set review.claude "codex:gpt-6-astra@high, claude:claude-fable-5-2"` changes it for every repo.
+`[review.prefer]` in `~/.relay/config.toml` lists, for each stage author (claude, codex, owner), the reviewers in order of preference. relay uses the first one that is available. A provider is skipped while its weekly limit is used up (read from Codex's own logs) or after a review failed on a usage limit (remembered until the reset: for Codex, the weekly reset when its weekly limit is used up, otherwise the 5-hour reset from its logs, or an hour when neither is known; for Claude, an hour, with the reason naming the limit and its reset when the status line shows it), or while its 5-hour window is at 100% until that window resets; the next entry reviews in the same `relay submit`. Fallback and same-provider reviews are recorded in the review file, the commit and `relay status`. A fallback GO is a full GO: the owner can merge on it, and relay does not ask the first choice to confirm it. Reviewers run at `effort` (medium) each round, at `final_effort` (high) in the last round before a stage comes to you, and at `release_effort` (high) for a PR to main; an entry like `codex:gpt-6-astra@low` pins its own effort. A same-provider review on purpose (`--same-provider`) is your call: an agent passes it only when you ask, with `--relayed`, and it is recorded as your decision. `relay roles` shows the table and who is out right now; `relay roles set review.claude "codex:gpt-6-astra@high, claude:claude-fable-5-2"` changes it for every repo.
 
 Changing a table is your decision: `relay roles set` and `relay roles end` run in your own terminal, and an agent passes them on only when you ask, with `--relayed` (logged with its session). A list may not name the same model twice, and an effort is one lowercase word (`low`, `high`, `xhigh`). Add `--until 23:00` (or an ISO date-time with a zone, at most 7 days away) to make a change temporary: relay keeps it in `~/.relay/review-until.json` and returns to your normal table by itself when the time passes, even if nothing is running then. A temporary table wins over a project's own `docs/relay/config.toml`, and setting the normal table leaves it in place. `relay roles end review.claude` (or `all`) ends it early. Every change is logged in `~/.relay/roles-log.jsonl`, and `relay roles` shows the latest one per author.
 
@@ -298,11 +298,11 @@ an immediate rebuild. A failed rebuild keeps the last good snapshot and reports 
 Every action asks for confirmation and is bound to the published commit, stage, status and session you
 saw. A changed revision is refused with fresh details. Overrides and release use temporary detached
 worktrees and a fast-forward push, leaving the session's checkout and branch untouched. Sessions pick
-up published owner actions before submit, review, handoff, take and override. Merge also requires a fresh GO,
-confirmed fallback reviews and green CI, and passes the displayed PR head to GitHub's merge guard.
+up published owner actions before submit, review, handoff, take and override. Merge also requires a fresh GO
+and green CI, and passes the displayed PR head to GitHub's merge guard.
 
 Request review, in a feature's detail, runs a fresh build review for a PR that is ready to merge or whose
-review errored. It defaults to the reviewer a fallback GO is waiting for, or the author's first choice, and
+review errored. It defaults to the author's first choice, and
 you can pick any reviewer from the preference table. It runs in the background in a temporary worktree and
 publishes only if the branch has not moved; a NO-GO sends the build back to the author like any review, and
 a failed request changes nothing. `relay override review` does the same from your terminal.

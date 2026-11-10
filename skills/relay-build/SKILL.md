@@ -28,4 +28,4 @@ One open PR per repo: `relay new` refuses while another feature has an open, unm
 
 Never pass `--same-provider` on your own: relay picks the reviewer from the preference table, including a fallback when a provider is out of usage. Only if the owner asks for a same-provider review in this conversation, pass `--same-provider --relayed`.
 
-If the build GO came from a fallback reviewer (relay status says "confirm with ..."), run `relay review` once that reviewer is available again, before telling the owner the PR is ready. While it is still out, tell the owner the PR has a fallback GO; merging on it is their call.
+A build GO from a fallback reviewer is a full GO. Report it like any other GO: tell the owner the PR is ready, with no offer to wait for the first choice.

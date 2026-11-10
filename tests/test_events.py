@@ -105,7 +105,7 @@ class EventsTest(unittest.TestCase):
         self.assertEqual(events.waiting_text("relay-go", "m", "spec", None, "3 rounds"),
                          "relay: relay-go m spec review stopped: 3 rounds; waiting on the owner.")
         self.assertIn("PR #4 (m)", events.go_text("relay-go", "m", 4, "codex"))
-        self.assertIn("fallback", events.go_text("relay-go", "m", 4, "claude", confirm_with="codex:gpt"))
+        self.assertIn("fallback", events.go_text("relay-go", "m", 4, "claude, fallback"))
         self.assertIn("released to main", events.merged_text("r", "m", 4, "main"))
         self.assertIn("review failed", events.waiting_text("r", "m", "build", 4, "boom", error=True))
 

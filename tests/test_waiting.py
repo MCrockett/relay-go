@@ -48,12 +48,11 @@ class AsksTest(unittest.TestCase):
     def test_merge_fallback_and_stale(self):
         s = st("ready-to-merge")
         self.assertEqual(texts(waiting.asks(row("ready-to-merge", pr=6), s, None, None, None)), ["Merge PR #6"])
-        call = "fallback GO: confirm with codex before merging (codex out of usage; your call)"
-        self.assertEqual(texts(waiting.asks(row("ready-to-merge", [call], pr=6), s, None, None, None)),
-                         ["Merge PR #6 · " + call])
-        for stale in ("stale build GO: code changed since the GO",
-                      "fallback GO: confirm with codex before merging (agent: relay review)"):
-            self.assertEqual(waiting.asks(row("ready-to-merge", [stale], pr=6), s, None, None, None), [])
+        note = "build review: fallback: claude:claude-fable-5-2 because codex out of usage"
+        self.assertEqual(texts(waiting.asks(row("ready-to-merge", [note], pr=6), s, None, None, None)),
+                         ["Merge PR #6"])                                  # a fallback GO is a full GO
+        self.assertEqual(waiting.asks(row("ready-to-merge", ["stale build GO: code changed since the GO"], pr=6),
+                                      s, None, None, None), [])
 
     def test_take_a_handoff(self):
         asks = waiting.asks(row(flags=["handoff (over 24h old): open a session and run `relay take`"]), st(), None, None, None)
