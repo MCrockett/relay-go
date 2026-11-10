@@ -49,15 +49,9 @@ def option(spec, limits):
 
 
 def default(cfg, st, options=None, stage="build"):
-    """(choice id or None, label, note): for build, the pending confirmation's reviewer; else the first choice
-    for the stage's author."""
+    """(choice id or None, label, note): the first choice for the stage's author."""
     options = choices(cfg) if options is None else options
-    note, pending = "", st.get("confirm_with") if stage == "build" else None
-    if pending:  # stored as provider:model, without effort
-        match = next((o for o in options if f"{o['provider']}:{o['model']}" == pending), None)
-        if match:
-            return match["id"], "confirms the fallback GO", ""
-        note = f"the pending reviewer {pending} is no longer configured"
+    note = ""
     first = next(iter(config.review_preferences(cfg, (st.get("authors") or {}).get(stage))), None)
     if first and spec_id(first) in {o["id"] for o in options}:
         return spec_id(first), "default", note
@@ -265,7 +259,7 @@ def _run(job):
             for stage in chain:
                 machine.mark_for_refresh(c.st, stage)
                 machine.start_cycle(c.st, stage, int(job.cfg["limits"]["max_rounds"]))  # one round past the old ceiling
-                c.st["confirming"] = True  # an independent fresh review, exactly like a fallback confirmation
+                c.st["confirming"] = True  # an independent fresh review
                 review_current(c, argparse.Namespace(), candidates=[spec], discard_errors=True, announce=False)
                 if not c.saved:
                     raise RelayError("the review did not record a verdict")

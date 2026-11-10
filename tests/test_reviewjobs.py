@@ -23,19 +23,14 @@ class ChoicesTest(unittest.TestCase):
         self.assertEqual((options[2]["effort"], options[2]["available"]), ("high", True))
         self.assertEqual(reviewjobs.choices({"limits": {}, "review": {}}), [])
 
-    def test_a_pending_confirmation_is_the_default(self, _):
-        st = {"authors": {"build": "codex"}, "confirm_with": "claude:claude-sonnet-5"}
-        self.assertEqual(reviewjobs.default(CFG, st), ("claude:claude-sonnet-5", "confirms the fallback GO", ""))
-
-    def test_a_removed_confirmation_falls_through_to_the_first_choice(self, _):
-        st = {"authors": {"build": "claude"}, "confirm_with": "codex:gpt-5"}
-        self.assertEqual(reviewjobs.default(CFG, st),
-                         ("codex:gpt-6-astra", "default", "the pending reviewer codex:gpt-5 is no longer configured"))
+    def test_an_old_pending_confirmation_does_not_pick_the_reviewer(self, _):
+        st = {"authors": {"build": "codex"}, "confirm_with": "claude:claude-sonnet-5@high"}   # left by an older relay
+        self.assertEqual(reviewjobs.default(CFG, st), ("claude:claude-sonnet-5@high", "default", ""))
 
     def test_the_default_follows_the_stage_author(self, _):
         st = {"authors": {"spec": "claude", "build": "codex"}, "confirm_with": "claude:claude-sonnet-5"}
         self.assertEqual(reviewjobs.default(CFG, st, stage="spec"), ("codex:gpt-6-astra", "default", ""))
-        self.assertEqual(reviewjobs.default(CFG, st)[0], "claude:claude-sonnet-5")       # build: the confirmation
+        self.assertEqual(reviewjobs.default(CFG, st)[0], "claude:claude-sonnet-5@high")  # build: codex's first choice
         self.assertEqual(reviewjobs.default(CFG, {"authors": {"plan": "codex"}}, stage="plan")[0],
                          "claude:claude-sonnet-5@high")
 

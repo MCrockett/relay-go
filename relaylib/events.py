@@ -104,10 +104,7 @@ def pr_label(repo, slug, pr):
     return f"{repo} PR #{pr} ({slug})" if pr else f"{repo} {slug}"
 
 
-def go_text(repo, slug, pr, reviewer, confirm_with=None):
-    if confirm_with:
-        return (f"relay: {pr_label(repo, slug, pr)} has a build GO from {reviewer}, a fallback reviewer; "
-                f"{confirm_with} still confirms it before it counts.")
+def go_text(repo, slug, pr, reviewer):
     return f"relay: {pr_label(repo, slug, pr)} has a build GO from {reviewer}; waiting for the owner's merge."
 
 

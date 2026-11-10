@@ -454,16 +454,6 @@ def cmd_review(args):
     if st["status"] == "ready-to-merge":
         info = gitops.pr_info(c.root, st["pr"])
         fresh, why = freshness.check(c.root, st, "build", "origin/" + info["baseRefName"])
-        if fresh and st.get("confirm_with"):  # a fresh fallback GO: the first choice confirms it when it can
-            out, reason = availability.blocked(st["confirm_provider"], c.cfg["limits"])
-            if out:
-                print(f"relay: the fallback GO stands for now; {st['confirm_with']} is still out ({reason}). "
-                      "Run relay review again when it is back, or the owner may merge on the fallback GO.")
-                return 0
-            print(f"relay: confirming the fallback GO with {st['confirm_with']} (an independent review)")
-            machine.mark_for_refresh(st, "build")
-            st["confirming"] = True
-            return review_current(c, args)
         if fresh:
             print("relay: the build GO is still fresh; nothing to do")
             return 0
@@ -497,8 +487,8 @@ def review_current(c, args, candidates=None, discard_errors=False, announce=True
     known = machine.known_ids(st, stage)
     past = machine.history(st, stage)
     required = [] if refresh or not past else list(past[-1].blocking_ids)
-    # A confirmation of a fallback GO is an independent fresh review: the first choice may block on anything
-    # the fallback missed, so none of the later-round rules (prior accounting, tagged new findings) apply.
+    # An owner-requested review is an independent fresh review: the reviewer may block on anything earlier
+    # reviewers missed, so none of the later-round rules (prior accounting, tagged new findings) apply.
     independent = bool(st.get("confirming"))  # kept until a valid verdict, so a retry after an error stays independent
     if independent:
         required, known = [], None
@@ -583,30 +573,22 @@ def review_current(c, args, candidates=None, discard_errors=False, announce=True
     st.pop("confirming", None)  # a valid verdict ends the confirmation
     if v.verdict == "GO":
         machine.apply_go(st, snap)
-        if stage == "build" and skipped:  # the first choice must still confirm this GO before it counts
-            first = candidates[0]
-            st["confirm_with"], st["confirm_provider"] = f"{first.provider}:{first.model}", first.provider
-        elif stage == "build":
+        if stage == "build":  # a fallback GO is a full GO (owner, 2026-11-09); clear what older relays stored
             st.pop("confirm_with", None)
             st.pop("confirm_provider", None)
         c.save(f"relay: {stage} GO ({reviewer})")
         if st["status"] == "ready-to-merge":
             c.after_publish(lambda: events.queue("go", st["repo"], c.slug, stage, st.get("pr"),
-                                                 events.go_text(st["repo"], c.slug, st.get("pr"), reviewer,
-                                                                st.get("confirm_with"))))
+                                                 events.go_text(st["repo"], c.slug, st.get("pr"), reviewer)))
         if not announce:  # the caller announces once its result is published
             pass
-        elif st["status"] == "ready-to-merge" and st.get("confirm_with"):
-            notify.send(c.cfg, f"relay: {st['repo']} reviewed by fallback",
-                        f"{c.slug}: PR #{st.get('pr')} got a GO from {provider}; {st['confirm_with']} confirms it "
-                        "when available")
         elif st["status"] == "ready-to-merge":
             notify.send(c.cfg, f"relay: {st['repo']} ready to merge",
                         f"{c.slug}: PR #{st.get('pr')} passed {reviewer}'s review")
         nxt = "the owner merges the PR" if st["status"] == "ready-to-merge" else f"write {st['stage']}"
         print(f"relay: {stage} GO from {reviewer}. Next: {nxt}.")
         return 0
-    if stage == "build":  # a NO-GO supersedes any fallback GO that was waiting for confirmation
+    if stage == "build":  # clear what older relays stored for a fallback GO
         st.pop("confirm_with", None)
         st.pop("confirm_provider", None)
     record = RoundRecord(record_round, "NO-GO", [f.id for f in v.blocking], v.prior, head)

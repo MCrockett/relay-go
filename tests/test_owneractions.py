@@ -210,11 +210,11 @@ class OwnerActionsTest(OwnerFixture):
         with mock.patch("relaylib.freshness.check", return_value=(False, "stale GO")):
             with self.assertRaisesRegex(RelayError, "stale"):
                 owneractions.merge(self.work, "demo", self.seen())
-        self.st["confirm_with"] = "claude:reviewer"
+        self.st["confirming"] = True                     # a fresh review is running
         self.save()
         self.publish(self.work)
         self.pr()
-        with self.assertRaisesRegex(RelayError, "confirmation"):
+        with self.assertRaisesRegex(RelayError, "review is still running"):
             owneractions.merge(self.work, "demo", self.seen())
 
     def test_merge_argv_and_working_directory(self):

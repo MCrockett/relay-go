@@ -27,8 +27,7 @@ def _session(record):
 
 
 def _stale(flags):
-    return any(f.startswith("stale") or (f.startswith("fallback GO") and f.endswith("(agent: relay review)"))
-               for f in flags)
+    return any(f.startswith("stale") for f in flags)
 
 
 def asks(row, st, health, record, stuck_reason):
@@ -45,8 +44,7 @@ def asks(row, st, health, record, stuck_reason):
         why = (st or {}).get("review_error")
         out.append(_ask("review-failed", f"Review failed: {why}" if why else "Review failed", at))
     if status == "ready-to-merge" and not _stale(flags):
-        call = [f for f in flags if f.startswith("fallback GO") and f.endswith("your call)")]
-        out.append(_ask("merge", " · ".join([f"Merge PR #{row.get('pr')}" if row.get("pr") else "Merge the PR"] + call), at))
+        out.append(_ask("merge", f"Merge PR #{row.get('pr')}" if row.get("pr") else "Merge the PR", at))
     if any(f.startswith("handoff") and "relay take" in f for f in flags):
         out.append(_ask("take", "Take the handoff: open a session and run relay take", at))
     if (health or {}).get("kind") == "attention":
