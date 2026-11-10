@@ -120,7 +120,7 @@ class RunnerTest(unittest.TestCase):
 
 
     def test_claude_reviewers_get_their_effort(self):
-        cmd = runner.build_command(ModelSpec("claude", "claude-fable-5-1", "medium"), "PROMPT", "/repo")
+        cmd = runner.build_command(ModelSpec("claude", "claude-fable-5-2", "medium"), "PROMPT", "/repo")
         self.assertEqual(cmd[cmd.index("--effort") + 1], "medium")
         self.assertNotIn("--effort", runner.build_command(CLAUDE, "PROMPT", "/repo"))
 

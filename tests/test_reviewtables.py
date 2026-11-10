@@ -59,10 +59,10 @@ class TablesTest(unittest.TestCase):
         return [f"{p.provider}:{p.model}" for p in config.review_preferences(config.load(repo), author)]
 
     def test_timed_table_wins_then_expires_with_nothing_running(self):
-        msg = reviewtables.save("claude", "timed", ["claude:claude-fable-5-1", "codex:gpt-6-astra"], "23:00", "owner")
+        msg = reviewtables.save("claude", "timed", ["claude:claude-fable-5-2", "codex:gpt-6-astra"], "23:00", "owner")
         self.assertIn("until Tue 23:00", msg)
         self.assertIn("then codex:gpt-6-astra", msg)
-        self.assertEqual(self.prefs(), ["claude:claude-fable-5-1", "codex:gpt-6-astra"])
+        self.assertEqual(self.prefs(), ["claude:claude-fable-5-2", "codex:gpt-6-astra"])
         self.assertEqual(oct(os.stat(reviewtables.path()).st_mode & 0o777), "0o600")
         log = os.path.join(self.home, "roles-log.jsonl")
         self.assertEqual(oct(os.stat(log).st_mode & 0o777), "0o600")
@@ -75,22 +75,22 @@ class TablesTest(unittest.TestCase):
         with open(os.path.join(repo, "docs", "relay", "config.toml"), "w") as f:
             f.write('[review.prefer]\nclaude = ["claude:claude-sonnet-5"]\n')
         self.assertEqual(self.prefs(repo=repo), ["claude:claude-sonnet-5"])
-        reviewtables.save("claude", "timed", ["claude:claude-fable-5-1"], "23:00", "owner")
-        self.assertEqual(self.prefs(repo=repo), ["claude:claude-fable-5-1"])
+        reviewtables.save("claude", "timed", ["claude:claude-fable-5-2"], "23:00", "owner")
+        self.assertEqual(self.prefs(repo=repo), ["claude:claude-fable-5-2"])
 
     def test_permanent_set_leaves_a_timed_table_in_place(self):          # R4, D10
-        reviewtables.save("claude", "timed", ["claude:claude-fable-5-1"], "23:00", "owner")
+        reviewtables.save("claude", "timed", ["claude:claude-fable-5-2"], "23:00", "owner")
         msg = reviewtables.save("claude", "permanent", ["claude:claude-sonnet-5"], None, "owner")
         self.assertIn("temporary table still applies until Tue 23:00", msg)
-        self.assertEqual(self.prefs(), ["claude:claude-fable-5-1"])
+        self.assertEqual(self.prefs(), ["claude:claude-fable-5-2"])
         from relaylib import config
         self.assertEqual(config.load(timed=False)["review"]["prefer"]["claude"], ["claude:claude-sonnet-5"])
 
     def test_end_one_all_and_nothing(self):                               # R5
         self.assertEqual(reviewtables.end("codex", "owner"), "no temporary table for codex")
         self.assertEqual(reviewtables.end("all", "owner"), "no temporary tables")
-        reviewtables.save("claude", "timed", ["claude:claude-fable-5-1"], "23:00", "owner")
-        reviewtables.save("owner", "timed", ["claude:claude-fable-5-1"], "23:00", "owner")
+        reviewtables.save("claude", "timed", ["claude:claude-fable-5-2"], "23:00", "owner")
+        reviewtables.save("owner", "timed", ["claude:claude-fable-5-2"], "23:00", "owner")
         self.assertIn("review.claude is back to codex:gpt-6-astra", reviewtables.end("claude", "owner"))
         self.assertEqual(self.prefs(), ["codex:gpt-6-astra"])
         reviewtables.end("all", "owner")
@@ -100,7 +100,7 @@ class TablesTest(unittest.TestCase):
 
     def test_every_change_is_logged_with_who(self):                     # R2a, D9
         reviewtables.save("claude", "permanent", ["claude:claude-sonnet-5"], None, "owner")
-        reviewtables.save("claude", "timed", ["claude:claude-fable-5-1"], "23:00", "claude session s1")
+        reviewtables.save("claude", "timed", ["claude:claude-fable-5-2"], "23:00", "claude session s1")
         self.assertEqual(reviewtables.latest()["claude"]["by"], "claude session s1")
         reviewtables.end("claude", "dashboard")
         latest = reviewtables.latest()["claude"]
@@ -122,15 +122,15 @@ class TablesTest(unittest.TestCase):
             f.write("{oops")
         self.assertEqual(self.prefs(), ["codex:gpt-6-astra"])
         self.assertIn("ignored", reviewtables.read()[1][0])
-        good = {"entries": ["claude:claude-fable-5-1"], "until": NOW + 3600, "set_at": NOW, "by": "owner"}
+        good = {"entries": ["claude:claude-fable-5-2"], "until": NOW + 3600, "set_at": NOW, "by": "owner"}
         with open(reviewtables.path(), "w") as f:
             json.dump({"claude": {**good, "entries": ["gemini:pro"]}, "owner": good}, f)
         tables, problems = reviewtables.read()
         self.assertEqual(list(tables), ["owner"])
         self.assertIn("claude", problems[0])
         self.assertEqual(self.prefs(), ["codex:gpt-6-astra"])
-        self.assertEqual(self.prefs("owner"), ["claude:claude-fable-5-1"])
-        reviewtables.save("codex", "timed", ["claude:claude-fable-5-1"], "23:00", "owner")  # next write replaces it
+        self.assertEqual(self.prefs("owner"), ["claude:claude-fable-5-2"])
+        reviewtables.save("codex", "timed", ["claude:claude-fable-5-2"], "23:00", "owner")  # next write replaces it
         with open(reviewtables.path()) as f:
             self.assertEqual(sorted(json.load(f)), ["codex", "owner"])
 
@@ -139,11 +139,11 @@ class TablesTest(unittest.TestCase):
         with open(self.cfg, "a") as f:
             f.write("# edited by hand\n")
         with self.assertRaises(reviewtables.Stale):
-            reviewtables.save("claude", "timed", ["claude:claude-fable-5-1"], "23:00", "dashboard", seen)
+            reviewtables.save("claude", "timed", ["claude:claude-fable-5-2"], "23:00", "dashboard", seen)
         with self.assertRaises(reviewtables.Stale):
             reviewtables.end("all", "dashboard", seen)
         self.assertFalse(os.path.exists(reviewtables.path()))
-        reviewtables.save("claude", "timed", ["claude:claude-fable-5-1"], "23:00", "dashboard",
+        reviewtables.save("claude", "timed", ["claude:claude-fable-5-2"], "23:00", "dashboard",
                           reviewtables.revision())
 
     def test_a_busy_lock_writes_nothing(self):                           # F4
@@ -153,7 +153,7 @@ class TablesTest(unittest.TestCase):
                 open(os.path.join(self.home, "roles.lock"), "a") as held:
             fcntl.flock(held, fcntl.LOCK_EX)
             with self.assertRaisesRegex(RelayError, "busy, try again"):
-                reviewtables.save("claude", "timed", ["claude:claude-fable-5-1"], "23:00", "dashboard")
+                reviewtables.save("claude", "timed", ["claude:claude-fable-5-2"], "23:00", "dashboard")
         self.assertFalse(os.path.exists(reviewtables.path()))
 
     def test_revision_with_missing_files(self):
@@ -173,5 +173,5 @@ class TablesTest(unittest.TestCase):
     def test_a_loaded_config_is_not_changed_by_a_later_save(self):       # F5
         from relaylib import config
         cfg = config.load()
-        reviewtables.save("claude", "timed", ["claude:claude-fable-5-1"], "23:00", "owner")
+        reviewtables.save("claude", "timed", ["claude:claude-fable-5-2"], "23:00", "owner")
         self.assertEqual(cfg["review"]["prefer"]["claude"], ["codex:gpt-6-astra"])

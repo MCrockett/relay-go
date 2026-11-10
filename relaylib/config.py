@@ -40,9 +40,9 @@ DEFAULTS = {
         "release_effort": "high",     # the build review of a PR to main
         # who reviews, by the stage author's provider; the first available entry wins
         "prefer": {
-            "claude": ["codex:gpt-6-astra", "claude:claude-sonnet-5", "claude:claude-fable-5-1"],
-            "codex": ["claude:claude-sonnet-5", "claude:claude-fable-5-1"],
-            "owner": ["codex:gpt-6-astra", "claude:claude-sonnet-5"],
+            "claude": ["codex:gpt-6-astra", "claude:claude-fable-5-2", "claude:claude-sonnet-5"],
+            "codex": ["claude:claude-fable-5-2", "claude:claude-sonnet-5"],
+            "owner": ["codex:gpt-6-astra", "claude:claude-fable-5-2", "claude:claude-sonnet-5"],
         },
     },
     "notify": {"enabled": True},

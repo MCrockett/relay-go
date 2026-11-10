@@ -422,14 +422,14 @@ class StatusTest(StatusFixture):
 
     def test_a_fallback_review_is_flagged(self):
         self.repo("alpha", {"one": {"stage": "plan", "status": "drafting",
-                                    "review_notes": {"plan": "fallback: claude:claude-fable-5-1 because codex out"}}})
-        self.assertIn("plan review: fallback: claude:claude-fable-5-1 because codex out",
+                                    "review_notes": {"plan": "fallback: claude:claude-fable-5-2 because codex out"}}})
+        self.assertIn("plan review: fallback: claude:claude-fable-5-2 because codex out",
                       status.scan(self.projects)[0]["flags"])
 
     def test_an_earlier_stages_fallback_review_stays_visible(self):
         self.repo("alpha", {"one": {"stage": "plan", "status": "drafting",
-                                    "review_notes": {"spec": "fallback: claude:claude-fable-5-1 because codex out"}}})
-        self.assertIn("spec review: fallback: claude:claude-fable-5-1 because codex out",
+                                    "review_notes": {"spec": "fallback: claude:claude-fable-5-2 because codex out"}}})
+        self.assertIn("spec review: fallback: claude:claude-fable-5-2 because codex out",
                       status.scan(self.projects)[0]["flags"])
 
 if __name__ == "__main__":
