@@ -10,6 +10,17 @@
   "extra_rounds": {},
   "feature": "ci-modes",
   "history": {
+    "build": [
+      {
+        "blocking_ids": [
+          "R1-1"
+        ],
+        "head": "9044c4a126b994e86a00dcc57fabe7f6d45fd874",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ],
     "spec": [
       {
         "blocking_ids": [
@@ -48,8 +59,8 @@
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
-  "review_error": "exit code 1; claude reported an error: You've hit your 5-hour limit \u00b7 resets 1:50pm (America/Detroit)",
   "review_notes": {
+    "build": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra out of usage: weekly limit used up until Wed 10:25, same provider as the author",
     "plan": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra out of usage: weekly limit used up until Wed 10:25, same provider as the author",
     "spec": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra out of usage: weekly limit used up until Wed 10:25, same provider as the author"
   },
@@ -75,9 +86,10 @@
   "skipped": [],
   "small": false,
   "stage": "build",
-  "status": "review-error",
-  "updated": "2026-11-10T12:25:34-05:00",
+  "status": "changes-requested",
+  "updated": "2026-11-10T15:08:28-05:00",
   "verdicts": {
+    "build": "NO-GO",
     "plan": "GO",
     "spec": "GO"
   }
