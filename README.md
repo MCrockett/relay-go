@@ -42,6 +42,39 @@ A PR opened before relay can join it: on the PR's branch, `relay adopt <slug> [-
 
 Reviews continue while they make progress, up to 4 rounds. "Partly fixed" counts as progress. A stage stops and waits on you (with a `reviews/<stage>-stuck.md` summary) only when blocking findings rise, when the count stays the same and a finding the author already tried to fix is marked unresolved, or at round 4. A review you request (Request review, Re-review spec or plan) is independent: its NO-GO goes back to the author for at least one more round, even at round 4, and is not compared with earlier reviewers' findings.
 
+## CI modes
+
+`[build] ci` says how a PR's tests gate it. Set it in `~/.relay/config.toml` for every project or in a project's own `docs/relay/config.toml`. The default is `pr`.
+
+- `pr`: GitHub CI on the PR must be green. This is the old `require_ci = true`.
+- `local`: relay runs the repo's `test_command` on this machine, in the background, and merge needs a recorded pass. GitHub CI is neither required nor read.
+- `release`: `pr` for a PR into `main`, `local` for a PR into any other branch. It fits the policy "tests run locally, GitHub CI runs on releases".
+- `none`: no test gate. This is the old `require_ci = false`, and `relay status` says "tests: not gated (ci = none)".
+
+Two more settings go with it: `test_command` (a shell command, empty by default) and `test_timeout_min` (default 60). relay takes the command only from config, never from AGENTS.md or other docs. A repo whose full suite is slow can name a fast subset. In local mode with no `test_command`, submit, review, `relay test` and merge stop with "set [build] test_command in docs/relay/config.toml on <base>, or set ci = "none"".
+
+A PR's gate reads its settings from the global config plus `docs/relay/config.toml` as it is on the tip of the PR's base branch on origin, never from the PR's own branch or the folder you run in. So every checkout on the machine agrees, and a PR cannot weaken its own gate: a PR that changes the repo config takes effect for later PRs, after it merges. A config that is broken on the base is fixed directly on the base, outside relay.
+
+How a local run works:
+
+- `relay submit` (and every build review, including `relay review` after a GO goes stale) makes sure a run exists for the PR head's code: it starts one in the background unless a pass or a live run is already there, and the review goes on at once. Nothing waits for the tests.
+- The run uses a clean detached checkout of the commit, made under `<git common dir>/relay/test-runs/`, so you can keep editing. It has no gitignored files: the command does its own setup, such as installing dependencies. Output goes to a log. A run past `test_timeout_min` is ended and recorded as a failure.
+- A result is keyed by the code (relay's own bookkeeping commits do not count) and the exact `test_command`. Records and logs live in `<git common dir>/relay/tests/` on this machine only; merging from another machine says to run `relay test` there. relay keeps the newest 20 logs and never removes the record of a feature that is still open.
+- Starting a run for new code stops the feature's older run. A run that is killed or whose machine restarts reads as `stopped`, never as running or passed.
+
+Commands:
+
+    relay test            start a background run for the feature's PR head, or report the existing result
+    relay test --status   print the result, the log path and the reason; start nothing
+    relay test --again    start a new run even over a pass (for a flaky failure, or after a restart)
+    relay test --wait     run in the foreground until the result; for your own terminal, refused in an agent session
+
+`relay test` needs the PR open first. If a result is already a pass it says so and `--again` reruns it (a small change from "always rerun", so an agent that asks twice does not burn a suite run). `relay status` and the dashboard show one flag per feature: `tests: local, green at <sha8>`, `running since <time>`, `failed at <sha8>`, `stopped at <sha8>`, `not run for <sha8>`, or `no test command`. A feature whose tests are not green is not shown as "Merge PR" in the inbox, and the "ready to merge" notification waits for a pass. A failed run sends a "tests failed" notification with the log path.
+
+At a local-mode submit relay warns when a workflow in `.github/workflows/` still runs on `pull_request` to the base branch, because that spends GitHub minutes. It only warns.
+
+Moving from `require_ci`: in each config file, `require_ci = true` now reads as `ci = "pr"` and `require_ci = false` as `ci = "none"`, so a repo file's `require_ci = false` still overrides a global `ci = "release"`. A file that sets both uses `ci` and relay prints one warning. Nothing gains or loses a gate until you change it.
+
 ## CI on relay's commits
 
 relay's own commits (`relay: submit build`, `relay: build GO (codex)` and the like) change only `docs/relay/`, yet each push used to start your repo's whole CI. relay now adds a `[skip ci]` line to the body of such a commit when CI has nothing new to test: origin already has the same code, and GitHub already has a CI result for it. relay's build gate, its review and the dashboard's Merge button read the result from the commit with that code, so nothing waits on the skipped run. A push that carries new code always starts CI.
@@ -113,7 +146,7 @@ Two ways to make one:
     relay merge <pr number|feature>   merge a ready feature's PR, then tidy this machine
 
 `relay merge` checks the PR the way the dashboard's Merge button does: the build GO is fresh for the PR's code,
-CI is green, the PR head is the reviewed code, and no review is still running. If anything fails, it
+CI is green (in `local` mode, a recorded local pass for the PR's code and the base branch's `test_command`, see CI modes), the PR head is the reviewed code, and no review is still running. If anything fails, it
 refuses and changes nothing. Otherwise it merges with a merge commit (GitHub deletes the branch) and tidies the
 copy of the repo on this machine:
 
