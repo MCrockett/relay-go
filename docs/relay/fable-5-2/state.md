@@ -4,6 +4,8 @@
     "build": "claude"
   },
   "branch": "chore/fable-5-2",
+  "confirm_provider": "codex",
+  "confirm_with": "codex:gpt-6-astra",
   "extra_rounds": {},
   "feature": "fable-5-2",
   "history": {},
@@ -18,8 +20,19 @@
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
+  "review_notes": {
+    "build": "fallback: claude:claude-sonnet-5 because codex:gpt-6-astra out of usage: 5-hour limit used up until Mon 22:51, same provider as the author"
+  },
   "reviewed": {
-    "build": null,
+    "build": {
+      "base_ref": "origin/develop",
+      "base_sha": "3f7842e3da686550213760a7bb47d9f22b75fa9f",
+      "head": "84834634448f8cc775c51f0289c44b8ac47b893c",
+      "inputs": {
+        "idea": "cf6cf2197229e22c3d786bc2835a2559795e389d5bfa867e772fc2106f677bdf"
+      },
+      "merge": "ff5c5dace132486db63d74c2b5fe36bb2e234b833fd06320d2928f5136f84e30"
+    },
     "plan": null,
     "spec": null
   },
@@ -32,9 +45,11 @@
   ],
   "small": true,
   "stage": "build",
-  "status": "in-review",
-  "updated": "2026-11-09T20:23:14-05:00",
-  "verdicts": {}
+  "status": "ready-to-merge",
+  "updated": "2026-11-09T20:30:20-05:00",
+  "verdicts": {
+    "build": "GO"
+  }
 }
 ---
 
