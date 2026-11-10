@@ -6,12 +6,13 @@
   "branch": "feat/ci-modes",
   "extra_rounds": {},
   "feature": "ci-modes",
+  "handed_over_from": "e2663922-7743-45ce-bf9d-0fd0d7b6c32b",
   "history": {},
   "owner": {
     "provider": "claude",
-    "session": "e2663922-7743-45ce-bf9d-0fd0d7b6c32b",
-    "since": "2026-11-09T23:52:07-05:00",
-    "worktree": "relay-go"
+    "session": "d3261ebc-e2e2-4111-8ee1-0923ba61d03b",
+    "since": "2026-11-10T08:59:36-05:00",
+    "worktree": "ci-modes"
   },
   "owner_actions": [
     {
@@ -33,7 +34,7 @@
   "small": false,
   "stage": "spec",
   "status": "drafting",
-  "updated": "2026-11-09T23:52:57-05:00",
+  "updated": "2026-11-10T08:59:36-05:00",
   "verdicts": {}
 }
 ---
