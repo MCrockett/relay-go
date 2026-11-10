@@ -79,15 +79,15 @@
     }
   },
   "rounds": {
-    "build": 1,
+    "build": 2,
     "plan": 1,
     "spec": 2
   },
   "skipped": [],
   "small": false,
   "stage": "build",
-  "status": "changes-requested",
-  "updated": "2026-11-10T15:08:28-05:00",
+  "status": "in-review",
+  "updated": "2026-11-10T15:28:14-05:00",
   "verdicts": {
     "build": "NO-GO",
     "plan": "GO",
