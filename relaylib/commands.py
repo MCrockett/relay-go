@@ -6,7 +6,7 @@ import os
 import re
 import sys
 
-from . import (availability, ciskip, config, events, freshness, gitops, identity, ledger, machine, merged, notify,
+from . import (availability, ciskip, cimode, config, events, freshness, gitops, identity, ledger, localtests, machine, merged, notify,
                ownership, prompts, reviewtables, runner, state, verdict)
 from .errors import RelayError
 from .progress import RoundRecord
@@ -157,9 +157,15 @@ def require_pr_ready(c):
     (gitops.ci_for_code explains why that result can sit on a bookkeeping commit)."""
     info, prefix = require_pr_open(c)
     head = info.get("headRefOid") or ""
+    c.ci = cimode.settings(c.root, info["baseRefName"])
+    if c.ci.mode == "local":  # the gate is a background local run, never GitHub CI (ci-modes D8)
+        cimode.require_command(c.ci)
+        c.tests = localtests.ensure(c.root, head, gitops.code_sha(c.root, prefix, head), c.ci.test_command,
+                                    c.ci.timeout_min, c.slug, c.branch)
+        return info
     ci = gitops.ci_for_code(c.root, head, prefix)
-    if ci == "none" and c.cfg["build"]["require_ci"]:
-        raise RelayError("this PR has no CI checks; add CI, or set [build] require_ci = false in docs/relay/config.toml")
+    if ci == "none" and c.ci.mode == "pr":
+        raise RelayError("this PR has no CI checks; add CI, or set [build] ci = \"none\" in docs/relay/config.toml")
     if ci == "not-started":
         raise RelayError(not_started_message(c, head))
     if ci == "failing":
@@ -187,6 +193,11 @@ def ready_draft(c):
     if not info.get("isDraft"):
         return
     number, head = info["number"], info.get("headRefOid") or ""
+    mode = cimode.settings(c.root, info["baseRefName"])
+    if mode.mode == "local":  # no GitHub CI is read or started for the gate; refuse first without a command (R7)
+        cimode.require_command(mode)
+        mark_ready(c.root, number)
+        return
     ci = gitops.ci_for_code(c.root, head, prefix)
     if ci == "green":
         sha = ciskip.mark_head(c.root, c.st, c.cfg)
@@ -194,7 +205,7 @@ def ready_draft(c):
             ciskip.push(c.root, c.branch, sha)
         mark_ready(c.root, number)
         return
-    if ci == "none" and not c.cfg["build"]["require_ci"]:
+    if ci == "none" and mode.mode == "none":
         mark_ready(c.root, number)
         return
     mark_ready(c.root, number)
@@ -408,6 +419,9 @@ def cmd_submit(args):
             to_draft(c.root, e.pr)
             raise
         c.st["pr"] = gate["number"]
+        if c.ci.mode == "local":
+            for line in cimode.workflow_warnings(c.root, "HEAD", c.ci.base):
+                print(f"relay: warning: {line}", file=sys.stderr)
     action = machine.submit(c.st, me.provider)
     if me.provider == "owner":
         record_owner_action(c.st, f"owner submitted {stage}")
@@ -1174,7 +1188,11 @@ def cmd_roles(args):
         print(f"  {line}")
     print()
     print(f"max_rounds {cfg['limits']['max_rounds']}, review timeout {cfg['limits']['review_timeout_min']} min, "
-          f"require_ci {cfg['build']['require_ci']}, skip_ci {cfg['build']['skip_ci']}")
+          f"skip_ci {cfg['build']['skip_ci']}")
+    build = cfg["build"]
+    print(f"ci {build['ci']}, {build['test_command'].strip() or 'no test command'}, "
+          f"timeout {build['test_timeout_min']:g} min")
+    print("(this is your working tree's config; PR gates use the base branch's config)")
 
 
 def cmd_rule(args):

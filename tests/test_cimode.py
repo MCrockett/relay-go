@@ -60,6 +60,23 @@ class CimodeTest(unittest.TestCase):
         self.assertEqual(str(cm.exception),
                          'set [build] test_command in docs/relay/config.toml on develop, or set ci = "none"')
 
+    def test_workflow_warning_scoped_to_pull_request(self):
+        def warns(text, base="develop"):
+            write(os.path.join(self.work, ".github/workflows/w.yml"), text)
+            sh(self.work, "git", "add", "-A")
+            sh(self.work, "git", "commit", "-q", "-m", "wf")
+            return cimode.workflow_warnings(self.work, "HEAD", base)
+        own = "name: test\non:\n  pull_request:\n    types: [opened]\n  push:\n    branches: [main]\njobs:\n  u:\n    runs-on: x\n"
+        out = warns(own)
+        self.assertEqual(out, [".github/workflows/w.yml: runs on pull_request to develop; "
+                               "with ci = local that spends GitHub minutes"])
+        self.assertEqual(warns("on:\n  pull_request:\n    branches: [main]\n"), [])
+        self.assertEqual(len(warns("on:\n  pull_request:\n    branches: [develop]\n")), 1)
+        self.assertEqual(len(warns("on:\n  pull_request:\n    branches:\n      - develop\n")), 1)
+        self.assertEqual(len(warns("on: [push, pull_request]\n")), 1)
+        self.assertEqual(warns("on:\n  push:\n    branches: [develop]\n"), [])
+        self.assertEqual(warns("on:\n  push:\n    branches: [main]\n  pull_request_target:\n"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

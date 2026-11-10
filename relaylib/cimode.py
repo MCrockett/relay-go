@@ -2,6 +2,7 @@
 the tip of the PR's base branch on origin, never the caller's working tree. Does not import commands."""
 import copy
 import os
+import re
 import tomllib
 from dataclasses import dataclass
 
@@ -57,3 +58,56 @@ def settings(repo, base):
 def require_command(s):
     if s.mode == "local" and not s.test_command.strip():
         raise RelayError(f'set [build] test_command in docs/relay/config.toml on {s.base}, or set ci = "none"')
+
+
+def _pull_request_hit(text, base):
+    """True when this workflow's pull_request trigger would run for a PR into base (D12). A text check, not a YAML
+    parse: false positives are fine because the result is only a warning."""
+    lines = text.splitlines()
+    on_re = re.compile(r"""^["']?on["']?\s*:(.*)$""")
+    for i, line in enumerate(lines):
+        m = on_re.match(line)
+        if not m:
+            continue
+        rest = m.group(1).split("#")[0].strip()
+        if rest:  # inline: on: pull_request, on: [push, pull_request], on: {pull_request: ...}
+            return "pull_request" in re.findall(r"[\w-]+", rest)
+        block = []
+        for nxt in lines[i + 1:]:
+            if nxt.strip() and not nxt.startswith((" ", "\t")):
+                break
+            block.append(nxt)
+        return _block_hit(block, base)
+    return False
+
+
+def _block_hit(block, base):
+    for j, line in enumerate(block):
+        m = re.match(r"^(\s+)pull_request\s*:(.*)$", line)
+        if not m:
+            continue
+        indent = len(m.group(1))
+        inner = [m.group(2)]
+        for nxt in block[j + 1:]:
+            if nxt.strip() and len(nxt) - len(nxt.lstrip()) <= indent:
+                break
+            inner.append(nxt)
+        text = "\n".join(inner)
+        at = text.find("branches:")
+        if at < 0:
+            return True
+        return re.search(r"(?<![\w/.-])" + re.escape(base) + r"(?![\w/.-])", text[at:]) is not None
+    return False
+
+
+def workflow_warnings(repo, ref, base):
+    """One warning line per workflow file whose pull_request trigger covers a PR into base (D12)."""
+    out = []
+    listing = gitops.git(repo, "ls-tree", "--name-only", ref, ".github/workflows/", check=False)
+    for path in listing.stdout.splitlines() if listing.returncode == 0 else []:
+        if not path.endswith((".yml", ".yaml")):
+            continue
+        text = gitops.show(repo, ref, path)
+        if text is not None and _pull_request_hit(text, base):
+            out.append(f"{path}: runs on pull_request to {base}; with ci = local that spends GitHub minutes")
+    return out

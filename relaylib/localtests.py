@@ -192,6 +192,13 @@ def _wait_started(repo, kid, since):
 def start(repo, commit, code, command, timeout_min, slug, branch):
     """Start a background run: "started", or "running" when a run already holds this key (D7, D10)."""
     kid = key_id(code, command)
+    os.makedirs(_tests_dir(repo), exist_ok=True)
+    with open(os.path.join(_tests_dir(repo), f"{kid}.start"), "a") as gate:  # two gates racing start one run
+        fcntl.flock(gate, fcntl.LOCK_EX)
+        return _start_locked(repo, commit, code, command, timeout_min, slug, branch, kid)
+
+
+def _start_locked(repo, commit, code, command, timeout_min, slug, branch, kid):
     if live(repo, kid):
         return "running"
     for rec in records(repo):  # D10: one run per feature at a time
