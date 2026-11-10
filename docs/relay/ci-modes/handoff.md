@@ -26,6 +26,8 @@ Ask the owner only these, one at a time, if the code does not settle them:
 3. How `require_ci` maps: suggest `true` -> `pr`, `false` -> `local` only when a test command is set, else an explicit "none" so nothing silently loses its gate. Confirm with the owner.
 4. The global mode for the owner: likely `release` per the portfolio policy.
 
+Timing data (2026-11-10): full relay-go suite, 933 tests, all OK, took 875 s (14.6 min) locally with load average about 4 on 10 cores; 47 min the day before at load about 250; about 3.5 min on GitHub CI. Owner leans to a faster subset for local runs ("Seems like a faster subset"). Suggestion to weigh: each repo's `test_command` can name a fast subset, submit runs it in the background and only merge waits on it, and `release` mode keeps the full suite on GitHub for PRs into main.
+
 Known local flake: `tests/test_usage.py::test_capture_runtime_and_lock_contention` fails on unchanged develop under heavy load.
 
 ## Tests run (exact commands and results)
