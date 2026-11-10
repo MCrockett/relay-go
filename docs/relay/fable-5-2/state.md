@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "chore/fable-5-2",
   "extra_rounds": {},
   "feature": "fable-5-2",
@@ -12,7 +14,7 @@
     "worktree": "relay-go"
   },
   "owner_actions": [],
-  "pr": null,
+  "pr": 31,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -21,15 +23,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-11-09T20:20:15-05:00",
+  "status": "in-review",
+  "updated": "2026-11-09T20:23:14-05:00",
   "verdicts": {}
 }
 ---
