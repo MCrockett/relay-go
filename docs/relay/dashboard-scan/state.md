@@ -6,7 +6,6 @@
   "branch": "perf/dashboard-scan",
   "extra_rounds": {},
   "feature": "dashboard-scan",
-  "handed_over_from": "d3261ebc-e2e2-4111-8ee1-0923ba61d03b",
   "history": {},
   "owner": {
     "provider": "claude",
@@ -34,7 +33,7 @@
   "small": false,
   "stage": "spec",
   "status": "drafting",
-  "updated": "2026-11-12T17:57:57-05:00",
+  "updated": "2026-11-12T17:58:12-05:00",
   "verdicts": {}
 }
 ---
