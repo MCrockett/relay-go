@@ -33,7 +33,7 @@
   "small": false,
   "stage": "spec",
   "status": "drafting",
-  "updated": "2026-11-12T17:23:38-05:00",
+  "updated": "2026-11-12T17:24:08-05:00",
   "verdicts": {}
 }
 ---
