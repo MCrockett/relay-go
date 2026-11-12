@@ -2,6 +2,7 @@
 {
   "authors": {
     "idea": "claude",
+    "plan": "claude",
     "spec": "claude"
   },
   "branch": "perf/dashboard-scan",
@@ -50,13 +51,14 @@
     }
   },
   "rounds": {
+    "plan": 1,
     "spec": 2
   },
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "drafting",
-  "updated": "2026-11-12T18:17:03-05:00",
+  "status": "in-review",
+  "updated": "2026-11-12T18:23:01-05:00",
   "verdicts": {
     "spec": "GO"
   }
