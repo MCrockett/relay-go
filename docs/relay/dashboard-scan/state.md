@@ -9,6 +9,19 @@
   "extra_rounds": {},
   "feature": "dashboard-scan",
   "history": {
+    "plan": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2",
+          "R1-3"
+        ],
+        "head": "a1c7dddf2ba04a5452cdae1f98ed786efa757921",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ],
     "spec": [
       {
         "blocking_ids": [
@@ -39,6 +52,7 @@
   "repo": "relay-go",
   "retried": false,
   "review_notes": {
+    "plan": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra out of usage: 5-hour limit used up until Thu 20:18, same provider as the author",
     "spec": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra out of usage: 5-hour limit used up until Thu 20:18, same provider as the author"
   },
   "reviewed": {
@@ -57,9 +71,10 @@
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "in-review",
-  "updated": "2026-11-12T18:23:01-05:00",
+  "status": "changes-requested",
+  "updated": "2026-11-12T18:27:38-05:00",
   "verdicts": {
+    "plan": "NO-GO",
     "spec": "GO"
   }
 }
