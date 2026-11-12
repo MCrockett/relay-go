@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "perf/dashboard-scan",
   "extra_rounds": {},
   "feature": "dashboard-scan",
@@ -29,9 +31,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-11-12T17:10:22-05:00",
+  "updated": "2026-11-12T17:23:38-05:00",
   "verdicts": {}
 }
 ---
