@@ -38,23 +38,27 @@
   "repo": "relay-go",
   "retried": false,
   "review_notes": {
-    "spec": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra hit its usage limit during the review, same provider as the author"
+    "spec": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra out of usage: 5-hour limit used up until Thu 20:18, same provider as the author"
   },
   "reviewed": {
     "build": null,
     "plan": null,
-    "spec": null
+    "spec": {
+      "inputs": {
+        "spec": "a3a832fb418e3aebe04a5165012169c624b95c34e18eaec5a8c08c218e2885a7"
+      }
+    }
   },
   "rounds": {
     "spec": 2
   },
   "skipped": [],
   "small": false,
-  "stage": "spec",
-  "status": "in-review",
-  "updated": "2026-11-12T18:14:17-05:00",
+  "stage": "plan",
+  "status": "drafting",
+  "updated": "2026-11-12T18:17:03-05:00",
   "verdicts": {
-    "spec": "NO-GO"
+    "spec": "GO"
   }
 }
 ---
