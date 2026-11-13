@@ -322,10 +322,11 @@ def read_sessions(sessions):
         except (RelayError, OSError):
             saving = False
             out["notes"].append("usage cache not saved")
-        cache = _load_cache()
+        cache, changed = _load_cache(), False  # an unchanged cache is not written again (dashboard-scan)
         for provider, session in sorted(sessions):
             key = f"{provider}:{session}"
             known = sorted(set(cache["sessions"].get(key) or []) | set(files_for(provider, session)))
+            changed = changed or cache["sessions"].get(key) != known
             cache["sessions"][key] = known
             if not known:
                 out["unreadable"][(provider, session)] = "log not found"
@@ -333,7 +334,9 @@ def read_sessions(sessions):
             turns, problems = [], []
             for path in known:
                 try:
-                    cache["files"][path], fs = _advance(path, cache["files"].get(path), provider)
+                    old = cache["files"].get(path)
+                    cache["files"][path], fs = _advance(path, old, provider)
+                    changed = changed or cache["files"][path] is not old
                 except OSError:
                     problems.append("log not found")          # gone now: its cached turns stay counted
                     fs = _checked(cache["files"].get(path), provider)
@@ -344,7 +347,7 @@ def read_sessions(sessions):
             out["turns"][(provider, session)] = sorted(turns, key=lambda t: t["at"])
             if problems:
                 out["unreadable"][(provider, session)] = "; ".join(sorted(set(problems)))
-        if saving:
+        if saving and changed:
             try:
                 config.atomic_write(os.path.join(config.relay_home(), CACHE), json.dumps(cache), 0o600)
             except OSError:

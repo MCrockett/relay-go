@@ -156,6 +156,16 @@ class IncrementalTest(Homes):
             self.assertEqual(len(self.turns()), 2)
         self.assertEqual(check.call_count, 1)
 
+    def test_an_unchanged_read_does_not_rewrite_the_cache(self):  # dashboard-scan: no 12 MB write per build
+        self.turns()
+        before = os.stat(self.cache)
+        self.turns()
+        self.assertEqual(os.stat(self.cache).st_ino, before.st_ino)
+        with open(self.path, "a") as f:
+            f.write(claude("m3", "2026-10-06T16:05:00Z") + "\n")
+        self.assertEqual(len(self.turns()), 3)
+        self.assertNotEqual(os.stat(self.cache).st_ino, before.st_ino)
+
     def test_replaced_or_shrunk_file_is_read_again(self):
         self.turns()
         with open(self.path, "w") as f:
