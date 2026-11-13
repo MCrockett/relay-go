@@ -2634,3 +2634,42 @@ class CostTest(unittest.TestCase):
                       "unreadable claude session abcdef12: log not found", "note: usage cache not saved"):
             self.assertIn(piece, text)
         self.assertEqual(text.count(feature), 2)                         # the full name, on each model's row
+
+
+class UiPriorityTest(unittest.TestCase):
+    """dashboard-scan Task 11: the dashboard runs at nice 10, set once by the launching process."""
+
+    def run_ui(self, *argv, nice=None):
+        from relaylib import commands
+        args = commands.build_parser().parse_args(["ui", *argv])
+        order = []
+        with mock.patch("os.nice", side_effect=nice or (lambda n: order.append(("nice", n)))) as niced, \
+                mock.patch("relaylib.ui.server.launch", side_effect=lambda *a: order.append(("launch",))) as launch, \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            commands.cmd_ui(args)
+        return order, niced, launch, err.getvalue()
+
+    def test_foreground_and_background_launches_lower_priority_first(self):
+        for argv in ((), ("--background",)):
+            with self.subTest(argv=argv):
+                order, niced, _, _ = self.run_ui(*argv)
+                self.assertEqual(order, [("nice", 10), ("launch",)])
+
+    def test_the_serve_child_keeps_the_inherited_priority(self):
+        order, niced, launch, _ = self.run_ui("--serve-child")
+        niced.assert_not_called()
+        launch.assert_called_once()
+
+    def test_a_failed_nice_warns_and_still_launches(self):
+        def refuse(n):
+            raise PermissionError("not allowed")
+        _, _, launch, err = self.run_ui(nice=refuse)
+        self.assertIn("relay: warning: could not lower the dashboard's priority: not allowed", err)
+        launch.assert_called_once()
+
+    def test_runtime_never_lowers_priority(self):
+        from relaylib.ui import server
+        with mock.patch("os.nice") as niced:
+            runtime = server.Runtime(0, cache=mock.Mock())
+        runtime.server.server_close()
+        niced.assert_not_called()
