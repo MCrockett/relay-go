@@ -168,9 +168,16 @@ def merged_at(repo_dir, st, branch_head=None):
         cached = _load().get(key, True)
         if isinstance(cached, (int, float)) and not isinstance(cached, bool):
             return float(cached)
+        unmerged = scancache.closed_key(repo_dir, st["pr"])
+        if unmerged is not None:
+            unmerged = ("not-merged",) + unmerged
+            if scancache.recall(unmerged):  # GitHub said not merged: asked again after the next fetch (D5)
+                cached = False
         try:
             # False in the cache: gh said merged but gave no time, so it is not asked again
             info = gitops.gh_json(repo_dir, ["pr", "view", str(st["pr"]), "--json", "state,mergedAt"]) if cached else {}
+            if cached and info.get("state") != "MERGED" and unmerged is not None:
+                scancache.remember(unmerged, True)
             if info.get("state") == "MERGED":
                 at = (datetime.datetime.fromisoformat(info["mergedAt"].replace("Z", "+00:00")).timestamp()
                       if info.get("mergedAt") else False)
@@ -178,8 +185,9 @@ def merged_at(repo_dir, st, branch_head=None):
                     _store(_cache_path(), key, at)
                 if at is not False:
                     return at
-        except (RelayError, OSError, ValueError, AttributeError):
-            pass
+        except (RelayError, OSError, ValueError, AttributeError) as e:
+            if NOT_FOUND in str(e) and unmerged is not None:  # no such PR is an answer too; a network error is not
+                scancache.remember(unmerged, True)
     if branch_head:
         for base in ("origin/develop", "origin/main"):
             def merges(base=base):
