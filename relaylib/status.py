@@ -154,7 +154,7 @@ def _remote_features(checkout):
             if len(parts) != 4 or parts[3].lower() != "state.md":
                 continue
             try:
-                st = state.parse_state(gitops.show(checkout, ref, path) or "", f"{ref}:{path}")
+                st = state.parse_at(checkout, ref, path, f"{ref}:{path}")
             except RelayError:
                 continue
             if st.get("branch") and ref != f"origin/{st['branch']}":

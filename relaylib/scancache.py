@@ -3,7 +3,9 @@ id or by file stamps, so a reused answer is one that cannot have changed. The st
 through a context variable, so owner actions always read live (D6)."""
 import contextlib
 import contextvars
+import copy
 import os
+import re
 import threading
 
 from . import buildstats
@@ -17,11 +19,38 @@ class Store:
         self.lock = threading.RLock()
         self.repo_facts = {}       # common dir -> {"stamp", "url", "common", "worktrees", "refs"}
         self.checkout_facts = {}   # checkout -> {"stamp", "branch", "head"}
+        self.trees = {}            # common dir -> {commit: {path under docs/relay: blob id}}
+        self.blobs = {}            # common dir -> {blob id: text}
+        self.parsed = {}           # common dir -> {(blob id, label): ("ok", state) or ("error", RelayError)}
         self.build = {}            # per-build answers, reset by use()
 
     def begin(self):
         with self.lock:
-            self.build = {"stamps": {}, "commons": {}}
+            self.build = {"stamps": {}, "commons": {}, "used": {}, "errors": {}, "absent": set()}
+
+    def prune(self, checkouts=None):
+        """Keep only what this build used (R14): the trees of the commits it resolved, every blob and parsed state
+        those trees reference, and facts for the checkouts listed. A repository whose reads failed this build
+        keeps everything (F2)."""
+        with self.lock:
+            failed = set(self.build.get("errors", {}))
+            used = self.build.get("used", {})
+            for common in list(self.trees):
+                if common in failed:
+                    continue
+                keep = used.get(common, set())
+                self.trees[common] = {c: t for c, t in self.trees[common].items() if c in keep}
+                blobs = {b for t in self.trees[common].values() for b in t.values()}
+                self.blobs[common] = {b: v for b, v in self.blobs.get(common, {}).items() if b in blobs}
+                self.parsed[common] = {k: v for k, v in self.parsed.get(common, {}).items() if k[0] in blobs}
+                if not self.trees[common]:
+                    for table in (self.trees, self.blobs, self.parsed):
+                        table.pop(common, None)
+            if checkouts is not None:
+                real = {os.path.realpath(c) for c in checkouts}
+                self.checkout_facts = {c: f for c, f in self.checkout_facts.items() if c in real}
+                commons = {self.build["commons"].get(c) for c in real} | failed
+                self.repo_facts = {c: f for c, f in self.repo_facts.items() if c in commons}
 
 
 def active():
@@ -221,3 +250,190 @@ def checkout_facts(checkout):
     with store.lock:
         store.checkout_facts[real] = facts
     return facts
+
+
+RELAY_PREFIX = "docs/relay/"
+_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def _common(store, repo):
+    return _stamps(store, os.path.realpath(repo))[0]
+
+
+def failed(repo):
+    """The error this build's reads of repo's relay files hit, or None (F2)."""
+    store = active()
+    if store is None:
+        return None
+    common = _common(store, repo)
+    with store.lock:
+        return store.build["errors"].get(common)
+
+
+def _fail(store, common, error):
+    with store.lock:
+        store.build["errors"].setdefault(common, str(error))
+
+
+def tree(repo, commit):
+    """{path: blob id} for every path under docs/relay at commit (matched case-insensitively), from one
+    `git ls-tree -r` and cached by commit id. RelayError when git cannot list it; nothing is cached then."""
+    from . import gitops
+    from .errors import RelayError
+    store = active()
+    common = _common(store, repo) if store else None
+    if common is None:
+        raise RelayError("no scan store")
+    with store.lock:
+        got = store.trees.get(common, {}).get(commit)
+        store.build["used"].setdefault(common, set()).add(commit)
+    if got is not None:
+        buildstats.hit()
+        return got
+    buildstats.miss()
+    try:
+        out = gitops.run(["git", "ls-tree", "-r", "-z", commit], repo).stdout
+    except (RelayError, OSError) as e:
+        _fail(store, common, e)
+        raise RelayError(str(e))
+    got = {}
+    for entry in out.split("\0"):
+        meta, _, path = entry.partition("\t")
+        parts = meta.split()
+        if len(parts) == 3 and path.lower().startswith(RELAY_PREFIX):
+            got[path] = parts[2]
+    with store.lock:
+        store.trees.setdefault(common, {})[commit] = got
+    return got
+
+
+def prefetch(repo, commits):
+    """Read every blob in these commits' relay trees that is not cached, with one `git cat-file --batch`. A blob
+    the batch does not return is absent for this build and not cached (F3)."""
+    from . import gitops
+    from .errors import RelayError
+    store = active()
+    common = _common(store, repo) if store else None
+    if common is None:
+        return
+    wanted = set()
+    for commit in commits:
+        try:
+            wanted.update(tree(repo, commit).values())
+        except RelayError:
+            continue
+    with store.lock:
+        have = store.blobs.get(common, {})
+        missing = sorted(b for b in wanted if b not in have and b not in store.build["absent"])
+    if not missing:
+        return
+    try:
+        got = gitops.cat_files(repo, missing)
+    except RelayError as e:
+        _fail(store, common, e)
+        got = {}
+    except ValueError:  # truncated output
+        got = {}
+    with store.lock:
+        blobs = store.blobs.setdefault(common, {})
+        for blob in missing:
+            text = got.get(blob)
+            if text is None:
+                store.build["absent"].add(blob)
+            else:
+                blobs[blob] = text
+
+
+def blob(repo, blob_id):
+    """The text of one relay blob, read now when it was not prefetched; None when git has no such blob."""
+    store = active()
+    common = _common(store, repo)
+    with store.lock:
+        text = store.blobs.get(common, {}).get(blob_id)
+        absent = blob_id in store.build["absent"]
+    if text is not None:
+        buildstats.hit()
+        return text
+    if absent:
+        return None
+    prefetch_blobs(repo, [blob_id])
+    with store.lock:
+        return store.blobs.get(common, {}).get(blob_id)
+
+
+def prefetch_blobs(repo, blob_ids):
+    from . import gitops
+    from .errors import RelayError
+    store = active()
+    common = _common(store, repo)
+    try:
+        got = gitops.cat_files(repo, list(blob_ids))
+    except RelayError as e:
+        _fail(store, common, e)
+        got = {}
+    except ValueError:
+        got = {}
+    with store.lock:
+        for b in blob_ids:
+            if got.get(b) is None:
+                store.build["absent"].add(b)
+            else:
+                store.blobs.setdefault(common, {})[b] = got[b]
+
+
+def commit_of(repo, ref):
+    """The commit id ref names, from the build's facts where it can; None when git cannot resolve it."""
+    from . import gitops
+    if _SHA.fullmatch(ref):
+        return ref
+    if ref == "HEAD":
+        facts = checkout_facts(repo)
+        if facts is not None:
+            return facts["head"]
+    elif ref.startswith("origin/"):
+        facts = repo_facts(repo)
+        if facts is not None and ref in facts["refs"]:
+            return facts["refs"][ref]
+    p = gitops.git(repo, "rev-parse", "--verify", "-q", f"{ref}^{{commit}}", check=False)
+    return p.stdout.strip() if p.returncode == 0 else None
+
+
+def lookup(repo, ref, path):
+    """(found, blob id) for path at ref in a build: found is False when the store cannot answer, so the caller
+    asks git; a None blob id means the path is not there."""
+    from .errors import RelayError
+    store = active()
+    if store is None or not path.lower().startswith(RELAY_PREFIX) or _common(store, repo) is None:
+        return False, None
+    commit = commit_of(repo, ref)
+    if commit is None:
+        return True, None
+    try:
+        return True, tree(repo, commit).get(path)
+    except RelayError:
+        return True, None
+
+
+def parsed(repo, blob_id, label, text):
+    """state.parse_state of one blob, cached by blob id (F4: an error is cached and raised again). Callers get
+    their own copy."""
+    from . import state
+    from .errors import RelayError
+    store = active()
+    common = _common(store, repo)
+    key = (blob_id, label)
+    with store.lock:
+        got = store.parsed.get(common, {}).get(key)
+    if got is None:
+        try:
+            got = ("ok", state.parse_state(text or "", label))
+        except RelayError as e:
+            got = ("error", e)
+        if text is not None:
+            with store.lock:
+                store.parsed.setdefault(common, {})[key] = got
+    else:
+        buildstats.hit()
+    if got[0] == "error":
+        raise RelayError(str(got[1]))
+    return copy.deepcopy(got[1])

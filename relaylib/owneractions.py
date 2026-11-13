@@ -44,7 +44,7 @@ def published(repo, slug):
         path = next((p for p in files if p.lower() == f"{state.RELAY_DIR}/{slug}/state.md"), None)
         if path:
             commit = gitops.head_sha(repo, ref)
-            st = state.parse_state(gitops.show(repo, commit, path) or "", path)
+            st = state.parse_at(repo, commit, path)
             if ref == f"origin/{st.get('branch')}":
                 return commit, st
     raise RelayError(f"no published branch for {slug}; it may have been deleted")
@@ -56,7 +56,7 @@ def find_by_pr(repo, number):
         for path in gitops.ls_files(repo, ref, state.RELAY_DIR):
             if not path.lower().endswith("/state.md"):
                 continue
-            st = state.parse_state(gitops.show(repo, ref, path) or "", path)
+            st = state.parse_at(repo, ref, path)
             if st.get("pr") == number and ref == f"origin/{st.get('branch')}":
                 return st["feature"]
     raise RelayError(f"PR #{number} is not a relay feature; merge it on GitHub")
@@ -81,7 +81,7 @@ def state_at(repo, slug, commit):
     path = next((p for p in paths if p.lower() == f"{state.RELAY_DIR}/{slug}/state.md"), None)
     if not path:
         raise RelayError("feature state is missing at the displayed commit")
-    return state.parse_state(gitops.show(repo, commit, path) or "", path)
+    return state.parse_at(repo, commit, path)
 
 
 def applicable(st):

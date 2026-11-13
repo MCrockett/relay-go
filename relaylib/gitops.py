@@ -259,6 +259,9 @@ def remote_branches(root):
 
 
 def show(root, ref, path):
+    found, blob = scancache.lookup(root, ref, path)
+    if found:
+        return None if blob is None else scancache.blob(root, blob)
     p = git(root, "show", f"{ref}:{path}", check=False)
     return p.stdout if p.returncode == 0 else None
 
@@ -290,6 +293,14 @@ def cat_files(root, specs):
 
 def ls_files(root, ref, prefix):
     want = prefix.lower().rstrip("/") + "/"
+    if scancache.active() and want.startswith(scancache.RELAY_PREFIX):
+        commit = scancache.commit_of(root, ref)
+        if commit is None:
+            return []
+        try:
+            return [p for p in scancache.tree(root, commit) if p.lower().startswith(want)]
+        except RelayError:
+            return []
     out = git(root, "ls-tree", "-r", "--name-only", ref, check=False).stdout
     return [line for line in out.splitlines() if line.lower().startswith(want)]
 
