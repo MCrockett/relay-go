@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import time
 
+from . import buildstats
 from .config import relay_home
 
 STATES = ("permission", "waiting", "working", "ended")
@@ -51,6 +52,7 @@ def _valid_process(process):
 
 def _ps(columns, timeout):
     """`ps -A -o <columns>` lines, or None when ps is missing, fails, times out or prints nothing."""
+    buildstats.count(["ps"])
     try:
         p = subprocess.run(["ps", "-A", "-o", columns], capture_output=True, text=True, timeout=timeout,
                            env=dict(os.environ, LC_ALL="C"))

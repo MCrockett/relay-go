@@ -7,6 +7,7 @@ import signal
 import subprocess
 import threading
 
+from . import buildstats
 from .errors import RelayError
 
 PR_FIELDS = "number,state,baseRefName,headRefOid,statusCheckRollup,isDraft"
@@ -58,6 +59,7 @@ SSH_OPTIONS = "ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAlive
 def run(args, cwd, check=True, env=None, timeout=None):
     """Run a command. With a timeout it runs in its own process group, and a hung run is stopped whole
     (git's ssh or https helper included) and raised as an error."""
+    buildstats.count(args)
     if timeout is None:
         p = subprocess.run(args, cwd=cwd, capture_output=True, text=True, env=env)
     else:
@@ -176,6 +178,7 @@ def network_env(root):
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
     env.setdefault("GIT_HTTP_LOW_SPEED_LIMIT", "1000")
     env.setdefault("GIT_HTTP_LOW_SPEED_TIME", "30")
+    buildstats.count(["git"])
     configured = subprocess.run(["git", "config", "--get", "core.sshCommand"], cwd=root, capture_output=True,
                                 text=True).stdout.strip()
     if "GIT_SSH_COMMAND" not in env and "GIT_SSH" not in env and not configured:
@@ -229,6 +232,7 @@ def cat_files(root, specs):
     """{"<rev>:<path>": text or None} for many blobs in one git process."""
     if not specs:
         return {}
+    buildstats.count(["git"])
     p = subprocess.run(["git", "cat-file", "--batch"], cwd=root, input="".join(f"{s}\n" for s in specs).encode(),
                        capture_output=True)
     if p.returncode != 0:
