@@ -114,6 +114,10 @@ def resolve(repo_dir, st):
         named = None
     if not named:  # gh would pick a repository from GH_REPO or its default: its answer is not about origin
         return "unknown", "origin is not a GitHub repository, so relay cannot ask about its PR"
+    from . import scancache
+    closed_key = scancache.closed_key(repo_dir, pr)
+    if closed_key is not None and scancache.recall(closed_key):  # asked again after the next fetch (D5)
+        return "closed", f"PR #{pr} was closed without merging"
     try:
         info = gitops.gh_json(repo_dir, ["pr", "view", str(pr), "--json", "state,baseRefName", "-R", named])
     except (RelayError, OSError) as e:
@@ -135,6 +139,8 @@ def resolve(repo_dir, st):
             _queue_merge_event(repo_dir, st, info.get("baseRefName"))
         return "merged", None
     if state_ == "CLOSED":
+        if closed_key is not None:
+            scancache.remember(closed_key, True)
         return "closed", f"PR #{pr} was closed without merging"
     if state_ == "OPEN":
         return "open", None

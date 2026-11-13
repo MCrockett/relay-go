@@ -27,6 +27,7 @@ class Store:
         self.generation = {}       # common dir -> how many times a build fetched it
         self.files = {}            # path -> (stamp, parsed value) of a file a build parses (D7a)
         self.transcripts = {}      # provider -> (folder stamps, index) of its transcript files (R7b)
+        self.fetches = {}          # common dir -> {"at", "error", "live", "stamps"}: the fetch schedule (D4)
         self.build = {}            # per-build answers, reset by use()
 
     def begin(self):
@@ -557,3 +558,89 @@ def parsed_file(path, parse):
     with store.lock:
         store.files[path] = (now, got)
     return _copy(got)
+
+
+ACTIVE_FETCH, QUIET_FETCH = 60, 600  # seconds between fetches of an active and a quiet repository (D4, R8)
+
+
+def local_stamp(checkouts):
+    """What a local change moves in a repository's checkouts: each one's HEAD file, local branch refs and index."""
+    out = []
+    for checkout in sorted(checkouts):
+        dirs = git_dirs(checkout)
+        if dirs is None:
+            out.append((("missing", checkout),))
+            continue
+        gitdir, common = dirs
+        out.append(stamp([os.path.join(gitdir, "HEAD"), os.path.join(gitdir, "index")]
+                         + _stamp_files(common, "refs/heads")))
+    return tuple(out)
+
+
+def fetch_due(common, checkouts, now, full):
+    """(due, last error). Due on a full build, on a repository's first build, after ACTIVE_FETCH seconds when its
+    last build had a not-done feature or a checkout changed since its last fetch, and after QUIET_FETCH otherwise.
+    Outside a build every repository is due."""
+    store = active()
+    if store is None or full:
+        return True, None
+    with store.lock:
+        rec = store.fetches.get(common)
+    if rec is None:
+        return True, None
+    busy = rec["live"] or rec["stamps"] != local_stamp(checkouts)
+    return now - rec["at"] >= (ACTIVE_FETCH if busy else QUIET_FETCH), rec["error"]
+
+
+def fetch_done(common, checkouts, now, error):
+    """Record one fetch: its time, its error (None clears an earlier one) and the checkouts' stamps after it."""
+    store = active()
+    if store is None:
+        return
+    stamps = local_stamp(checkouts)
+    with store.lock:
+        rec = store.fetches.setdefault(common, {"live": True})
+        rec.update(at=now, error=error, stamps=stamps)
+
+
+def fetch_live(common, live):
+    """Whether this build found a not-done feature in the repository."""
+    store = active()
+    if store is None:
+        return
+    with store.lock:
+        if common in store.fetches:
+            store.fetches[common]["live"] = live
+
+
+def recall(key):
+    """A value kept by remember() under key, or None. Keys must name what makes the value stale."""
+    store = active()
+    if store is None:
+        return None
+    with store.lock:
+        store.build["answers"].add(key)
+        got = store.answers.get(key)
+    if got is not None:
+        buildstats.hit()
+    return got
+
+
+def remember(key, value):
+    store = active()
+    if store is None:
+        return
+    with store.lock:
+        store.build["answers"].add(key)
+        store.answers[key] = value
+
+
+def closed_key(repo, pr):
+    """The key of a closed PR's answer: it holds until the repository is fetched again (D5). None outside a
+    build."""
+    store = active()
+    if store is None:
+        return None
+    common = _common(store, repo) or os.path.realpath(repo)
+    with store.lock:
+        return "closed-pr", common, str(pr), store.generation.get(common, 0)

@@ -790,9 +790,18 @@ class StoreBase(SnapshotBase):
             p.start()
             self.addCleanup(p.stop)
 
-    def build(self):
+        self.clock = 1_000_000.0  # builds are QUIET_FETCH apart unless a test says when (dashboard-scan Task 8)
+        p = mock.patch.object(snapshot, "_now", side_effect=lambda: self.clock)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def build(self, at=None, full=False):
         self.calls.clear()
-        return snapshot.build(store=self.store)
+        self.clock = self.clock + 600 if at is None else 1_000_000.0 + at
+        return snapshot.build(full=full, store=self.store)
+
+    def fetches(self):
+        return len(self.reads("fetch"))
 
     def reads(self, *words):
         return [c for c in self.calls if c[0] == "git" and all(w in c for w in words)]
@@ -944,10 +953,10 @@ class DoneReuseTest(StoreBase):
         self.assertIn("local changes not published", self.row(data)["flags"])
 
     def test_fetch_error_shows_on_a_reused_row(self):
-        self.build()
+        self.build(at=0)
         with mock.patch.object(snapshot, "_fetch", return_value="cannot fetch origin: offline"):
-            data = self.build()
-            again = self.build()
+            data = self.build(at=600)
+            again = self.build(at=660)  # not due: the error is kept
         self.assertIn("cannot fetch origin: offline", self.row(data)["flags"])
         self.assertEqual(self.row(again)["flags"], self.row(data)["flags"])
 
@@ -1037,6 +1046,87 @@ class SharedReadsTest(StoreBase):
             with scancache_use(self.store):
                 self.assertEqual(len(transcripts.files_for("claude", "S2")), 1)
             self.assertEqual(walk.call_count, 1)
+
+
+class FetchScheduleTest(StoreBase):
+    """Active repositories are fetched every minute, quiet ones every ten (dashboard-scan Task 8)."""
+
+    def quiet(self):
+        from relaylib import merged
+        self.st.update(stage="build", status="ready-to-merge", pr=7)
+        self.save()
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        merged.mark_merged(self.work, 7)
+
+    def test_active_repository_every_minute(self):
+        got = [(self.build(at=t), self.fetches())[1] for t in (0, 30, 60)]
+        self.assertEqual(got, [1, 0, 1])
+
+    def test_quiet_repository_every_ten_minutes(self):
+        self.quiet()
+        got = [(self.build(at=t), self.fetches())[1] for t in (0, 60, 599, 600)]
+        self.assertEqual(got, [1, 0, 0, 1])
+
+    def test_local_commit_makes_a_quiet_repository_fetch(self):
+        self.quiet()
+        self.build(at=0)
+        self.build(at=60)
+        self.assertEqual(self.fetches(), 0)
+        helpers.write(os.path.join(self.work, "notes.txt"), "x")
+        helpers.sh(self.work, "git", "add", "notes.txt")
+        helpers.sh(self.work, "git", "commit", "-qm", "local")
+        self.build(at=120)
+        self.assertEqual(self.fetches(), 1)
+        self.build(at=180)  # unchanged since that fetch: quiet again
+        self.assertEqual(self.fetches(), 0)
+
+    def test_full_build_fetches_every_repository(self):
+        self.quiet()
+        self.build(at=0)
+        self.build(at=30, full=True)
+        self.assertEqual(self.fetches(), 1)
+        self.build(at=31)
+        self.assertEqual(self.fetches(), 0)
+
+    def test_failed_fetch_is_flagged_between_fetches_and_retried(self):
+        self.st["status"] = "ready-to-merge"
+        self.st.update(stage="build", pr=7)
+        self.save()
+        good = helpers.sh(self.work, "git", "remote", "get-url", "origin").strip()
+        helpers.sh(self.work, "git", "remote", "set-url", "origin", os.path.join(self.tmp, "nowhere"))
+        rows = []
+        for t in (0, 30, 60):
+            data = self.build(at=t)
+            rows.append((self.fetches(), any("fetch failed" in f for f in data["rows"][0]["flags"])))
+        self.assertEqual(rows, [(1, True), (0, True), (1, True)])
+        helpers.sh(self.work, "git", "remote", "set-url", "origin", good)
+        data = self.build(at=120)
+        self.assertEqual(self.fetches(), 1)
+        self.assertFalse(any("fetch failed" in f for f in data["rows"][0]["flags"]))
+
+    def test_closed_pr_is_asked_once_per_fetch(self):
+        self.st.update(stage="build", status="drafting", pr=7)
+        self.save()
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        log, info = os.path.join(self.tmp, "gh.log"), os.path.join(self.tmp, "pr.json")
+        helpers.write(info, json.dumps({"number": 7, "state": "CLOSED", "baseRefName": "develop"}))
+        with mock.patch.dict(os.environ, {"RELAY_GH_BIN": helpers.fake_bin(self.tmp, "gh", helpers.FAKE_GH),
+                                          "FAKE_GH_JSON": info, "FAKE_GH_LOG": log}):
+            asked = []
+            for t, full in ((0, False), (60, False), (600, False), (601, True)):
+                before = self.gh_views(log)
+                data = self.build(at=t, full=full)
+                asked.append(self.gh_views(log) - before)
+            self.assertEqual(data["hidden"][0]["slug"], "demo")
+        self.assertEqual(asked, [1, 0, 1, 1])
+
+    @staticmethod
+    def gh_views(log):
+        try:
+            with open(log) as f:
+                return sum("pr view 7 --json state,baseRefName" in line for line in f)
+        except FileNotFoundError:
+            return 0
 
 
 class CacheTest(unittest.TestCase):

@@ -426,6 +426,17 @@ def _prefetch(members):
     scancache.prefetch(repo, sorted(heads))
 
 
+def _now():
+    return time.time()
+
+
+def _note_live(groups, rows):
+    """Record which repositories have a not-done feature, for the next build's fetch schedule."""
+    live = {os.path.realpath(r["checkout"]) for r in rows if r.get("checkout") and r.get("stage") != "done"}
+    for common, members in groups.items():
+        scancache.fetch_live(common, any(os.path.realpath(m) in live for m in members))
+
+
 def _fetch(repo):
     try:
         gitops.fetch(repo)
@@ -566,18 +577,25 @@ def _build(root, full):
             groups.setdefault(gitops.common_dir(repo), []).append(repo)
         except RelayError:
             groups.setdefault(repo, []).append(repo)
-    fetched = {}
-    for (common, members), error in zip(groups.items(),
-                                        _parallel(lambda members: _fetch(members[0]), list(groups.values()))):
+    fetched, now, due = {}, _now(), {}
+    for common, members in groups.items():  # the fetch schedule (dashboard-scan D4): due, or the last error
+        due[common] = scancache.fetch_due(common, members, now, full)
+    todo = [(common, members) for common, members in groups.items() if due[common][0]]
+    for (common, members), error in zip(todo, _parallel(lambda pair: _fetch(pair[1][0]), todo)):
         scancache.restamp(common)  # the fetch wrote its refs
         scancache.fetched(members[0])
-        fetched.update(dict.fromkeys(members, error))
+        buildstats.note_fetch(os.path.basename(members[0]))
+        scancache.fetch_done(common, members, now, error)
+        due[common] = (True, error)
+    for common, members in groups.items():
+        fetched.update(dict.fromkeys(members, due[common][1]))
     _parallel(_prefetch, list(groups.values()))
     errors = {os.path.realpath(repo): error for repo, error in fetched.items() if error}
     try:
         rows, claimed = status.scan_with_claims(root, records, fetched)  # kept for rows whose details fail to load (D2)
         details = [d for d in _parallel(lambda row: _enrich(row, errors, fetched, records), rows) if d]
         waiting.one_ask_per_session(rows)
+        _note_live(groups, rows)
         scan_note = None
     except Exception as e:  # where-i-left-off F5: the rest of the dashboard is still built
         rows, claimed, details, scan_note = [], set(), [], f"Features could not be read: {e}"
