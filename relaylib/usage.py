@@ -93,7 +93,10 @@ def append(sample, timeout=None, dedupe=False):
 def prune(now=None):
     cutoff = (time.time() if now is None else now) - 35 * 86400
     with locked():
-        rows = [s for s in read() if s["sampled_at"] >= cutoff]
+        samples = read()
+        rows = [s for s in samples if s["sampled_at"] >= cutoff]
+        if len(rows) == len(samples):
+            return  # nothing to drop: an unchanged file keeps its parse cached across builds (dashboard-scan R7b)
         atomic_write(os.path.join(relay_home(), "usage.jsonl"),
                      "".join(json.dumps(s, sort_keys=True) + "\n" for s in rows))
 

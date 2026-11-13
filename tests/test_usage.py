@@ -78,6 +78,17 @@ class UsageTest(unittest.TestCase):
         usage.prune(self.now)
         self.assertEqual(sorted(s["used_pct"] for s in usage.read()), list(range(80)))
 
+    def test_prune_with_nothing_old_leaves_the_file_alone(self):  # dashboard-scan R7b: its parse stays cached
+        usage.append(self.sample(10, "2026-09-23T18:00:00-04:00"))
+        path = os.path.join(self.home, "usage.jsonl")
+        before = os.stat(path)
+        usage.prune(self.now)
+        after = os.stat(path)
+        self.assertEqual((before.st_ino, before.st_mtime_ns), (after.st_ino, after.st_mtime_ns))
+        usage.append(self.sample(1, "2026-01-01T00:00:00Z"))
+        usage.prune(self.now)
+        self.assertEqual([s["used_pct"] for s in usage.read()], [10])
+
     def test_interrupted_line_does_not_lose_next_append(self):
         with open(os.path.join(self.home, "usage.jsonl"), "w") as f:
             f.write('{"provider":')
