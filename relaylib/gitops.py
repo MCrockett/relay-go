@@ -7,7 +7,7 @@ import signal
 import subprocess
 import threading
 
-from . import buildstats
+from . import buildstats, scancache
 from .errors import RelayError
 
 PR_FIELDS = "number,state,baseRefName,headRefOid,statusCheckRollup,isDraft"
@@ -109,10 +109,18 @@ def repo_root(cwd):
     return p.stdout.strip()
 
 
-def repo_name(root):
+def _origin(root):
+    """(returncode, url) of `git remote get-url origin`, from the build's facts when it has them."""
+    facts = scancache.repo_facts(root)
+    if facts is not None:
+        return (0 if facts["url"] else 2), facts["url"]
     p = git(root, "remote", "get-url", "origin", check=False)
-    url = p.stdout.strip()
-    if p.returncode == 0 and url:
+    return p.returncode, p.stdout.strip()
+
+
+def repo_name(root):
+    code, url = _origin(root)
+    if code == 0 and url:
         return os.path.basename(url.rstrip("/")).removesuffix(".git")
     return os.path.basename(root)
 
@@ -120,17 +128,35 @@ def repo_name(root):
 def origin_url(root):
     """The origin URL, or the checkout's real path when there is none: a repo identity that,
     unlike the folder or repo name, cannot collide across owners."""
-    p = git(root, "remote", "get-url", "origin", check=False)
-    url = p.stdout.strip()
-    return url if p.returncode == 0 and url else os.path.realpath(root)
+    code, url = _origin(root)
+    return url if code == 0 and url else os.path.realpath(root)
 
 
 def current_branch(root):
+    facts = scancache.checkout_facts(root)
+    if facts is not None:
+        return facts["branch"]
     return git(root, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
 
 
 def head_sha(root, ref="HEAD"):
+    if ref == "HEAD":
+        facts = scancache.checkout_facts(root)
+        if facts is not None:
+            return facts["head"]
+    elif ref.startswith("origin/"):
+        facts = scancache.repo_facts(root)
+        if facts is not None and ref in facts["refs"]:
+            return facts["refs"][ref]
     return git(root, "rev-parse", ref).stdout.strip()
+
+
+def remote_ref_exists(root, ref):
+    """True when origin/<branch> resolves, as `git rev-parse --verify -q` answers."""
+    facts = scancache.repo_facts(root)
+    if facts is not None:
+        return ref in facts["refs"]
+    return git(root, "rev-parse", "--verify", "-q", ref, check=False).returncode == 0
 
 
 def changed_paths_under(root, prefix):
@@ -210,15 +236,24 @@ def fetch(root):
 
 def common_dir(root):
     """The git directory a checkout shares with its linked worktrees (they share refs, so fetch once)."""
+    facts = scancache.repo_facts(root)
+    if facts is not None:
+        return facts["common"]
     return os.path.realpath(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
 
 
 def worktrees(root):
+    facts = scancache.repo_facts(root)
+    if facts is not None:
+        return list(facts["worktrees"])
     out = git(root, "worktree", "list", "--porcelain").stdout
     return [line[len("worktree "):] for line in out.splitlines() if line.startswith("worktree ")]
 
 
 def remote_branches(root):
+    facts = scancache.repo_facts(root)
+    if facts is not None:
+        return [r for r in facts["refs"] if r not in ("origin", "origin/HEAD")]
     refs = git(root, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin").stdout.split()
     return [r for r in refs if r not in ("origin", "origin/HEAD")]
 

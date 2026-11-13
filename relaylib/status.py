@@ -246,8 +246,7 @@ def scan_with_claims(root_dir):
             here = None
         for slug, st in features:
             if (st.get("branch") and st["branch"] != here and not merged.is_done(checkout, st)
-                    and gitops.git(checkout, "rev-parse", "--verify", "-q", f"origin/{st['branch']}",
-                                   check=False).returncode == 0):
+                    and gitops.remote_ref_exists(checkout, f"origin/{st['branch']}")):
                 continue  # inherited copy on a stacked branch: the remote pass checks the feature's own branch
             mine = set()
             row = with_asks(_row(checkout, slug, st, fetched), st, "HEAD", records, now, mine)
