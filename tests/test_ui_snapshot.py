@@ -1048,6 +1048,26 @@ class SharedReadsTest(StoreBase):
             self.assertEqual(walk.call_count, 1)
 
 
+class StatsAndFailureTest(StoreBase):
+    """dashboard-scan Tasks 9 and 10."""
+
+    def test_snapshot_carries_build_stats(self):
+        stats = self.build()["build_stats"]
+        self.assertEqual(set(stats), {"seconds", "cpu_seconds", "processes", "fetched", "cache"})
+        self.assertEqual(stats["fetched"], [os.path.basename(self.work)])
+        self.assertGreater(stats["processes"]["git"], 0)
+
+    def test_a_build_that_raises_keeps_the_store(self):
+        self.build()
+        kept = dict(self.store.trees)
+        with mock.patch.object(snapshot, "_writing_or_error", side_effect=RuntimeError("partway")), \
+                self.assertRaises(RuntimeError):
+            self.build()
+        self.assertEqual(self.store.trees, kept)
+        self.build()
+        self.assertEqual(self.reads("cat-file"), [])  # the next build reuses the kept blobs
+
+
 class FetchScheduleTest(StoreBase):
     """Active repositories are fetched every minute, quiet ones every ten (dashboard-scan Task 8)."""
 
@@ -1158,6 +1178,42 @@ class CacheTest(unittest.TestCase):
         self.wait_for(lambda: first.get()["error"])
         self.assertIsNone(first.get()["data"])
         self.assertFalse(first.get()["loading"])
+
+    def test_refresh_during_a_build_runs_a_full_build_right_after(self):
+        gate, calls = threading.Event(), []
+
+        def build(full=False):
+            calls.append(full)
+            if len(calls) == 1:
+                gate.wait(2)
+            return {"rows": []}
+        cache = snapshot.Cache(builder=build)
+        self.addCleanup(cache.close)
+        self.assertEqual(cache.interval, 60)
+        cache.start()
+        self.wait_for(lambda: calls)
+        cache.refresh(full=True)
+        gate.set()
+        self.wait_for(lambda: len(calls) == 2)
+        self.assertEqual(calls, [False, True])
+        cache.refresh()
+        self.wait_for(lambda: len(calls) == 3)
+        self.assertEqual(calls[2], False)
+
+    def test_slow_builds_print_one_line(self):
+        for stats, lines in (({"seconds": 25, "cpu_seconds": 3, "processes": {"git": 30, "gh": 6, "other": 2},
+                               "fetched": ["a"], "cache": {"hits": 9, "misses": 0}}, 1),
+                             ({"seconds": 2, "cpu_seconds": .5, "processes": {"git": 40, "gh": 0, "other": 0},
+                               "fetched": [], "cache": {"hits": 0, "misses": 0}}, 0)):
+            with self.subTest(seconds=stats["seconds"]), mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+                cache = snapshot.Cache(builder=lambda: {"rows": [], "build_stats": stats})
+                cache.start()
+                self.wait_for(lambda: cache.get()["data"] is not None)
+                cache.close()
+                printed = [l for l in err.getvalue().splitlines() if l.startswith("relay: build ")]
+                self.assertEqual(len(printed), lines)
+        self.assertEqual(snapshot.build_line(stats),
+                         "Last build 2.0 s, 0.5 s CPU, 40 processes (git 40, gh 0, other 0), fetched 0, cache 0 hits")
 
     def wait_for(self, predicate):
         until = time.monotonic() + 2

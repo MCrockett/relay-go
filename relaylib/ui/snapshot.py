@@ -3,6 +3,7 @@ import concurrent.futures
 import contextvars
 import dataclasses
 import datetime as dt
+import inspect
 import json
 import os
 import re
@@ -559,7 +560,21 @@ def build(full=False, store=None):
     with gitops.read_memo(), scancache.use(store), buildstats.collect() as stats:
         data = _build(root=status.projects_root(), full=full)
         store.prune(status.checkouts(status.projects_root()))
+        data["build_stats"] = stats.finish()
     return data
+
+
+def build_line(stats):
+    """One line for a build's cost (dashboard-scan R12), the same words as the page's."""
+    p = stats.get("processes") or {}
+    return (f"Last build {stats.get('seconds', 0):.1f} s, {stats.get('cpu_seconds', 0):.1f} s CPU, "
+            f"{sum(p.values())} processes (git {p.get('git', 0)}, gh {p.get('gh', 0)}, other {p.get('other', 0)}), "
+            f"fetched {len(stats.get('fetched') or ())}, cache {(stats.get('cache') or {}).get('hits', 0)} hits")
+
+
+def _slow(stats):
+    """A build worth a line on stderr (R13)."""
+    return stats.get("seconds", 0) > 20 or sum((stats.get("processes") or {}).values()) > 300
 
 
 def _build(root, full):
@@ -658,11 +673,11 @@ def _build(root, full):
 
 
 class Cache:
-    def __init__(self, builder=build, interval=30):
+    def __init__(self, builder=build, interval=60):
         self.builder, self.interval = builder, interval
         self._lock, self._wake, self._stop = threading.Lock(), threading.Event(), threading.Event()
         self._data, self._error, self._at, self._attempted = None, None, None, False
-        self._thread = None
+        self._full, self._thread = False, None
 
     def get(self):
         with self._lock:
@@ -675,8 +690,12 @@ class Cache:
             self._thread = threading.Thread(target=self._run, name="relay-snapshot", daemon=True)
             self._thread.start()
 
-    def refresh(self):
-        self._wake.set()
+    def refresh(self, full=False):
+        """Build again now. full (the page's Refresh) also fetches every repository and asks GitHub again about
+        closed PRs (dashboard-scan D5). One that arrives during a build is kept for the next."""
+        with self._lock:
+            self._full = self._full or full
+            self._wake.set()
 
     def close(self):
         self._stop.set()
@@ -684,14 +703,26 @@ class Cache:
         if self._thread:
             self._thread.join(timeout=1)
 
+    def _call(self, full):
+        try:
+            takes = "full" in inspect.signature(self.builder).parameters
+        except (TypeError, ValueError):
+            takes = False
+        return self.builder(full=full) if takes else self.builder()
+
     def _run(self):
         while not self._stop.is_set():
-            self._wake.clear()
+            with self._lock:  # cleared here, not before the wait: a refresh during the build starts the next one
+                full, self._full = self._full, False
+                self._wake.clear()
             with events.collect() as batch:  # merges a build discovers are announced after it is stored (D10)
                 try:
-                    data = self.builder()
+                    data = self._call(full)
                     with self._lock:
                         self._data, self._error, self._at, self._attempted = data, None, time.time(), True
+                    stats = data.get("build_stats") if isinstance(data, dict) else None
+                    if isinstance(stats, dict) and _slow(stats):
+                        print("relay: build " + build_line(stats).removeprefix("Last build "), file=sys.stderr)
                 except Exception as e:
                     with self._lock:
                         self._error, self._attempted = str(e), True
