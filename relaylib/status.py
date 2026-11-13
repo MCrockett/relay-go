@@ -1,4 +1,5 @@
 """relay status: every feature across the projects folder and its worktrees, and what waits on the owner."""
+import copy
 import datetime
 import glob
 import json
@@ -149,7 +150,22 @@ def _row(repo_dir, slug, st, fetched):
 
 def _remote_features(checkout):
     """(ref, slug, state, has_handoff) for every feature on an origin branch, as of the last fetch.
-    Status does not fetch here: it stays fast and read-only."""
+    Status does not fetch here: it stays fast and read-only. A snapshot build keeps the answer under the
+    repository's origin commits, so a build in which no origin ref moved parses no state (dashboard-scan R2)."""
+    if not scancache.active():
+        return _read_remote_features(checkout)
+    branches = gitops.remote_branches(checkout)
+    key = ("remote_features", gitops.common_dir(checkout),
+           tuple((ref, gitops.head_sha(checkout, ref)) for ref in branches))
+    got = scancache.recall(key)
+    if got is None:
+        got = _read_remote_features(checkout)
+        if not scancache.failed(checkout):  # a failed read is not kept (F2)
+            scancache.remember(key, got)
+    return [(ref, slug, copy.deepcopy(st), handoff) for ref, slug, st, handoff in got]
+
+
+def _read_remote_features(checkout):
     out = []
     for ref in gitops.remote_branches(checkout):
         files = gitops.ls_files(checkout, ref, state.RELAY_DIR)

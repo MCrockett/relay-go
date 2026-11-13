@@ -972,6 +972,18 @@ class DoneReuseTest(StoreBase):
         self.assertEqual(self.row(second)["seen"]["commit"],
                          helpers.sh(self.work, "git", "rev-parse", "origin/develop").strip())
 
+    def test_unmoved_origin_refs_parse_no_state(self):
+        self.build()
+        with mock.patch.object(state, "parse_at", wraps=state.parse_at) as parse:
+            self.build()
+        self.assertEqual([c for c in parse.call_args_list if c.args[1].startswith("origin/")], [])
+        helpers.sh(self.work, "git", "push", "-q", "origin", "develop:other")
+        helpers.sh(self.work, "git", "fetch", "-q", "origin")
+        with mock.patch.object(state, "parse_at", wraps=state.parse_at) as parse:
+            data = self.build()
+        self.assertTrue(parse.call_count)  # a ref moved: the branches are read again
+        self.assertEqual(self.row(data)["stage"], "done")
+
     def test_checked_out_done_branch_is_built_every_time(self):
         helpers.sh(self.work, "git", "switch", "-q", "feat/demo")
         self.build()
