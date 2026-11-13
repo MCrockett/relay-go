@@ -849,6 +849,30 @@ class SharedStoreTest(SnapshotBase):
         self.assertIn("boom", mine[0]["flags"][0])
 
 
+class PublishedTest(SharedStoreTest):
+    """feature() inside a build takes the published commit from the scan (dashboard-scan Task 5)."""
+
+    def test_detail_starts_no_branch_walk_of_its_own(self):
+        for name in ("old-1", "old-2", "old-3"):  # stacked branches carrying older copies of the state
+            helpers.sh(self.work, "git", "push", "-q", "origin", f"HEAD:{name}")
+        self.st["status"] = "drafting"
+        self.save()
+        helpers.sh(self.work, "git", "fetch", "-q", "origin")
+        with mock.patch("relaylib.owneractions.published", wraps=snapshot.owneractions.published) as walk:
+            data = self.build()
+        self.assertEqual(walk.call_count, 0)
+        self.assertEqual(data["rows"][0]["status"], "drafting")
+        self.assertEqual(len(self.reads("for-each-ref")), 1)  # the scan's own read of the origin refs
+        self.assertEqual(len(self.reads("ls-tree")), 3)  # develop, the shared older commit, feat/demo
+        self.assertEqual(data["features"][0]["seen"]["commit"],
+                         helpers.sh(self.work, "git", "rev-parse", "origin/feat/demo").strip())
+
+    def test_detail_endpoint_outside_a_build_walks_the_branches(self):
+        with mock.patch("relaylib.owneractions.fingerprint", wraps=snapshot.owneractions.fingerprint) as spy:
+            snapshot.feature(self.work, "demo")
+        self.assertEqual(spy.call_count, 1)
+
+
 class CacheTest(unittest.TestCase):
     def test_loading_success_failure_and_refresh(self):
         gate, called = threading.Event(), threading.Event()

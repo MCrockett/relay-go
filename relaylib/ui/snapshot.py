@@ -77,11 +77,42 @@ def _local(repo, slug, branch, commit, handoff):
     return changed, local
 
 
-def feature(repo, slug, records=None):
+def published_for(repo, slug, ref):
+    """(commit, state) of the feature on its own origin branch ref, from the build's scan results; None when ref is
+    not that branch, so the caller walks the branches as owner actions do (dashboard-scan R4)."""
+    if not ref or not gitops.remote_ref_exists(repo, ref):
+        return None
+    commit = gitops.head_sha(repo, ref)
+    try:
+        st = owneractions.state_at(repo, slug, commit)
+    except RelayError:
+        return None
+    return (commit, st) if ref == f"origin/{st.get('branch')}" else None
+
+
+def _scan_ref(row):
+    """The origin branch the scan found the row's feature on: its own path for a remote row, else the branch the
+    checked-out state names."""
+    path = row.get("path") or ""
+    if ":" in path:
+        return path.split(":", 1)[0]
+    try:
+        branch = state.read_state(state.state_path(row["checkout"], row["feature"])).get("branch")
+    except (RelayError, OSError):
+        return None
+    return f"origin/{branch}" if branch else None
+
+
+def feature(repo, slug, records=None, published=None):
+    """One feature's detail. published=(commit, state) comes from the snapshot's scan; without it the published
+    branch is found as owner actions find it."""
     repo = allowed_repo(repo)
     archived = False
     try:
-        seen = owneractions.fingerprint(repo, slug, fetch=False)
+        if published is not None:
+            seen = owneractions.seen_at(repo, published[0], published[1])
+        else:
+            seen = owneractions.fingerprint(repo, slug, fetch=False)
     except RelayError:
         # Merging deletes the feature branch. Keep its published history readable on the base.
         seen = None
@@ -100,7 +131,7 @@ def feature(repo, slug, records=None):
         if seen is None:
             raise
     commit = seen["commit"]
-    st = owneractions.state_at(repo, slug, commit)
+    st = published[1] if published is not None and not archived else owneractions.state_at(repo, slug, commit)
     files = gitops.ls_files(repo, commit, f"{state.RELAY_DIR}/{slug}")
     handoff_path = next((p for p in files if p.lower().endswith("/handoff.md")), None)
     handoff = gitops.show(repo, commit, handoff_path) if handoff_path else None
@@ -400,7 +431,7 @@ def _enrich(row, errors, fetched, records):
         return None
     row["repo_path"] = os.path.realpath(repo)
     try:
-        detail = feature(repo, row["feature"], records)
+        detail = feature(repo, row["feature"], records, published_for(repo, row["feature"], _scan_ref(row)))
         st, seen = detail["state"], detail["seen"]
         published = status._remote_row(repo, seen["commit"], row["feature"], st, bool(detail["handoff"]), fetched)
         published["flags"] = [f.replace(seen["commit"], "origin/" + seen["branch"]) for f in published["flags"]]

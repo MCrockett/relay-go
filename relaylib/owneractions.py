@@ -66,6 +66,11 @@ def fingerprint(repo, slug, fetch=True):
     if fetch:
         gitops.fetch(repo)
     commit, st = published(repo, slug)
+    return seen_at(repo, commit, st)
+
+
+def seen_at(repo, commit, st):
+    """The fingerprint of a feature published at commit with state st: the PR head is read from GitHub."""
     result = {"commit": commit, "branch": st["branch"], "stage": st["stage"], "status": st["status"],
               "owner": st.get("owner") or {}, "pr": st.get("pr"), "pr_head": None}
     if st.get("pr"):
