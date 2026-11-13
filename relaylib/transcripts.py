@@ -247,16 +247,19 @@ class FileState:
 
 
 def _valid_entry(entry, provider):
+    """The entry's FileState; raises for an entry this module could not have written."""
     if not isinstance(entry, dict) or not all(
             isinstance(entry.get(k), int) and not isinstance(entry.get(k), bool)
             for k in ("inode", "size", "mtime_ns", "offset")):
         raise ValueError("bad cache entry")
-    if FileState.from_json(entry["state"]).provider != provider:
+    fs = FileState.from_json(entry["state"])
+    if fs.provider != provider:
         raise ValueError("bad cache entry")
-    return entry
+    return fs
 
 
-def _usable(entry, provider):
+def _checked(entry, provider):
+    """The FileState of a usable cache entry, or None."""
     try:
         return _valid_entry(entry, provider) if entry else None
     except (ValueError, KeyError, TypeError, AttributeError):
@@ -279,14 +282,15 @@ def _load_cache():
 
 
 def _advance(path, entry, provider):
-    """Parse the bytes after entry's offset in CHUNK-sized reads (F6); a shrunk or replaced file starts over."""
+    """(entry, its FileState) after parsing the bytes after entry's offset in CHUNK-sized reads (F6); a shrunk or
+    replaced file starts over. Each entry is validated once."""
     st = os.stat(path)
-    entry = _usable(entry, provider)
-    if entry and (entry["inode"], entry["size"], entry["mtime_ns"]) == (st.st_ino, st.st_size, st.st_mtime_ns):
-        return entry  # unchanged since it was read: nothing to parse
-    if not entry or entry["inode"] != st.st_ino or st.st_size < entry["offset"]:
-        entry = {"inode": st.st_ino, "size": 0, "mtime_ns": 0, "offset": 0, "state": FileState(provider).to_json()}
-    fs, offset = FileState.from_json(entry["state"]), entry["offset"]
+    fs = _checked(entry, provider)
+    if fs and (entry["inode"], entry["size"], entry["mtime_ns"]) == (st.st_ino, st.st_size, st.st_mtime_ns):
+        return entry, fs  # unchanged since it was read: nothing to parse
+    if not fs or entry["inode"] != st.st_ino or st.st_size < entry["offset"]:
+        entry, fs = {"inode": st.st_ino, "size": 0, "mtime_ns": 0, "offset": 0}, FileState(provider)
+    offset = entry["offset"]
     if st.st_size > offset:
         with open(path, "rb") as f:
             f.seek(offset)
@@ -303,7 +307,7 @@ def _advance(path, entry, provider):
                     offset += end
                 carry = data[end:]
     return {"inode": st.st_ino, "size": st.st_size, "mtime_ns": st.st_mtime_ns, "offset": offset,
-            "state": fs.to_json()}
+            "state": fs.to_json()}, fs
 
 
 def read_sessions(sessions):
@@ -329,12 +333,11 @@ def read_sessions(sessions):
             turns, problems = [], []
             for path in known:
                 try:
-                    cache["files"][path] = _advance(path, cache["files"].get(path), provider)
+                    cache["files"][path], fs = _advance(path, cache["files"].get(path), provider)
                 except OSError:
                     problems.append("log not found")          # gone now: its cached turns stay counted
-                entry = _usable(cache["files"].get(path), provider)
-                if entry:
-                    fs = FileState.from_json(entry["state"])
+                    fs = _checked(cache["files"].get(path), provider)
+                if fs:
                     turns += fs.turns.values()
                     if fs.problem():
                         problems.append(fs.problem())

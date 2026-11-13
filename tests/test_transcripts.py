@@ -150,6 +150,12 @@ class IncrementalTest(Homes):
         self.assertEqual(len(got["turns"][("claude", "S1")]), 4)
         self.assertEqual(got["unreadable"], {})
 
+    def test_an_unchanged_file_is_validated_once_per_read(self):  # dashboard-scan: CPU per build
+        self.turns()
+        with mock.patch.object(transcripts.FileState, "from_json", wraps=transcripts.FileState.from_json) as check:
+            self.assertEqual(len(self.turns()), 2)
+        self.assertEqual(check.call_count, 1)
+
     def test_replaced_or_shrunk_file_is_read_again(self):
         self.turns()
         with open(self.path, "w") as f:
