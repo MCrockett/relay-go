@@ -46,9 +46,15 @@ def locked(timeout=None):
 
 
 def read():
+    """Every valid sample; parsed once per snapshot build while the file is unchanged (dashboard-scan R7b)."""
+    from . import scancache
+    return scancache.parsed_file(os.path.join(relay_home(), "usage.jsonl"), _read)
+
+
+def _read(path):
     rows = []
     try:
-        with open(os.path.join(relay_home(), "usage.jsonl")) as f:
+        with open(path) as f:
             for line in f:
                 try:
                     row = json.loads(line)

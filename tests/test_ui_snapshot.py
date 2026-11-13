@@ -973,6 +973,50 @@ class DoneReuseTest(StoreBase):
         self.assertEqual(seen["pr_head"], "1" * 40)
 
 
+class SharedReadsTest(StoreBase):
+    """The other steps share the build's reads (dashboard-scan Task 7)."""
+
+    def test_writing_totals_start_no_git_on_a_second_build(self):
+        snapshot.build(store=self.store)
+        from relaylib import scancache
+        with scancache.use(self.store), mock.patch.object(gitops, "network_env"):
+            self.calls.clear()
+            writerusage.summary(status.checkouts(self.tmp))
+        self.assertEqual([c for c in self.calls if c[0] == "git"], [])
+
+    def test_ps_runs_once_per_build(self):
+        with mock.patch("relaylib.sessions._ps", wraps=sessions._ps) as spy:
+            snapshot.build(store=self.store)
+        self.assertEqual(len([c for c in spy.call_args_list if c.args[0] == "pid=,lstart="]), 1)
+
+    def test_usage_samples_parse_once_until_the_file_changes(self):
+        from relaylib import scancache
+        os.makedirs(os.path.join(self.tmp, "relayhome"), exist_ok=True)
+        path = os.path.join(self.tmp, "relayhome", "usage.jsonl")
+        helpers.write(path, json.dumps({"provider": "codex", "sampled_at": "2026-11-12T00:00:00+00:00",
+                                        "resets_at": "2026-11-19T00:00:00+00:00", "used_pct": 10}) + "\n")
+        with mock.patch.object(usage, "_read", wraps=usage._read) as spy:
+            for _ in range(2):
+                with scancache.use(self.store):
+                    self.assertEqual(len(usage.read()), 1)
+                    usage.read()
+            self.assertEqual(spy.call_count, 1)
+            with open(path, "a") as f:
+                f.write(json.dumps({"provider": "claude", "sampled_at": "2026-11-12T00:00:00+00:00",
+                                    "resets_at": "2026-11-19T00:00:00+00:00", "used_pct": 5}) + "\n")
+            with scancache.use(self.store):
+                self.assertEqual(len(usage.read()), 2)
+            self.assertEqual(spy.call_count, 2)
+
+    def test_merged_record_is_parsed_once_per_build(self):
+        from relaylib import merged
+        merged.mark_merged(self.work, 99)
+        self.build()
+        with mock.patch.object(merged, "_read_raw", wraps=merged._read_raw) as spy:
+            self.build()
+        self.assertEqual(spy.call_count, 0)  # unchanged since the last build
+
+
 class CacheTest(unittest.TestCase):
     def test_loading_success_failure_and_refresh(self):
         gate, called = threading.Event(), threading.Event()

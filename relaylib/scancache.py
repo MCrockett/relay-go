@@ -25,12 +25,13 @@ class Store:
         self.answers = {}          # answers keyed by commit ids, which cannot change (merge bases, merge logs)
         self.done = {}             # (repo, slug) -> (reuse key, row, detail) of a done feature (D3)
         self.generation = {}       # common dir -> how many times a build fetched it
+        self.files = {}            # path -> (stamp, parsed value) of a file a build parses (D7a)
         self.build = {}            # per-build answers, reset by use()
 
     def begin(self):
         with self.lock:
             self.build = {"stamps": {}, "commons": {}, "used": {}, "errors": {}, "absent": set(),
-                          "answers": set(), "done": set()}
+                          "answers": set(), "done": set(), "files": set()}
 
     def prune(self, checkouts=None):
         """Keep only what this build used (R14): the trees of the commits it resolved, every blob and parsed state
@@ -52,6 +53,7 @@ class Store:
                         table.pop(common, None)
             self.answers = {k: v for k, v in self.answers.items() if k in self.build.get("answers", ())}
             self.done = {k: v for k, v in self.done.items() if k in self.build.get("done", ())}
+            self.files = {k: v for k, v in self.files.items() if k in self.build.get("files", ())}
             if checkouts is not None:
                 real = {os.path.realpath(c) for c in checkouts}
                 self.checkout_facts = {c: f for c, f in self.checkout_facts.items() if c in real}
@@ -528,3 +530,29 @@ def done_put(repo, slug, key, row, detail):
     with store.lock:
         store.build["done"].add((repo, slug))
         store.done[(repo, slug)] = (key, copy.deepcopy(row), copy.deepcopy(detail))
+
+
+def _copy(value):
+    if isinstance(value, list):
+        return [dict(v) if isinstance(v, dict) else copy.deepcopy(v) for v in value]
+    return copy.deepcopy(value)
+
+
+def parsed_file(path, parse):
+    """parse(path), kept across builds while the file's stamp is unchanged (dashboard-scan D7a, R7b). Each read
+    stats the file, so a write earlier in the same build is seen. Outside a build it simply parses. Callers get
+    their own copy."""
+    store = active()
+    if store is None:
+        return parse(path)
+    now = stamp([path])
+    with store.lock:
+        store.build["files"].add(path)
+        old = store.files.get(path)
+    if old is not None and old[0] == now:
+        buildstats.hit()
+        return _copy(old[1])
+    got = parse(path)
+    with store.lock:
+        store.files[path] = (now, got)
+    return _copy(got)
