@@ -8,6 +8,7 @@
   "branch": "perf/dashboard-scan",
   "extra_rounds": {},
   "feature": "dashboard-scan",
+  "handed_over_from": "6770b8cd-ab26-4428-b743-d3cafb7b7f61",
   "history": {
     "plan": [
       {
@@ -37,8 +38,8 @@
   },
   "owner": {
     "provider": "claude",
-    "session": "6770b8cd-ab26-4428-b743-d3cafb7b7f61",
-    "since": "2026-11-12T22:12:14-05:00",
+    "session": "64dd3837-ab64-43a0-8d14-c7aa66c038c3",
+    "since": "2026-11-13T06:40:14-05:00",
     "worktree": "dashboard-scan"
   },
   "owner_actions": [
@@ -77,7 +78,7 @@
   "small": false,
   "stage": "build",
   "status": "drafting",
-  "updated": "2026-11-12T23:04:34-05:00",
+  "updated": "2026-11-13T06:40:14-05:00",
   "verdicts": {
     "plan": "GO",
     "spec": "GO"
