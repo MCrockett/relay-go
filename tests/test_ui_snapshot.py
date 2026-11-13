@@ -1241,6 +1241,22 @@ class CacheTest(unittest.TestCase):
         self.wait_for(lambda: len(calls) == 3)
         self.assertEqual(calls[2], False)
 
+    def test_every_build_shares_the_cache_store(self):  # dashboard-scan plan Task 1: the reuse lives with relay ui
+        stores = []
+
+        def build(full=False, store=None):
+            stores.append(store)
+            return {"rows": []}
+        cache = snapshot.Cache(builder=build)
+        self.addCleanup(cache.close)
+        cache.start()
+        self.wait_for(lambda: stores)
+        cache.refresh(full=True)
+        self.wait_for(lambda: len(stores) == 2)
+        self.assertIsNotNone(stores[0])
+        self.assertIs(stores[0], stores[1])
+        self.assertIs(stores[0], cache.store)
+
     def test_slow_builds_print_one_line(self):
         for stats, lines in (({"seconds": 25, "cpu_seconds": 3, "processes": {"git": 30, "gh": 6, "other": 2},
                                "fetched": ["a"], "cache": {"hits": 9, "misses": 0}}, 1),

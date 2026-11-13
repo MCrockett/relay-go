@@ -690,6 +690,7 @@ class Cache:
         self._lock, self._wake, self._stop = threading.Lock(), threading.Event(), threading.Event()
         self._data, self._error, self._at, self._attempted = None, None, None, False
         self._full, self._thread = False, None
+        self.store = scancache.Store()  # one store for every build: the cross-build reuse lives here (D1)
 
     def get(self):
         with self._lock:
@@ -717,10 +718,11 @@ class Cache:
 
     def _call(self, full):
         try:
-            takes = "full" in inspect.signature(self.builder).parameters
+            params = inspect.signature(self.builder).parameters
         except (TypeError, ValueError):
-            takes = False
-        return self.builder(full=full) if takes else self.builder()
+            params = {}
+        kwargs = {k: v for k, v in (("full", full), ("store", self.store)) if k in params}
+        return self.builder(**kwargs)
 
     def _run(self):
         while not self._stop.is_set():
