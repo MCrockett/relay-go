@@ -82,3 +82,17 @@ class StateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RelayDirTest(unittest.TestCase):
+    def test_a_build_lists_each_checkout_once(self):  # dashboard-scan: one spelling per checkout per build
+        from unittest import mock
+        from relaylib import scancache
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "Docs", "relay"))
+            with scancache.use(scancache.Store()), mock.patch("os.listdir", wraps=os.listdir) as listing:
+                for _ in range(3):
+                    self.assertEqual(state.relay_dir(root), os.path.join(root, "Docs", "relay"))
+            self.assertEqual(listing.call_count, 2)
+            os.rename(os.path.join(root, "Docs"), os.path.join(root, "docs"))
+            self.assertEqual(state.relay_dir(root), os.path.join(root, "docs", "relay"))  # outside a build: live

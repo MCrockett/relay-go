@@ -150,6 +150,22 @@ class IncrementalTest(Homes):
         self.assertEqual(len(got["turns"][("claude", "S1")]), 4)
         self.assertEqual(got["unreadable"], {})
 
+    def test_an_unchanged_file_is_validated_once_per_read(self):  # dashboard-scan: CPU per build
+        self.turns()
+        with mock.patch.object(transcripts.FileState, "from_json", wraps=transcripts.FileState.from_json) as check:
+            self.assertEqual(len(self.turns()), 2)
+        self.assertEqual(check.call_count, 1)
+
+    def test_an_unchanged_read_does_not_rewrite_the_cache(self):  # dashboard-scan: no 12 MB write per build
+        self.turns()
+        before = os.stat(self.cache)
+        self.turns()
+        self.assertEqual(os.stat(self.cache).st_ino, before.st_ino)
+        with open(self.path, "a") as f:
+            f.write(claude("m3", "2026-10-06T16:05:00Z") + "\n")
+        self.assertEqual(len(self.turns()), 3)
+        self.assertNotEqual(os.stat(self.cache).st_ino, before.st_ino)
+
     def test_replaced_or_shrunk_file_is_read_again(self):
         self.turns()
         with open(self.path, "w") as f:
@@ -250,3 +266,64 @@ class IncrementalTest(Homes):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IndexTest(Homes):
+    """dashboard-scan Task 7: one walk per provider, kept under folder stamps."""
+
+    def setUp(self):
+        super().setUp()
+        from relaylib import scancache
+        self.scancache, self.store = scancache, scancache.Store()
+        self.projects, self.sessions = transcripts.claude_projects(), transcripts.codex_sessions()
+        for path in (os.path.join(self.projects, "-a", "S1.jsonl"),
+                     os.path.join(self.projects, "-b", "S1", "subagents", "agent-1.jsonl"),
+                     os.path.join(self.projects, "-a", "OTHER.jsonl"),
+                     os.path.join(self.projects, "-a", ".hidden.jsonl"),
+                     os.path.join(self.sessions, "2026", "10", "06", "rollout-2026-10-06T12-00-00-C1.jsonl"),
+                     os.path.join(self.sessions, "2026", "10", "06", "notes.jsonl")):
+            helpers.write(path, "")
+        self.walks = 0
+        real = transcripts._walk
+
+        def walk(provider):
+            self.walks += 1
+            return real(provider)
+
+        p = mock.patch.object(transcripts, "_walk", side_effect=walk)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def lookups(self):
+        with self.scancache.use(self.store), mock.patch.object(transcripts.glob, "glob",
+                                                               side_effect=AssertionError("glob in a build")):
+            return (transcripts.files_for("claude", "S1"), transcripts.files_for("codex", "C1"),
+                    transcripts.files_for("claude", "S2"), transcripts.files_for("codex", "missing"))
+
+    def test_index_answers_as_the_globs_do(self):
+        outside = (transcripts.files_for("claude", "S1"), transcripts.files_for("codex", "C1"),
+                   transcripts.files_for("claude", "S2"), transcripts.files_for("codex", "missing"))
+        self.assertEqual(self.lookups(), outside)
+        self.assertEqual(len(outside[0]), 2)
+
+    def test_unchanged_folders_are_not_walked_again(self):
+        self.lookups()
+        self.assertEqual(self.walks, 2)
+        self.lookups()
+        self.assertEqual(self.walks, 2)
+
+    def test_a_new_transcript_is_found_by_the_next_build(self):
+        self.lookups()
+        helpers.write(os.path.join(self.projects, "-c", "S2.jsonl"), "")
+        helpers.write(os.path.join(self.projects, "-a", "S2", "subagents", "agent-2.jsonl"), "")
+        helpers.write(os.path.join(self.sessions, "2026", "11", "12", "rollout-2026-11-12T08-00-00-C1.jsonl"), "")
+        claude_s1, codex_c1, claude_s2, _ = self.lookups()
+        self.assertEqual(len(claude_s2), 2)
+        self.assertEqual(len(codex_c1), 2)
+
+    def test_codex_window_lists_from_the_index(self):
+        from relaylib import availability
+        with self.scancache.use(self.store), mock.patch.object(availability.glob, "glob",
+                                                               side_effect=AssertionError("glob in a build")):
+            self.assertIsNone(availability.codex_window(availability.WEEK_MINUTES))
+        self.assertEqual(self.walks, 1)

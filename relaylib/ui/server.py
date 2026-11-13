@@ -159,7 +159,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 raise RelayError("request must be a JSON object")
             if path == "/api/refresh":
-                self.server.cache.refresh()
+                self.server.cache.refresh(full=True)
                 self.reply(202, {"message": "refresh requested"})
             elif path == "/api/action":
                 try:

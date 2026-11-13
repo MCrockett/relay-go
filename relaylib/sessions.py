@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import time
 
+from . import buildstats
 from .config import relay_home
 
 STATES = ("permission", "waiting", "working", "ended")
@@ -51,6 +52,7 @@ def _valid_process(process):
 
 def _ps(columns, timeout):
     """`ps -A -o <columns>` lines, or None when ps is missing, fails, times out or prints nothing."""
+    buildstats.count(["ps"])
     try:
         p = subprocess.run(["ps", "-A", "-o", columns], capture_output=True, text=True, timeout=timeout,
                            env=dict(os.environ, LC_ALL="C"))
@@ -88,7 +90,8 @@ def find_process(provider, lines, start_pid):
 
 def alive(records):
     """Session ids whose recorded process still runs, or None when that cannot be checked (running-now D2)."""
-    lines = _ps("pid=,lstart=", ALIVE_TIMEOUT_S)
+    from . import scancache
+    lines = scancache.per_build(("ps", "alive"), lambda: _ps("pid=,lstart=", ALIVE_TIMEOUT_S))  # one ps per build
     if lines is None:
         return None
     running = {}
@@ -309,6 +312,14 @@ def capture(provider, stream, now=None):
     return 0
 
 
+def _load_record(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
 def read_records():
     """Every readable, well-formed session record."""
     out = []
@@ -316,11 +327,10 @@ def read_records():
         names = [n for n in os.listdir(folder()) if n.endswith(".json")]
     except OSError:
         return out
+    from . import scancache
     for name in names:
-        try:
-            with open(os.path.join(folder(), name)) as f:
-                record = json.load(f)
-        except (OSError, ValueError):
+        record = scancache.parsed_file(os.path.join(folder(), name), _load_record)
+        if record is None:
             continue
         if _valid(record) and isinstance(record.get("session_id"), str):
             out.append(record)

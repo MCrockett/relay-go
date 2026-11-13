@@ -102,11 +102,12 @@ class ServerTest(unittest.TestCase):
         page = self.request("/?t=test-token")[1]
         for filler in ("A little oversight", "rail-note", "<footer", "The next move is yours", 'class="stats"'):
             self.assertNotIn(filler, page)
-        for header in ('id="summary"', 'id="usage-strip"', 'id="refresh"', 'id="updated"'):
+        for header in ('id="summary"', 'id="usage-strip"', 'id="refresh"', 'id="updated"', 'id="build-stats"'):
             self.assertIn(header, page)
         # Inbox cards offer each ask's own buttons (waiting-visibility D7); Release stays in the feature detail.
         self.assertIn("actions(row,new Set(cardButtons(row)))", page)
         self.assertIn("actions(d)", page)
+        self.assertIn("buildLine(data.build_stats)", page)  # dashboard-scan R12
 
     def test_page_reads_like_an_inbox(self):
         page = self.request("/?t=test-token")[1]
@@ -136,7 +137,7 @@ class ServerTest(unittest.TestCase):
         self.assertTrue(json.loads(text)["loading"])
         with mock.patch.object(self.cache, "refresh") as refresh:
             self.assertEqual(self.request("/api/refresh", "POST", {})[0], 202)
-            refresh.assert_called_once()
+            refresh.assert_called_once_with(full=True)  # the page's Refresh fetches everything (dashboard-scan D5)
         data = {"rows": [], "features": [{"repo_path": "/fixture", "feature": "demo"}], "usage": {"providers": {}}}
         with mock.patch.object(self.cache, "get", return_value={"data": data}):
             self.assertEqual(json.loads(self.request("/api/usage")[1]), data["usage"])

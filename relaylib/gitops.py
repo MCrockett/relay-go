@@ -7,6 +7,7 @@ import signal
 import subprocess
 import threading
 
+from . import buildstats, scancache
 from .errors import RelayError
 
 PR_FIELDS = "number,state,baseRefName,headRefOid,statusCheckRollup,isDraft"
@@ -58,6 +59,7 @@ SSH_OPTIONS = "ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAlive
 def run(args, cwd, check=True, env=None, timeout=None):
     """Run a command. With a timeout it runs in its own process group, and a hung run is stopped whole
     (git's ssh or https helper included) and raised as an error."""
+    buildstats.count(args)
     if timeout is None:
         p = subprocess.run(args, cwd=cwd, capture_output=True, text=True, env=env)
     else:
@@ -107,10 +109,18 @@ def repo_root(cwd):
     return p.stdout.strip()
 
 
-def repo_name(root):
+def _origin(root):
+    """(returncode, url) of `git remote get-url origin`, from the build's facts when it has them."""
+    facts = scancache.repo_facts(root)
+    if facts is not None:
+        return (0 if facts["url"] else 2), facts["url"]
     p = git(root, "remote", "get-url", "origin", check=False)
-    url = p.stdout.strip()
-    if p.returncode == 0 and url:
+    return p.returncode, p.stdout.strip()
+
+
+def repo_name(root):
+    code, url = _origin(root)
+    if code == 0 and url:
         return os.path.basename(url.rstrip("/")).removesuffix(".git")
     return os.path.basename(root)
 
@@ -118,17 +128,35 @@ def repo_name(root):
 def origin_url(root):
     """The origin URL, or the checkout's real path when there is none: a repo identity that,
     unlike the folder or repo name, cannot collide across owners."""
-    p = git(root, "remote", "get-url", "origin", check=False)
-    url = p.stdout.strip()
-    return url if p.returncode == 0 and url else os.path.realpath(root)
+    code, url = _origin(root)
+    return url if code == 0 and url else os.path.realpath(root)
 
 
 def current_branch(root):
+    facts = scancache.checkout_facts(root)
+    if facts is not None:
+        return facts["branch"]
     return git(root, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
 
 
 def head_sha(root, ref="HEAD"):
+    if ref == "HEAD":
+        facts = scancache.checkout_facts(root)
+        if facts is not None:
+            return facts["head"]
+    elif ref.startswith("origin/"):
+        facts = scancache.repo_facts(root)
+        if facts is not None and ref in facts["refs"]:
+            return facts["refs"][ref]
     return git(root, "rev-parse", ref).stdout.strip()
+
+
+def remote_ref_exists(root, ref):
+    """True when origin/<branch> resolves, as `git rev-parse --verify -q` answers."""
+    facts = scancache.repo_facts(root)
+    if facts is not None:
+        return ref in facts["refs"]
+    return git(root, "rev-parse", "--verify", "-q", ref, check=False).returncode == 0
 
 
 def changed_paths_under(root, prefix):
@@ -176,6 +204,7 @@ def network_env(root):
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
     env.setdefault("GIT_HTTP_LOW_SPEED_LIMIT", "1000")
     env.setdefault("GIT_HTTP_LOW_SPEED_TIME", "30")
+    buildstats.count(["git"])
     configured = subprocess.run(["git", "config", "--get", "core.sshCommand"], cwd=root, capture_output=True,
                                 text=True).stdout.strip()
     if "GIT_SSH_COMMAND" not in env and "GIT_SSH" not in env and not configured:
@@ -207,20 +236,32 @@ def fetch(root):
 
 def common_dir(root):
     """The git directory a checkout shares with its linked worktrees (they share refs, so fetch once)."""
+    facts = scancache.repo_facts(root)
+    if facts is not None:
+        return facts["common"]
     return os.path.realpath(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
 
 
 def worktrees(root):
+    facts = scancache.repo_facts(root)
+    if facts is not None:
+        return list(facts["worktrees"])
     out = git(root, "worktree", "list", "--porcelain").stdout
     return [line[len("worktree "):] for line in out.splitlines() if line.startswith("worktree ")]
 
 
 def remote_branches(root):
+    facts = scancache.repo_facts(root)
+    if facts is not None:
+        return [r for r in facts["refs"] if r not in ("origin", "origin/HEAD")]
     refs = git(root, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin").stdout.split()
     return [r for r in refs if r not in ("origin", "origin/HEAD")]
 
 
 def show(root, ref, path):
+    found, blob = scancache.lookup(root, ref, path)
+    if found:
+        return None if blob is None else scancache.blob(root, blob)
     p = git(root, "show", f"{ref}:{path}", check=False)
     return p.stdout if p.returncode == 0 else None
 
@@ -229,6 +270,7 @@ def cat_files(root, specs):
     """{"<rev>:<path>": text or None} for many blobs in one git process."""
     if not specs:
         return {}
+    buildstats.count(["git"])
     p = subprocess.run(["git", "cat-file", "--batch"], cwd=root, input="".join(f"{s}\n" for s in specs).encode(),
                        capture_output=True)
     if p.returncode != 0:
@@ -251,6 +293,14 @@ def cat_files(root, specs):
 
 def ls_files(root, ref, prefix):
     want = prefix.lower().rstrip("/") + "/"
+    if scancache.active() and want.startswith(scancache.RELAY_PREFIX):
+        commit = scancache.commit_of(root, ref)
+        if commit is None:
+            return []
+        try:
+            return [p for p in scancache.tree(root, commit) if p.lower().startswith(want)]
+        except RelayError:
+            return []
     out = git(root, "ls-tree", "-r", "--name-only", ref, check=False).stdout
     return [line for line in out.splitlines() if line.lower().startswith(want)]
 
