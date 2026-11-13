@@ -973,6 +973,11 @@ class DoneReuseTest(StoreBase):
         self.assertEqual(seen["pr_head"], "1" * 40)
 
 
+def scancache_use(store):
+    from relaylib import scancache
+    return scancache.use(store)
+
+
 class SharedReadsTest(StoreBase):
     """The other steps share the build's reads (dashboard-scan Task 7)."""
 
@@ -1015,6 +1020,23 @@ class SharedReadsTest(StoreBase):
         with mock.patch.object(merged, "_read_raw", wraps=merged._read_raw) as spy:
             self.build()
         self.assertEqual(spy.call_count, 0)  # unchanged since the last build
+
+    def test_transcripts_are_walked_once_across_builds(self):
+        from relaylib import transcripts
+        helpers.write(os.path.join(transcripts.claude_projects(), "-w", "S1.jsonl"), "")
+        helpers.write(os.path.join(transcripts.codex_sessions(), "2026", "11", "12",
+                                   "rollout-2026-11-12T08-00-00-C1.jsonl"), "")
+        self.build()
+        with mock.patch.object(transcripts, "_walk", wraps=transcripts._walk) as walk, \
+                mock.patch.object(transcripts.glob, "glob", wraps=transcripts.glob.glob) as globbed:
+            self.build()
+            logs = [c for c in globbed.call_args_list
+                    if c.args[0].startswith((transcripts.claude_projects(), transcripts.codex_sessions()))]
+            self.assertEqual((walk.call_count, logs), (0, []))
+            helpers.write(os.path.join(transcripts.claude_projects(), "-w", "S2.jsonl"), "")
+            with scancache_use(self.store):
+                self.assertEqual(len(transcripts.files_for("claude", "S2")), 1)
+            self.assertEqual(walk.call_count, 1)
 
 
 class CacheTest(unittest.TestCase):

@@ -26,6 +26,7 @@ class Store:
         self.done = {}             # (repo, slug) -> (reuse key, row, detail) of a done feature (D3)
         self.generation = {}       # common dir -> how many times a build fetched it
         self.files = {}            # path -> (stamp, parsed value) of a file a build parses (D7a)
+        self.transcripts = {}      # provider -> (folder stamps, index) of its transcript files (R7b)
         self.build = {}            # per-build answers, reset by use()
 
     def begin(self):

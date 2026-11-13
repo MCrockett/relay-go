@@ -18,6 +18,13 @@ TAIL_BYTES = 256 * 1024
 STALE_S = 3600  # a 5-hour sample older than this is shown as stale (five-hour-usage D2)
 
 
+def _mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0  # removed since it was listed
+
+
 def _codex_home():
     return os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
 
@@ -40,8 +47,11 @@ def codex_weekly():
 
 def codex_window(minutes):
     """(used_percent, resets_at, source_time) for the Codex limit window of this length, or None."""
-    files = sorted(glob.glob(os.path.join(_codex_home(), "sessions", "*", "*", "*", "*.jsonl")),
-                   key=os.path.getmtime, reverse=True)
+    from . import transcripts  # a snapshot build lists from its Codex index (dashboard-scan R7b)
+    found = transcripts.index("codex")
+    files = found["files"] if found is not None else glob.glob(
+        os.path.join(_codex_home(), "sessions", "*", "*", "*", "*.jsonl"))
+    files = sorted(files, key=_mtime, reverse=True)
     for path in files[:5]:
         try:  # limits are logged on every turn: the end of the file is enough, however long the session
             with open(path, "rb") as f:

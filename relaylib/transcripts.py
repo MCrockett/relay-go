@@ -5,7 +5,7 @@ import glob
 import json
 import os
 
-from . import config
+from . import buildstats, config, scancache
 from .errors import RelayError
 from .usage import timestamp
 
@@ -24,7 +24,14 @@ def codex_sessions():
 
 def files_for(provider, session):
     """Every log file of one session. A Claude transcript sits under the folder of the cwd the session started
-    in, not the repo, so every projects folder is searched."""
+    in, not the repo, so every projects folder is searched. Inside a snapshot build the answer comes from the
+    provider's index (dashboard-scan Task 7); outside one, from globs."""
+    found = index(provider)
+    if found is not None:
+        if provider == "claude":
+            return sorted(found["sessions"].get(session, ()))
+        tail = f"-{session}.jsonl"
+        return sorted(p for p in found["files"] if _rollout_of(os.path.basename(p), tail))
     if provider == "claude":
         root = claude_projects()
         found = glob.glob(os.path.join(root, "*", glob.escape(session) + ".jsonl"))
@@ -34,6 +41,78 @@ def files_for(provider, session):
     else:
         found = []
     return sorted(found)
+
+
+def _rollout_of(name, tail):
+    """The glob rollout-*-<session>.jsonl, as a name test."""
+    return name.startswith("rollout-") and name.endswith(tail) and len(name) >= len("rollout-") + len(tail)
+
+
+def _stat(folder):
+    try:
+        s = os.stat(folder)
+        return folder, s.st_ino, s.st_mtime_ns
+    except OSError:
+        return folder, None
+
+
+def _entries(folder, stamps):
+    """Visible names in folder, as glob's * sees them: (name, path, is_dir). The folder is stamped before it is
+    listed, so a file added during the walk changes the stamp and the next build walks again."""
+    stamps.append(_stat(folder))
+    try:
+        with os.scandir(folder) as it:
+            return [(e.name, e.path, e.is_dir()) for e in it if not e.name.startswith(".")]
+    except OSError:
+        return []
+
+
+def _walk(provider):
+    """(folder stamps, index). Claude: projects/*/<sid>.jsonl and projects/*/<sid>/subagents/*.jsonl, keyed by
+    session. Codex: every sessions/*/*/*/*.jsonl."""
+    stamps = []
+    if provider == "claude":
+        sessions = {}
+        for _, project, is_dir in _entries(claude_projects(), stamps):
+            if not is_dir:
+                continue
+            for name, path, sub in _entries(project, stamps):
+                if not sub:
+                    if name.endswith(".jsonl"):
+                        sessions.setdefault(name[:-len(".jsonl")], []).append(path)
+                    continue
+                for n, agents, d in _entries(path, stamps):
+                    if n == "subagents" and d:
+                        sessions.setdefault(name, []).extend(
+                            p for n2, p, d2 in _entries(agents, stamps) if not d2 and n2.endswith(".jsonl"))
+        return tuple(stamps), {"sessions": sessions}
+    level = [codex_sessions()]
+    for _ in range(3):
+        level = [p for f in level for _, p, d in _entries(f, stamps) if d]
+    files = [p for day in level for n, p, d in _entries(day, stamps) if not d and n.endswith(".jsonl")]
+    return tuple(stamps), {"files": sorted(files)}
+
+
+def index(provider):
+    """The provider's transcript index inside a snapshot build, or None outside one. It is kept across builds
+    under the (inode, mtime) of every folder it walked: a new or removed file changes its folder's mtime, so an
+    unchanged stamp means no walk (R7b)."""
+    store = scancache.active()
+    if store is None or provider not in ("claude", "codex"):
+        return None
+    return scancache.per_build(("transcripts", provider), lambda: _kept(store, provider))
+
+
+def _kept(store, provider):
+    with store.lock:
+        old = store.transcripts.get(provider)
+    if old is not None and tuple(_stat(s[0]) for s in old[0]) == old[0]:
+        buildstats.hit()
+        return old[1]
+    stamps, found = _walk(provider)
+    with store.lock:
+        store.transcripts[provider] = (stamps, found)
+    return found
 
 
 def _count(value):
