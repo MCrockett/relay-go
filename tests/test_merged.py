@@ -237,3 +237,16 @@ class GoneRecoveryTest(ResolveTest):  # merge-and-tidy F7: undoing a wrong gone
 for _name in dir(ResolveTest):  # run only the recovery test here
     if _name.startswith("test_") and _name not in GoneRecoveryTest.__dict__:
         setattr(GoneRecoveryTest, _name, None)
+
+
+class BuildCopyTest(unittest.TestCase):  # dashboard-scan: the record is copied one level per read in a build
+    def test_a_changed_copy_leaves_the_kept_record_alone(self):
+        from relaylib import scancache
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        with mock.patch.dict(os.environ, {"RELAY_HOME": tmp}):
+            helpers.write(os.path.join(tmp, "merged.json"), json.dumps({"a#1": True}))
+            with scancache.use(scancache.Store()):
+                got = merged._load()
+                got["b#2"] = True
+                self.assertEqual(merged._load(), {"a#1": True})

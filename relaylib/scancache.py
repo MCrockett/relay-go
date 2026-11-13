@@ -540,10 +540,12 @@ def _copy(value):
     return copy.deepcopy(value)
 
 
-def parsed_file(path, parse):
+def parsed_file(path, parse, copier=None):
     """parse(path), kept across builds while the file's stamp is unchanged (dashboard-scan D7a, R7b). Each read
     stats the file, so a write earlier in the same build is seen. Outside a build it simply parses. Callers get
-    their own copy."""
+    their own copy, made by copier (default: lists of dicts copied one level, anything else deep-copied); a caller
+    whose value is a flat JSON object passes dict."""
+    copier = copier or _copy
     store = active()
     if store is None:
         return parse(path)
@@ -553,11 +555,11 @@ def parsed_file(path, parse):
         old = store.files.get(path)
     if old is not None and old[0] == now:
         buildstats.hit()
-        return _copy(old[1])
+        return copier(old[1])
     got = parse(path)
     with store.lock:
         store.files[path] = (now, got)
-    return _copy(got)
+    return copier(got)
 
 
 ACTIVE_FETCH, QUIET_FETCH = 60, 600  # seconds between fetches of an active and a quiet repository (D4, R8)

@@ -26,7 +26,7 @@ def _gone_path():
 
 def _read(path):
     """The JSON object in path, or {}; parsed once per snapshot build while unchanged (dashboard-scan R7b)."""
-    return scancache.parsed_file(path, _read_raw)
+    return scancache.parsed_file(path, _read_raw, copier=dict)  # flat: _store sets top-level keys only
 
 
 def _read_raw(path):

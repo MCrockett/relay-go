@@ -282,6 +282,8 @@ def _advance(path, entry, provider):
     """Parse the bytes after entry's offset in CHUNK-sized reads (F6); a shrunk or replaced file starts over."""
     st = os.stat(path)
     entry = _usable(entry, provider)
+    if entry and (entry["inode"], entry["size"], entry["mtime_ns"]) == (st.st_ino, st.st_size, st.st_mtime_ns):
+        return entry  # unchanged since it was read: nothing to parse
     if not entry or entry["inode"] != st.st_ino or st.st_size < entry["offset"]:
         entry = {"inode": st.st_ino, "size": 0, "mtime_ns": 0, "offset": 0, "state": FileState(provider).to_json()}
     fs, offset = FileState.from_json(entry["state"]), entry["offset"]
