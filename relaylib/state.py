@@ -17,7 +17,12 @@ def now_iso():
 
 def relay_dir(root):
     """docs/relay spelled the way it exists on disk; a repo may track it as Docs/relay, which a
-    case-sensitive checkout would otherwise not find."""
+    case-sensitive checkout would otherwise not find. A snapshot build looks once per checkout."""
+    from . import scancache
+    return scancache.per_build(("relay_dir", root), lambda: _relay_dir(root))
+
+
+def _relay_dir(root):
     path = root
     for part in RELAY_DIR.split("/"):
         try:
