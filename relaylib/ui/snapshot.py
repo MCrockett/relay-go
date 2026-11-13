@@ -11,17 +11,22 @@ import threading
 import time
 import tomllib
 
-from .. import (agentask, availability, config, events, gitops, health, hookinstall, ledger, leftoff, merged,
-               othersessions, notes as ownernotes, owneractions, reviewjobs, reviewtables, sessions, state, status,
+from .. import (agentask, availability, buildstats, config, events, gitops, health, hookinstall, ledger, leftoff, merged,
+               othersessions, notes as ownernotes, owneractions, reviewjobs, reviewtables, scancache, sessions, state, status,
                usage as samples, verdict, waiting, writerusage)
 from ..errors import RelayError
 
 WORKERS = 8  # parallel fetches and feature details; gh and git are the wait, not the CPU
 
 
+def _allowed():
+    root = status.projects_root()
+    return scancache.per_build(("allowed", root), lambda: {os.path.realpath(p) for p in status.checkouts(root)})
+
+
 def allowed_repo(repo):
     real = os.path.realpath(repo)
-    if real not in {os.path.realpath(p) for p in status.checkouts(status.projects_root())}:
+    if real not in _allowed():
         raise RelayError("repository is not in relay's projects or worktrees")
     return real
 
@@ -370,6 +375,16 @@ def _parallel(fn, items):
         return list(pool.map(lambda pair: pair[0].run(fn, pair[1]), zip(contexts, items)))
 
 
+def _prefetch(members):
+    """Read every relay blob of the repository's origin heads in one batch (dashboard-scan R3)."""
+    repo = members[0]
+    try:
+        heads = {gitops.head_sha(repo, ref) for ref in gitops.remote_branches(repo)}
+    except (RelayError, OSError):
+        return
+    scancache.prefetch(repo, sorted(heads))
+
+
 def _fetch(repo):
     try:
         gitops.fetch(repo)
@@ -406,6 +421,8 @@ def _enrich(row, errors, fetched, records):
             row["flags"].append("local handoff drafted, not pushed yet")
         if detail["local_error"]:
             row["flags"].append(f"could not read the local checkout: {detail['local_error']}")
+        if row.get("scan_error"):
+            row["flags"].append(row["scan_error"])
         if row["repo_path"] in errors:
             row["flags"].append(errors[row["repo_path"]])
             row["actions"] = detail["actions"] = []
@@ -430,56 +447,67 @@ def _left_marks(details):
     return {sid: {"slug": m["slug"], "done": m["done"]} for sid, m in found.items()}
 
 
-def build():
+def build(full=False, store=None):
+    """One snapshot. store is the cross-build cache (dashboard-scan D1); a fresh one when not given, as for the
+    hub's one-shot build (D9)."""
+    store = scancache.Store() if store is None else store
+    with gitops.read_memo(), scancache.use(store), buildstats.collect() as stats:
+        data = _build(root=status.projects_root(), full=full)
+        store.prune(status.checkouts(status.projects_root()))
+    return data
+
+
+def _build(root, full):
     samples.record_codex_sample()
     samples.prune()
-    root = status.projects_root()
     sessions.prune()
     ownernotes.prune()  # with the session records (session-notify D5)
     try:
         records = sessions.read_records()
     except Exception:  # where-i-left-off F4: no records
         records = []
-    with gitops.read_memo():
-        repos, groups = status.checkouts(root), {}
-        for repo in repos:  # linked worktrees share refs: concurrent fetches of one repository collide
-            try:
-                groups.setdefault(gitops.common_dir(repo), []).append(repo)
-            except RelayError:
-                groups.setdefault(repo, []).append(repo)
-        fetched = {}
-        for members, error in zip(groups.values(), _parallel(lambda members: _fetch(members[0]), list(groups.values()))):
-            fetched.update(dict.fromkeys(members, error))
-        errors = {os.path.realpath(repo): error for repo, error in fetched.items() if error}
+    repos, groups = status.checkouts(root), {}
+    for repo in repos:  # linked worktrees share refs: concurrent fetches of one repository collide
         try:
-            rows, claimed = status.scan_with_claims(root)  # kept for rows whose details fail to load (D2)
-            details = [d for d in _parallel(lambda row: _enrich(row, errors, fetched, records), rows) if d]
-            waiting.one_ask_per_session(rows)
-            scan_note = None
-        except Exception as e:  # where-i-left-off F5: the rest of the dashboard is still built
-            rows, claimed, details, scan_note = [], set(), [], f"Features could not be read: {e}"
-        writing = _writing_or_error(repos, errors)
-        try:
-            marks = _left_marks(details)
-        except Exception:  # where-i-left-off F5: sessions without feature marks
-            marks = {}
-        try:
-            alive = sessions.alive(records)
-        except Exception:  # running-now D2: unknown liveness
-            alive = None
-        now = time.time()
-        try:
-            turns = leftoff.codex_turns(records, alive, now)  # one read per run, for both lists (codex-liveness D4)
-        except Exception:  # D5: unknown, running-now D3 decides
-            turns = None
-        try:
-            left = leftoff.projects(records, marks, root, alive=alive, now=now, turns=turns)
-        except Exception:  # F4
-            left = []
-        try:
-            run = leftoff.running(records, marks, root, alive, now, turns)
-        except Exception:  # running-now F4
-            run = []
+            groups.setdefault(gitops.common_dir(repo), []).append(repo)
+        except RelayError:
+            groups.setdefault(repo, []).append(repo)
+    fetched = {}
+    for (common, members), error in zip(groups.items(),
+                                        _parallel(lambda members: _fetch(members[0]), list(groups.values()))):
+        scancache.restamp(common)  # the fetch wrote its refs
+        fetched.update(dict.fromkeys(members, error))
+    _parallel(_prefetch, list(groups.values()))
+    errors = {os.path.realpath(repo): error for repo, error in fetched.items() if error}
+    try:
+        rows, claimed = status.scan_with_claims(root, records, fetched)  # kept for rows whose details fail to load (D2)
+        details = [d for d in _parallel(lambda row: _enrich(row, errors, fetched, records), rows) if d]
+        waiting.one_ask_per_session(rows)
+        scan_note = None
+    except Exception as e:  # where-i-left-off F5: the rest of the dashboard is still built
+        rows, claimed, details, scan_note = [], set(), [], f"Features could not be read: {e}"
+    writing = _writing_or_error(repos, errors)
+    try:
+        marks = _left_marks(details)
+    except Exception:  # where-i-left-off F5: sessions without feature marks
+        marks = {}
+    try:
+        alive = sessions.alive(records)
+    except Exception:  # running-now D2: unknown liveness
+        alive = None
+    now = time.time()
+    try:
+        turns = leftoff.codex_turns(records, alive, now)  # one read per run, for both lists (codex-liveness D4)
+    except Exception:  # D5: unknown, running-now D3 decides
+        turns = None
+    try:
+        left = leftoff.projects(records, marks, root, alive=alive, now=now, turns=turns)
+    except Exception:  # F4
+        left = []
+    try:
+        run = leftoff.running(records, marks, root, alive, now, turns)
+    except Exception:  # running-now F4
+        run = []
     seen = {r["provider"] for r in records}
     hints = {}
     for provider in hookinstall.EVENTS:

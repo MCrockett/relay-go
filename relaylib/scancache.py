@@ -53,6 +53,19 @@ class Store:
                 self.repo_facts = {c: f for c, f in self.repo_facts.items() if c in commons}
 
 
+def per_build(key, make):
+    """make() once per build for key, shared by every step of that build; make() each call outside a build."""
+    store = active()
+    if store is None:
+        return make()
+    with store.lock:
+        if key in store.build:
+            return store.build[key]
+    value = make()
+    with store.lock:
+        return store.build.setdefault(key, value)
+
+
 def active():
     store = _ACTIVE.get()
     return store if store is not None and store.enabled else None
@@ -133,7 +146,7 @@ def _stamp_files(common, *ref_dirs):
 def repo_stamp(common):
     """The stamp of everything a repository's shared facts come from: config, packed refs, the worktrees folder and
     the loose refs under refs/heads and refs/remotes/origin. FETCH_HEAD is left out (D1a)."""
-    paths = [os.path.join(common, "config")] + _stamp_files(common, "refs/heads", "refs/remotes/origin")
+    paths = [os.path.join(common, "config")]
     wt = os.path.join(common, "worktrees")
     try:
         names = sorted(os.listdir(wt))
@@ -141,7 +154,7 @@ def repo_stamp(common):
         names = []
     for name in names:
         paths += [os.path.join(wt, name, "HEAD"), os.path.join(wt, name, "gitdir")]
-    return (tuple(names),) + stamp(paths)
+    return (tuple(names),) + stamp(paths), stamp(_stamp_files(common, "refs/heads", "refs/remotes/origin"))
 
 
 def checkout_stamp(checkout):
@@ -186,12 +199,16 @@ def _read_repo(checkout):
     url = gitops.run(["git", "remote", "get-url", "origin"], checkout, check=False)
     common = gitops.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], checkout)
     trees = gitops.run(["git", "worktree", "list", "--porcelain"], checkout).stdout
-    refs = gitops.run(["git", "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/remotes/origin"],
-                      checkout).stdout
     return {"url": url.stdout.strip() if url.returncode == 0 else "",
             "common": os.path.realpath(common.stdout.strip()),
-            "worktrees": [l[len("worktree "):] for l in trees.splitlines() if l.startswith("worktree ")],
-            "refs": dict(line.rsplit(" ", 1) for line in refs.splitlines() if " " in line)}
+            "worktrees": [l[len("worktree "):] for l in trees.splitlines() if l.startswith("worktree ")]}
+
+
+def _read_refs(checkout):
+    from . import gitops
+    refs = gitops.run(["git", "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/remotes/origin"],
+                      checkout).stdout
+    return dict(line.rsplit(" ", 1) for line in refs.splitlines() if " " in line)
 
 
 def _read_checkout(checkout):
@@ -209,6 +226,7 @@ def repo_facts(checkout):
     common, rstamp, _ = _stamps(store, os.path.realpath(checkout))
     if common is None:
         return None
+    meta, refs = rstamp
     with store.lock:
         cached = store.repo_facts.get(common)
     if cached is not None and cached["stamp"] == rstamp:
@@ -216,8 +234,10 @@ def repo_facts(checkout):
         return cached
     buildstats.miss()
     from .errors import RelayError
-    try:
-        facts = _read_repo(checkout)
+    try:  # a ref move costs one for-each-ref; config or worktree changes read the rest
+        facts = dict(cached) if cached is not None and cached["stamp"][0] == meta else _read_repo(checkout)
+        facts["refs"] = (cached["refs"] if cached is not None and cached["stamp"][1] == refs and "refs" in cached
+                         else _read_refs(checkout))
     except (RelayError, OSError):
         return None
     facts["stamp"] = rstamp

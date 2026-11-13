@@ -14,7 +14,7 @@ from relaylib.ui import snapshot
 from tests import helpers
 
 
-class SnapshotTest(unittest.TestCase):
+class SnapshotBase(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -38,6 +38,8 @@ class SnapshotTest(unittest.TestCase):
         helpers.sh(self.work, "git", "commit", "-qm", "fixture")
         helpers.sh(self.work, "git", "push", "-qu", "origin", "HEAD")
 
+
+class SnapshotTest(SnapshotBase):
     def test_rows_use_published_state_and_label_local_changes(self):
         self.st["status"] = "drafting"
         state.write_state(state.state_path(self.work, "demo"), self.st)
@@ -757,6 +759,94 @@ class SnapshotTest(unittest.TestCase):
         self.save()
         row = snapshot.build()["rows"][0]
         self.assertIsNone(row.get("health"))
+
+
+FACT_READS = (["rev-parse", "--abbrev-ref"], ["rev-parse", "HEAD"], ["remote", "get-url"], ["--git-common-dir"],
+              ["worktree", "list"], ["for-each-ref"])
+
+
+class SharedStoreTest(SnapshotBase):
+    """Builds that share one store, as relay ui's do (dashboard-scan Task 4)."""
+
+    def setUp(self):
+        super().setUp()
+        from relaylib import scancache
+        self.store = scancache.Store()
+        helpers.sh(self.work, "git", "fetch", "-q", "origin")  # a first fetch may add origin/HEAD
+        self.calls = []
+        real_run, real_cat = gitops.run, gitops.cat_files
+
+        def run(args, *a, **k):
+            self.calls.append(list(args))
+            return real_run(args, *a, **k)
+
+        def cat(root, specs):
+            if specs:  # no specs starts no process
+                self.calls.append(["git", "cat-file", "--batch", *specs])
+            return real_cat(root, specs)
+
+        for name, fn in (("run", run), ("cat_files", cat)):
+            p = mock.patch.object(gitops, name, side_effect=fn)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def build(self):
+        self.calls.clear()
+        return snapshot.build(store=self.store)
+
+    def reads(self, *words):
+        return [c for c in self.calls if c[0] == "git" and all(w in c for w in words)]
+
+    def test_second_build_reads_no_facts_and_no_relay_files(self):
+        self.build()
+        self.build()
+        for words in FACT_READS:
+            self.assertEqual(self.reads(*words), [], words)
+        for words in (["ls-tree"], ["show"], ["cat-file"]):
+            self.assertEqual(self.reads(*words), [], words)
+
+    def test_checkouts_are_listed_once_per_build(self):
+        import glob as globmod
+        with mock.patch("relaylib.status.glob.glob", wraps=globmod.glob) as spy:
+            snapshot.build(store=self.store)
+        roots = [c for c in spy.call_args_list if c.args[0] == os.path.join(self.tmp, "*")]
+        self.assertEqual(len(roots), 1)
+
+    def test_local_changes_are_seen_by_the_next_build(self):
+        self.build()
+        self.st["status"] = "drafting"
+        self.save()
+        self.assertEqual(self.build()["rows"][0]["status"], "drafting")
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        row = self.build()["rows"][0]
+        self.assertIn("on origin/feat/demo (not checked out)", row["flags"])
+        tree = os.path.join(self.tmp, "tree")
+        helpers.sh(self.work, "git", "worktree", "add", "-q", tree, "feat/demo")
+        row = self.build()["rows"][0]
+        self.assertEqual(os.path.realpath(row["checkout"]), os.path.realpath(tree))
+
+    def test_unreadable_origin_branches_show_an_error_row(self):
+        with mock.patch.object(status, "_remote_features", side_effect=RelayError("for-each-ref failed: boom")):
+            rows = snapshot.build(store=self.store)["rows"]
+        flagged = [r for r in rows if any("cannot read origin branches" in f for f in r["flags"])]
+        self.assertEqual([r["feature"] for r in flagged], ["demo"])
+
+    def test_repo_with_no_rows_gets_a_question_row(self):
+        os.makedirs(os.path.join(self.tmp, "solo"))
+        _, other = helpers.make_repo(os.path.join(self.tmp, "solo"))
+        target = os.path.join(self.tmp, "solo-repo")
+        os.rename(other, target)
+        real = status._remote_features
+
+        def fail(checkout):
+            if os.path.realpath(checkout) == os.path.realpath(target):
+                raise RelayError("for-each-ref failed: boom")
+            return real(checkout)
+        with mock.patch.object(status, "_remote_features", side_effect=fail):
+            rows = snapshot.build(store=self.store)["rows"]
+        mine = [r for r in rows if os.path.realpath(r["checkout"]) == os.path.realpath(target)]
+        self.assertEqual([r["feature"] for r in mine], ["?"])
+        self.assertIn("boom", mine[0]["flags"][0])
 
 
 class CacheTest(unittest.TestCase):

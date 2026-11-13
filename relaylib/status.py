@@ -6,7 +6,7 @@ import os
 import time
 
 from . import (agentask, cimode, config, freshness, gitops, health, localtests, merged, othersessions, ownership,
-               sessions, state, waiting)
+               scancache, sessions, state, waiting)
 from .errors import RelayError
 
 COLUMNS = ("repo", "feature", "stage", "status", "round", "owner", "verdict")
@@ -17,7 +17,12 @@ def projects_root():
 
 
 def checkouts(root_dir):
-    """Every repo directly under root_dir, plus every worktree those repos list, wherever it lives."""
+    """Every repo directly under root_dir, plus every worktree those repos list, wherever it lives. Listed once per
+    snapshot build and shared by its steps (dashboard-scan R7)."""
+    return list(scancache.per_build(("checkouts", os.path.realpath(root_dir)), lambda: _checkouts(root_dir)))
+
+
+def _checkouts(root_dir):
     seen, out = set(), []
     for repo_dir in sorted(glob.glob(os.path.join(root_dir, "*"))):
         if not os.path.exists(os.path.join(repo_dir, ".git")):
@@ -223,21 +228,29 @@ def scan(root_dir):
     return scan_with_claims(root_dir)[0]
 
 
-def scan_with_claims(root_dir):
-    """(rows, claimed): claimed holds the session ids the listed, not-done features account for (D2)."""
-    rows, fetched, now, claims = {}, {}, time.time(), {}
-    try:
-        records = sessions.read_records()
-    except Exception:  # F2: no hook records, no session asks from them
-        records = []
+def _error_row(checkout, error):
+    name = os.path.basename(checkout)
+    return {"repo": name, "feature": "?", "stage": "?", "status": "?", "round": 0,
+            "owner": "", "verdict": "", "pr": None, "flags": [str(error)], "path": checkout,
+            "owner_actions": 0, "waiting_on_owner": True, "updated": "", "checkout": checkout}
+
+
+def scan_with_claims(root_dir, records=None, fetched=None):
+    """(rows, claimed): claimed holds the session ids the listed, not-done features account for (D2). A snapshot
+    build passes its session records and its fetch results, so neither is read twice."""
+    rows, now, claims = {}, time.time(), {}
+    fetched = {} if fetched is None else fetched
+    if records is None:
+        try:
+            records = sessions.read_records()
+        except Exception:  # F2: no hook records, no session asks from them
+            records = []
     for checkout in checkouts(root_dir):
         try:
             features = state.list_features(checkout)
         except (RelayError, OSError) as e:
             name = os.path.basename(checkout)
-            rows[(name, "?")] = {"repo": name, "feature": "?", "stage": "?", "status": "?", "round": 0,
-                                 "owner": "", "verdict": "", "pr": None, "flags": [str(e)], "path": checkout,
-                                 "owner_actions": 0, "waiting_on_owner": True, "updated": "", "checkout": checkout}
+            rows[(name, "?")] = _error_row(checkout, e)
             with_asks(rows[(name, "?")], None, None, records, now)
             continue
         try:
@@ -253,16 +266,19 @@ def scan_with_claims(root_dir):
             key = (gitops.origin_url(checkout), slug)
             if key not in rows or row["updated"] > rows[key]["updated"]:
                 rows[key], claims[key] = row, mine
-    local, origins = set(rows), set()
+    local, origins, broken = set(rows), set(), {}
     for checkout in checkouts(root_dir):  # then features that live only on origin branches
         url = gitops.origin_url(checkout)
         if url in origins:
             continue
+        origins.add(url)
         try:
             remote = _remote_features(checkout)
-        except RelayError:
-            continue  # git cannot read this checkout, e.g. a worktree whose main repo is not here
-        origins.add(url)
+            error = scancache.failed(checkout)
+        except RelayError as e:
+            remote, error = [], str(e)
+        if error:  # dashboard-scan F2: the repository's rows say why its origin branches could not be read
+            broken[url] = (checkout, f"cannot read origin branches: {error}")
         for ref, slug, st, has_handoff in remote:
             key = (url, slug)
             if key in local:  # a checked-out copy is at least as current as the last fetch
@@ -271,6 +287,13 @@ def scan_with_claims(root_dir):
             row = with_asks(_remote_row(checkout, ref, slug, st, has_handoff, fetched), st, ref, records, now, mine)
             if key not in rows or row["updated"] > rows[key]["updated"]:
                 rows[key], claims[key] = row, mine
+    for url, (checkout, error) in broken.items():
+        mine = [row for (u, _), row in rows.items() if u == url]
+        for row in mine:
+            row["flags"].append(error)
+            row["scan_error"] = error  # kept by the dashboard's enrichment, which rebuilds the flags
+        if not mine:
+            rows[(url, "?")] = with_asks(_error_row(checkout, error), None, None, records, now)
     ordered = sorted(rows.values(), key=lambda r: (not r["waiting_on_owner"], r["repo"] or "", r["feature"]))
     return ordered, set().union(*claims.values())
 
