@@ -504,12 +504,12 @@ def generation(repo):
         return store.generation.get(common, 0)
 
 
-def repo_key(repo, checkouts):
-    """The stamps that every reused done row of repo depends on: the repository's shared stamp and each of its
-    checkouts' own stamps (D1a)."""
+def checkouts_key(repo, checkouts):
+    """(common dir, each checkout's own stamp): the local part of a reused done row's key (D1a). The origin refs
+    it depends on are named by the caller, so a fetch that moves other branches does not rebuild it."""
     store = active()
-    common, rstamp, _ = _stamps(store, os.path.realpath(repo))
-    return common, rstamp, tuple(_stamps(store, os.path.realpath(c))[2] for c in sorted(checkouts))
+    common = _stamps(store, os.path.realpath(repo))[0]
+    return common, tuple(_stamps(store, os.path.realpath(c))[2] for c in sorted(checkouts))
 
 
 def done_get(repo, slug, key):

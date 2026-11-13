@@ -104,10 +104,12 @@ R18 names fake git and gh binaries. `tests/helpers.py` has a fake gh (`FAKE_GH`,
 - A done feature's published commit follows R6a: the head of its own origin branch, else origin/develop, else origin/main, as `feature()` does today.
 - "Done" here is every row `status.finished` reports done: stage done, or a PR that is merged, closed or gone. Closed and gone rows are reused the same way, so their `pr_info` and `ci_for_code` reads stop as well.
 - `_enrich` keeps each done row and detail in the store under a reuse key:
-  - the published commit,
-  - the repository's checkout stamps (D1a),
+  - the published commit: the commits of the origin branch the scan found the feature on, origin/develop and origin/main (R6a), plus the names of all origin branches, all from the facts map,
+  - the origin URL, the worktree list and each checkout's own stamp (D1a),
   - the repository's fetch error text,
   - the stamps of the global and repo `config.toml`.
+
+  Build note (2026-11-13, owner's choice): the key first held the repository's whole refs stamp. Every fetch restamps it, and active repositories are fetched every minute, so every done row in them was rebuilt each minute (7.3 CPU-s an idle build against R16's 2). The key now names only the refs the row is read from. A fetch that moves only other branches reuses the row. Test: `test_fetch_that_moves_only_another_branch_reuses_the_row`.
 
   When the key matches, deep copies of the row and detail are reused and the build calls `buildstats.hit()`. Copies go in and out of the store, because rows are changed after `_enrich` (`waiting.one_ask_per_session`, flags).
 - A done feature whose branch is checked out in any checkout (from the facts) is not reused.

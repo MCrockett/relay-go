@@ -449,20 +449,32 @@ def _fetch(repo):
 REVIEW_KEYS = ("review_choices", "review_default", "review_defaults")
 
 
+BASE_REFS = ("origin/develop", "origin/main")
+
+
 def _done_key(repo, row, fetched):
-    """The reuse key of a done row (dashboard-scan R6), or None when it must be built: the repository's stamps, its
-    fetch error, the config files and, for a closed or gone PR, how often the repository was fetched (D5)."""
+    """The reuse key of a done row (dashboard-scan R6), or None when it must be built: the origin refs the row is
+    read from, its checkouts' own stamps, the fetch error, the config files and, for a closed or gone PR, how often
+    the repository was fetched (D5).
+
+    The refs are the commit of the origin branch the scan found the feature on and of the R6a fallbacks, plus the
+    names of all origin branches, so a branch that appears or goes is seen. A fetch that moves only other branches
+    keeps the row: that is most fetches in a repository with live work."""
     if not scancache.active() or row.get("stage") != "done" or row.get("scan_error") or scancache.failed(repo):
         return None
     try:
-        trees = [c for c in gitops.worktrees(repo) if os.path.isdir(c)]
-        common, rstamp, own = scancache.repo_key(repo, trees)
+        trees = sorted(c for c in gitops.worktrees(repo) if os.path.isdir(c))
+        common, own = scancache.checkouts_key(repo, trees)
+        facts = scancache.repo_facts(repo)
     except (RelayError, OSError):
         return None
-    if common is None:
+    if common is None or facts is None:
         return None
+    refs = facts["refs"]
+    ref = _scan_ref(row)
+    commits = tuple((r, refs.get(r)) for r in (ref,) + BASE_REFS)
     configs = scancache.stamp([config.config_path(), os.path.join(state.relay_dir(repo), "config.toml")])
-    return (rstamp, own, fetched.get(row.get("checkout")), configs,
+    return (facts["url"], tuple(trees), commits, tuple(sorted(refs)), own, fetched.get(row.get("checkout")), configs,
             scancache.generation(repo) if row.get("hidden") else 0, tuple(row.get("flags") or ()))
 
 

@@ -943,6 +943,35 @@ class DoneReuseTest(StoreBase):
         self.assertEqual(self.row(data)["seen"]["commit"],
                          helpers.sh(self.work, "git", "rev-parse", "origin/feat/demo").strip())
 
+    def test_fetch_that_moves_only_another_branch_reuses_the_row(self):
+        helpers.sh(self.work, "git", "push", "-q", "origin", "develop:other")
+        helpers.sh(self.work, "git", "fetch", "-q", "origin")
+        first = self.build(at=0)
+        elsewhere = tempfile.TemporaryDirectory()  # another machine: outside the projects root
+        self.addCleanup(elsewhere.cleanup)
+        other = os.path.join(elsewhere.name, "other")
+        helpers.clone(os.path.join(self.tmp, "origin.git"), other)
+        helpers.sh(other, "git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty",
+                   "-m", "other")
+        helpers.sh(other, "git", "push", "-q", "origin", "HEAD:other")
+        with mock.patch.object(snapshot, "feature", wraps=snapshot.feature) as spy:
+            second = self.build(at=600, full=True)  # fetches: origin/other moves, nothing of demo's does
+        self.assertEqual(spy.call_count, 0)
+        self.assertEqual(self.row(second), self.row(first))
+
+    def test_deleted_branch_rebuilds_the_row_from_develop(self):
+        helpers.sh(self.work, "git", "push", "-q", "origin", "origin/feat/demo:develop")  # merged
+        helpers.sh(self.work, "git", "pull", "-q", "--ff-only", "origin", "develop")
+        self.build()
+        helpers.sh(self.work, "git", "push", "-q", "origin", "--delete", "feat/demo")
+        helpers.sh(self.work, "git", "fetch", "-q", "--prune", "origin")
+        with mock.patch.object(snapshot, "feature", wraps=snapshot.feature) as spy:
+            second = self.build()
+        self.assertEqual(spy.call_count, 1)
+        self.assertEqual(self.row(second)["stage"], "done")
+        self.assertEqual(self.row(second)["seen"]["commit"],
+                         helpers.sh(self.work, "git", "rev-parse", "origin/develop").strip())
+
     def test_checked_out_done_branch_is_built_every_time(self):
         helpers.sh(self.work, "git", "switch", "-q", "feat/demo")
         self.build()
