@@ -7,7 +7,7 @@ import tempfile
 import threading
 import time
 
-from . import ciskip, cimode, config, freshness, gitops, localtests, state
+from . import ciskip, cimode, config, freshness, gitops, localtests, merged, scancache, state
 from .errors import RelayError
 
 ACTION_LOCK = threading.Lock()
@@ -73,6 +73,8 @@ def seen_at(repo, commit, st):
     """The fingerprint of a feature published at commit with state st: the PR head is read from GitHub."""
     result = {"commit": commit, "branch": st["branch"], "stage": st["stage"], "status": st["status"],
               "owner": st.get("owner") or {}, "pr": st.get("pr"), "pr_head": None}
+    if st.get("pr") and scancache.active() and (st.get("status") == "done" or merged.recorded(repo, st)):
+        return result  # a snapshot build asks GitHub nothing about a merged PR (dashboard-scan R6)
     if st.get("pr"):
         try:
             result["pr_head"] = gitops.pr_info(repo, st["pr"])["headRefOid"]

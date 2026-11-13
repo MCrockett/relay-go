@@ -765,8 +765,8 @@ FACT_READS = (["rev-parse", "--abbrev-ref"], ["rev-parse", "HEAD"], ["remote", "
               ["worktree", "list"], ["for-each-ref"])
 
 
-class SharedStoreTest(SnapshotBase):
-    """Builds that share one store, as relay ui's do (dashboard-scan Task 4)."""
+class StoreBase(SnapshotBase):
+    """Builds that share one store, as relay ui's do."""
 
     def setUp(self):
         super().setUp()
@@ -796,6 +796,10 @@ class SharedStoreTest(SnapshotBase):
 
     def reads(self, *words):
         return [c for c in self.calls if c[0] == "git" and all(w in c for w in words)]
+
+
+class SharedStoreTest(StoreBase):
+    """dashboard-scan Task 4."""
 
     def test_second_build_reads_no_facts_and_no_relay_files(self):
         self.build()
@@ -849,7 +853,7 @@ class SharedStoreTest(SnapshotBase):
         self.assertIn("boom", mine[0]["flags"][0])
 
 
-class PublishedTest(SharedStoreTest):
+class PublishedTest(StoreBase):
     """feature() inside a build takes the published commit from the scan (dashboard-scan Task 5)."""
 
     def test_detail_starts_no_branch_walk_of_its_own(self):
@@ -871,6 +875,102 @@ class PublishedTest(SharedStoreTest):
         with mock.patch("relaylib.owneractions.fingerprint", wraps=snapshot.owneractions.fingerprint) as spy:
             snapshot.feature(self.work, "demo")
         self.assertEqual(spy.call_count, 1)
+
+
+class DoneReuseTest(StoreBase):
+    """Done features cost nothing while their commit is unchanged (dashboard-scan Task 6)."""
+
+    def setUp(self):
+        super().setUp()
+        from relaylib import merged
+        self.merged = merged
+        self.st.update(stage="build", status="ready-to-merge", pr=7)
+        self.save()
+        helpers.sh(self.work, "git", "switch", "-q", "develop")  # merged: nobody has the branch checked out
+        merged.mark_merged(self.work, 7)
+        self.gh_log = os.path.join(self.tmp, "gh.log")
+        info = os.path.join(self.tmp, "pr.json")
+        helpers.write(info, json.dumps({"number": 7, "state": "MERGED", "baseRefName": "develop",
+                                        "headRefOid": "0" * 40, "statusCheckRollup": [], "isDraft": False,
+                                        "mergedAt": "2026-11-01T00:00:00Z"}))
+        patch = mock.patch.dict(os.environ, {"RELAY_GH_BIN": helpers.fake_bin(self.tmp, "gh", helpers.FAKE_GH),
+                                             "FAKE_GH_JSON": info, "FAKE_GH_LOG": self.gh_log})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def gh_calls(self):
+        try:
+            with open(self.gh_log) as f:
+                return f.read().splitlines()
+        except FileNotFoundError:
+            return []
+
+    def row(self, data):
+        return next(r for r in data["rows"] if r["feature"] == "demo")
+
+    def test_second_build_reuses_a_merged_feature(self):
+        first = self.build()
+        self.assertEqual(self.row(first)["stage"], "done")
+        self.assertIsNone(self.row(first)["seen"]["pr_head"])
+        self.assertEqual([c for c in self.gh_calls() if "pr view" in c], ["pr view 7 --json state,mergedAt"])
+        os.remove(self.gh_log)
+        with mock.patch.object(snapshot, "feature", wraps=snapshot.feature) as spy:
+            second = self.build()
+        self.assertEqual(spy.call_count, 0)
+        self.assertEqual([c for c in self.gh_calls() if "pr view" in c], [])
+        for words in (["status", "--porcelain"], ["diff"], ["log"]):
+            self.assertEqual(self.reads(*words), [], words)
+        self.assertEqual(self.row(second), self.row(first))
+
+    def test_new_commit_on_the_branch_rebuilds_it(self):
+        self.build()
+        helpers.sh(self.work, "git", "switch", "-q", "feat/demo")
+        helpers.write(os.path.join(self.folder, "notes.md"), "later")
+        self.save()
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        with mock.patch.object(snapshot, "feature", wraps=snapshot.feature) as spy:
+            data = self.build()
+        self.assertEqual(spy.call_count, 1)
+        self.assertEqual(self.row(data)["seen"]["commit"],
+                         helpers.sh(self.work, "git", "rev-parse", "origin/feat/demo").strip())
+
+    def test_checked_out_done_branch_is_built_every_time(self):
+        helpers.sh(self.work, "git", "switch", "-q", "feat/demo")
+        self.build()
+        helpers.write(os.path.join(self.work, "edit.txt"), "x")
+        with mock.patch.object(snapshot, "feature", wraps=snapshot.feature) as spy:
+            data = self.build()
+        self.assertEqual(spy.call_count, 1)
+        self.assertIn("local changes not published", self.row(data)["flags"])
+
+    def test_fetch_error_shows_on_a_reused_row(self):
+        self.build()
+        with mock.patch.object(snapshot, "_fetch", return_value="cannot fetch origin: offline"):
+            data = self.build()
+            again = self.build()
+        self.assertIn("cannot fetch origin: offline", self.row(data)["flags"])
+        self.assertEqual(self.row(again)["flags"], self.row(data)["flags"])
+
+    def test_merge_log_is_read_once_across_builds(self):
+        from relaylib import scancache
+        head = helpers.sh(self.work, "git", "rev-parse", "origin/feat/demo").strip()
+        st = {"feature": "demo", "branch": "feat/demo"}
+        for _ in range(2):
+            with scancache.use(self.store):
+                self.merged.merged_at(self.work, st, branch_head=head)
+                self.store.prune([self.work])
+        self.assertEqual(len(self.reads("log", "--merges")), 1)  # develop; the fixture has no main
+        self.calls.clear()
+        with scancache.use(self.store):
+            self.merged.merged_at(self.work, st, branch_head=head)
+        self.assertEqual(self.reads("log", "--merges"), [])
+
+    def test_fingerprint_outside_a_build_asks_github(self):
+        self.build()
+        with mock.patch("relaylib.gitops.pr_info", return_value={"headRefOid": "1" * 40}) as spy:
+            seen = snapshot.owneractions.fingerprint(self.work, "demo", fetch=False)
+        self.assertEqual(spy.call_count, 1)
+        self.assertEqual(seen["pr_head"], "1" * 40)
 
 
 class CacheTest(unittest.TestCase):

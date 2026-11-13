@@ -22,11 +22,15 @@ class Store:
         self.trees = {}            # common dir -> {commit: {path under docs/relay: blob id}}
         self.blobs = {}            # common dir -> {blob id: text}
         self.parsed = {}           # common dir -> {(blob id, label): ("ok", state) or ("error", RelayError)}
+        self.answers = {}          # answers keyed by commit ids, which cannot change (merge bases, merge logs)
+        self.done = {}             # (repo, slug) -> (reuse key, row, detail) of a done feature (D3)
+        self.generation = {}       # common dir -> how many times a build fetched it
         self.build = {}            # per-build answers, reset by use()
 
     def begin(self):
         with self.lock:
-            self.build = {"stamps": {}, "commons": {}, "used": {}, "errors": {}, "absent": set()}
+            self.build = {"stamps": {}, "commons": {}, "used": {}, "errors": {}, "absent": set(),
+                          "answers": set(), "done": set()}
 
     def prune(self, checkouts=None):
         """Keep only what this build used (R14): the trees of the commits it resolved, every blob and parsed state
@@ -46,6 +50,8 @@ class Store:
                 if not self.trees[common]:
                     for table in (self.trees, self.blobs, self.parsed):
                         table.pop(common, None)
+            self.answers = {k: v for k, v in self.answers.items() if k in self.build.get("answers", ())}
+            self.done = {k: v for k, v in self.done.items() if k in self.build.get("done", ())}
             if checkouts is not None:
                 real = {os.path.realpath(c) for c in checkouts}
                 self.checkout_facts = {c: f for c, f in self.checkout_facts.items() if c in real}
@@ -457,3 +463,68 @@ def parsed(repo, blob_id, label, text):
     if got[0] == "error":
         raise RelayError(str(got[1]))
     return copy.deepcopy(got[1])
+
+
+def answer(key, make):
+    """make() once for key across builds: only for answers keyed by commit ids, which cannot change."""
+    store = active()
+    if store is None:
+        return make()
+    with store.lock:
+        store.build["answers"].add(key)
+        if key in store.answers:
+            buildstats.hit()
+            return store.answers[key]
+    value = make()
+    with store.lock:
+        store.answers[key] = value
+    return value
+
+
+def fetched(repo):
+    """Count one fetch of repo's repository (a closed PR is asked again after one, D5)."""
+    store = active()
+    if store is None:
+        return
+    common = _common(store, repo) or os.path.realpath(repo)
+    with store.lock:
+        store.generation[common] = store.generation.get(common, 0) + 1
+
+
+def generation(repo):
+    store = active()
+    if store is None:
+        return None
+    common = _common(store, repo) or os.path.realpath(repo)
+    with store.lock:
+        return store.generation.get(common, 0)
+
+
+def repo_key(repo, checkouts):
+    """The stamps that every reused done row of repo depends on: the repository's shared stamp and each of its
+    checkouts' own stamps (D1a)."""
+    store = active()
+    common, rstamp, _ = _stamps(store, os.path.realpath(repo))
+    return common, rstamp, tuple(_stamps(store, os.path.realpath(c))[2] for c in sorted(checkouts))
+
+
+def done_get(repo, slug, key):
+    store = active()
+    if store is None or key is None:
+        return None
+    with store.lock:
+        store.build["done"].add((repo, slug))
+        got = store.done.get((repo, slug))
+    if got is None or got[0] != key:
+        return None
+    buildstats.hit()
+    return copy.deepcopy(got[1]), copy.deepcopy(got[2])
+
+
+def done_put(repo, slug, key, row, detail):
+    store = active()
+    if store is None or key is None:
+        return
+    with store.lock:
+        store.build["done"].add((repo, slug))
+        store.done[(repo, slug)] = (key, copy.deepcopy(row), copy.deepcopy(detail))

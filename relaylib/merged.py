@@ -8,7 +8,7 @@ import json
 import os
 import threading
 
-from . import gitops
+from . import gitops, scancache
 from .config import relay_home
 from .errors import RelayError
 
@@ -136,6 +136,11 @@ def resolve(repo_dir, st):
     return "unknown", f"gh gave PR #{pr} the state {state_!r}"
 
 
+def recorded(repo_dir, st):
+    """True when the local merged record already shows the feature's PR as merged (no GitHub call)."""
+    return bool(st.get("pr")) and _load().get(_key(repo_dir, st["pr"])) is True
+
+
 def is_done(repo_dir, st):
     if st.get("status") == "done":
         return True
@@ -166,8 +171,17 @@ def merged_at(repo_dir, st, branch_head=None):
             pass
     if branch_head:
         for base in ("origin/develop", "origin/main"):
-            out = gitops.git(repo_dir, "log", "--merges", "--ancestry-path", "--reverse", "--format=%ct",
-                             f"{branch_head}..{base}", check=False).stdout.split()
+            def merges(base=base):
+                return gitops.git(repo_dir, "log", "--merges", "--ancestry-path", "--reverse", "--format=%ct",
+                                  f"{branch_head}..{base}", check=False).stdout.split()
+            if scancache.active():  # kept under the two commits, which cannot change (dashboard-scan T6)
+                try:
+                    key = ("merges", branch_head, gitops.head_sha(repo_dir, base))
+                except RelayError:
+                    continue  # no such base: git log would find nothing
+                out = scancache.answer(key, merges)
+            else:
+                out = merges()
             if out:
                 return float(out[0])
     return None

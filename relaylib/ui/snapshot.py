@@ -161,7 +161,7 @@ def feature(repo, slug, records=None, published=None):
         except (RelayError, OSError) as e:
             info["state"], ci = "unknown", "unknown"
             reasons["merge"] = f"GitHub is unknown: {e}"
-    if "merge" in actions:
+    if "merge" in actions and info["state"] != "MERGED":  # a merged PR has no actions: ask GitHub nothing more
         if "merge" not in reasons:
             try:
                 owneractions.merge_readiness(repo, st, seen)
@@ -176,11 +176,7 @@ def feature(repo, slug, records=None, published=None):
     job = reviewjobs.status(repo, slug)
     if job and job.get("state") == "running":  # the running review owns the feature until it ends
         actions = []
-    repo_cfg = config.load(repo)  # the repository's effective table, the one prepare checks against
-    options = reviewjobs.choices(repo_cfg)
-    review_default = dict(zip(("id", "label", "note"), reviewjobs.default(repo_cfg, st, options)))
-    review_defaults = {stage: dict(zip(("id", "label", "note"), reviewjobs.default(repo_cfg, st, options, stage)))
-                       for stage in reviewjobs.STAGES}
+    options, review_default, review_defaults = _review_choices(repo, st)
     reviews = [_review(repo, commit, p) for p in files if "/reviews/" in p.lower() and p.endswith(".md")]
     reviews.sort(key=lambda r: (r.get("at", ""), r["path"]), reverse=True)
     local_error = None
@@ -214,6 +210,20 @@ def feature(repo, slug, records=None, published=None):
             "pending_tools": [] if (found or {}).get("stopped") else  # its approval died with it
             [p.get("tool_name") for p in (record or {}).get("pending") or [] if p.get("tool_name")],
             "session_record": record}
+
+
+def _review_choices(repo, st):
+    """(choices, default, per-stage defaults) of the review dialog. They depend on the time through the timed
+    tables and availability, so a build computes the choices once per repository and never reuses them."""
+    def make():
+        repo_cfg = config.load(repo)  # the repository's effective table, the one prepare checks against
+        return repo_cfg, reviewjobs.choices(repo_cfg)
+    repo_cfg, options = scancache.per_build(("review", os.path.realpath(repo)), make)
+    options = json.loads(json.dumps(options))  # each row gets its own copy
+    review_default = dict(zip(("id", "label", "note"), reviewjobs.default(repo_cfg, st, options)))
+    review_defaults = {stage: dict(zip(("id", "label", "note"), reviewjobs.default(repo_cfg, st, options, stage)))
+                       for stage in reviewjobs.STAGES}
+    return options, review_default, review_defaults
 
 
 def _listed(data, provider, session_id):
@@ -424,12 +434,65 @@ def _fetch(repo):
         return str(e)
 
 
+REVIEW_KEYS = ("review_choices", "review_default", "review_defaults")
+
+
+def _done_key(repo, row, fetched):
+    """The reuse key of a done row (dashboard-scan R6), or None when it must be built: the repository's stamps, its
+    fetch error, the config files and, for a closed or gone PR, how often the repository was fetched (D5)."""
+    if not scancache.active() or row.get("stage") != "done" or row.get("scan_error") or scancache.failed(repo):
+        return None
+    try:
+        trees = [c for c in gitops.worktrees(repo) if os.path.isdir(c)]
+        common, rstamp, own = scancache.repo_key(repo, trees)
+    except (RelayError, OSError):
+        return None
+    if common is None:
+        return None
+    configs = scancache.stamp([config.config_path(), os.path.join(state.relay_dir(repo), "config.toml")])
+    return (rstamp, own, fetched.get(row.get("checkout")), configs,
+            scancache.generation(repo) if row.get("hidden") else 0, tuple(row.get("flags") or ()))
+
+
+def _reuse(repo, row, key):
+    """The done row and detail of an earlier build under the same key, with this build's review choices."""
+    got = scancache.done_get(os.path.realpath(repo), row["feature"], key)
+    if got is None:
+        return None
+    old_row, detail = got
+    branch = detail["state"].get("branch")
+    try:  # a done branch someone has checked out can gain local changes: build it every time
+        if any(gitops.current_branch(c) == branch for c in gitops.worktrees(repo) if os.path.isdir(c)):
+            return None
+    except (RelayError, OSError):
+        return None
+    row.clear()
+    row.update(old_row)
+    options, default, defaults = _review_choices(repo, detail["state"])
+    for target in (row, detail):
+        target.update(review_choices=options, review_default=default, review_defaults=defaults)
+    return detail
+
+
 def _enrich(row, errors, fetched, records):
     repo = row.get("checkout")
     row.update(actions=[], action_reasons={}, health=None, health_inbox=False)
     if not repo or row["feature"] == "?":
         return None
     row["repo_path"] = os.path.realpath(repo)
+    key = _done_key(repo, row, fetched)
+    reused = _reuse(repo, row, key) if key is not None else None
+    if reused is not None:
+        return reused
+    detail = _enrich_one(row, errors, fetched, records)
+    if (key is not None and detail is not None and not row.get("error") and detail.get("health") is None
+            and detail.get("session_record") is None and detail.get("agent_text") is None):
+        scancache.done_put(row["repo_path"], row["feature"], key, row, detail)
+    return detail
+
+
+def _enrich_one(row, errors, fetched, records):
+    repo = row["checkout"]
     try:
         detail = feature(repo, row["feature"], records, published_for(repo, row["feature"], _scan_ref(row)))
         st, seen = detail["state"], detail["seen"]
@@ -507,6 +570,7 @@ def _build(root, full):
     for (common, members), error in zip(groups.items(),
                                         _parallel(lambda members: _fetch(members[0]), list(groups.values()))):
         scancache.restamp(common)  # the fetch wrote its refs
+        scancache.fetched(members[0])
         fetched.update(dict.fromkeys(members, error))
     _parallel(_prefetch, list(groups.values()))
     errors = {os.path.realpath(repo): error for repo, error in fetched.items() if error}
