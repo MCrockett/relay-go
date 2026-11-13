@@ -8,7 +8,6 @@
   "branch": "perf/dashboard-scan",
   "extra_rounds": {},
   "feature": "dashboard-scan",
-  "handed_over_from": "6770b8cd-ab26-4428-b743-d3cafb7b7f61",
   "history": {
     "plan": [
       {
@@ -78,7 +77,7 @@
   "small": false,
   "stage": "build",
   "status": "drafting",
-  "updated": "2026-11-13T06:40:14-05:00",
+  "updated": "2026-11-13T06:40:25-05:00",
   "verdicts": {
     "plan": "GO",
     "spec": "GO"
