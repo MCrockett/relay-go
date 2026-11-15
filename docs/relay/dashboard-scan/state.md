@@ -64,18 +64,16 @@
     }
   ],
   "pr": 34,
-  "refresh": true,
+  "refresh": false,
   "repo": "relay-go",
   "retried": false,
-  "review_notes": {
-    "spec": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra out of usage: 5-hour limit used up until Thu 20:18, same provider as the author"
-  },
+  "review_notes": {},
   "reviewed": {
     "build": null,
     "plan": null,
     "spec": {
       "inputs": {
-        "spec": "a3a832fb418e3aebe04a5165012169c624b95c34e18eaec5a8c08c218e2885a7"
+        "spec": "c47b0eaef8ce3a2c2021d8bc2bc688a6c518b7b1cd05b74ae7f0be914c06d062"
       }
     }
   },
@@ -86,9 +84,9 @@
   },
   "skipped": [],
   "small": false,
-  "stage": "spec",
-  "status": "in-review",
-  "updated": "2026-11-15T18:27:17-05:00",
+  "stage": "plan",
+  "status": "drafting",
+  "updated": "2026-11-15T18:28:07-05:00",
   "verdicts": {
     "spec": "GO"
   }
