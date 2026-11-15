@@ -282,6 +282,8 @@ def cat_files(root, specs):
         pos = end + 1
         if len(header) == 3 and header[1] == b"blob":
             size = int(header[2])
+            if data[pos + size:pos + size + 1] != b"\n":  # body shorter than git declared: output cut short
+                raise ValueError(f"git cat-file output for {spec} was cut short")
             out[spec] = data[pos:pos + size].decode("utf-8", "replace")
             pos += size + 1
         else:

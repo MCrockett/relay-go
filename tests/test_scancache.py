@@ -239,7 +239,18 @@ class TreesTest(CountingTest):
             with scancache.use(self.store):  # as a dashboard build does: prefetch every origin head first
                 scancache.prefetch(self.work, [gitops.head_sha(self.work, r) for r in gitops.remote_branches(self.work)])
                 return sorted((ref, slug) for ref, slug, _, _ in status._remote_features(self.work))
-        for broken in (lambda root, specs: {s: None for s in specs}, mock.Mock(side_effect=ValueError("truncated"))):
+        real_cat, real_sub = gitops.cat_files, gitops.subprocess.run
+
+        def cut_short(root, specs):  # the real parser, given git output whose last blob lost its final bytes
+            def run(*a, **k):
+                p = real_sub(*a, **k)
+                p.stdout = p.stdout[:-3]
+                return p
+            with mock.patch.object(gitops.subprocess, "run", side_effect=run):
+                return real_cat(root, specs)
+
+        for broken in (lambda root, specs: {s: None for s in specs}, mock.Mock(side_effect=ValueError("truncated")),
+                       cut_short):
             with mock.patch.object(gitops, "cat_files", side_effect=broken):
                 self.assertEqual(features(), [])
         self.assertEqual(features(), [("origin/feat/a", "a")])
