@@ -236,7 +236,7 @@ R18 names fake git and gh binaries. `tests/helpers.py` has a fake gh (`FAKE_GH`,
 - Put the numbers in the PR description against R16:
   - CPU under 5% of one core,
   - under 60 processes a minute,
-  - an idle build under 10 s and 2 CPU-seconds.
+  - an idle build under 10 s and 3 CPU-seconds (raised from 2 by the owner on 2026-11-15; see spec R16).
 - Also check R17 by hand: push a commit to an active repository and see it on the page within about 70 s; press Refresh and see a quiet repository's push at once.
 - Covers: R16, R17, D9.
 

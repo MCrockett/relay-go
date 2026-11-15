@@ -65,7 +65,9 @@ Not ci-modes: its tests flag accounts for 1 gh call in the profile. The cost gro
 - R16. Targets, measured on the owner's Mac with today's projects root and the dashboard left idle for 10 minutes after its first build:
   - average CPU under 5% of one core;
   - fewer than 60 processes started per minute on average;
-  - a later idle build finishing in under 10 s and using under 2 CPU-seconds, by its `build_stats`.
+  - a later idle build finishing in under 10 s and using under 3 CPU-seconds, by its `build_stats`.
+
+  Owner's change (2026-11-15): the build limit was 2 CPU-seconds. Measured idle builds with live PRs used 2.4 to 2.9 CPU-seconds, mostly the `gh` reads D5 needs for each live PR and the fetches of active repositories, while average CPU stayed at about 2 to 3% of one core. The owner raised the limit to 3 CPU-seconds rather than read live PRs less often.
 
   The expected idle budget per minute, with today's projects (34 repositories, 4 features not done): about 3 repositories active, so 3 fetches plus 34 / 10 quiet fetches, about 7; no per-checkout git process while stamps are unchanged; for each live feature about 8 processes (PR view, check runs, status, and the local status and diff of its checkouts), about 32; one `ps`. That totals about 40 processes a minute.
   The build review checks these with the `build_stats` figures and `ps` sampling, and records the numbers in the PR.
