@@ -332,7 +332,7 @@ a change temporary, each after a confirmation. Writer roles are shown for inform
 
 The server listens only on `127.0.0.1` unless you pass `--host 0.0.0.0`, which only a container needs (see Running in Docker). A random token protects the page and every API request, and requests
 must use a local Host header. The private discovery file `~/.relay/ui.json` has mode 0600. The token is
-removed from the browser address after loading. The cache rebuilds every thirty seconds; Refresh requests
+removed from the browser address after loading. The cache rebuilds every 60 seconds; Refresh requests
 an immediate rebuild. A failed rebuild keeps the last good snapshot and reports its age and error.
 
 Every action asks for confirmation and is bound to the published commit, stage, status and session you
