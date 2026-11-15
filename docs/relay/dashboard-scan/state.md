@@ -61,6 +61,10 @@
     {
       "action": "owner joined build",
       "at": "2026-11-15T18:08:54-05:00"
+    },
+    {
+      "action": "owner joined plan",
+      "at": "2026-11-15T18:28:21-05:00"
     }
   ],
   "pr": 34,
@@ -79,14 +83,14 @@
   },
   "rounds": {
     "build": 1,
-    "plan": 2,
+    "plan": 3,
     "spec": 2
   },
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "drafting",
-  "updated": "2026-11-15T18:28:07-05:00",
+  "status": "in-review",
+  "updated": "2026-11-15T18:28:21-05:00",
   "verdicts": {
     "spec": "GO"
   }
