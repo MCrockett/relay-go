@@ -401,8 +401,12 @@ def prefetch_blobs(repo, blob_ids):
     except RelayError as e:
         _fail(store, common, e)
         got = {}
-    except ValueError:
+    except ValueError:  # output cut short
+        _fail(store, common, "git cat-file output was cut short")
         got = {}
+    lost = [b for b in blob_ids if got and got.get(b) is None]
+    if lost:  # every id comes from a tree listing, so git should have it: what this build derives is incomplete
+        _fail(store, common, f"git cat-file could not read blob {lost[0]}")
     with store.lock:
         for b in blob_ids:
             if got.get(b) is None:

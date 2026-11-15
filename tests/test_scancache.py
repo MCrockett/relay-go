@@ -226,6 +226,23 @@ class TreesTest(CountingTest):
         with scancache.use(self.store):  # not cached: the next build reads it
             self.assertIsNotNone(gitops.show(self.work, "origin/feat/a", "docs/relay/a/state.md"))
 
+    def test_unreadable_blob_is_a_failed_read(self):
+        for broken in (lambda root, specs: {s: None for s in specs},   # git lost the blob
+                       mock.Mock(side_effect=ValueError("truncated"))):  # cat-file output cut short
+            with mock.patch.object(gitops, "cat_files", side_effect=broken), scancache.use(scancache.Store()):
+                gitops.show(self.work, "origin/feat/a", "docs/relay/a/state.md")
+                self.assertIn("cat-file", scancache.failed(self.work) or "")
+
+    def test_remote_features_recover_after_an_unreadable_blob(self):
+        from relaylib import status
+        def features():
+            with scancache.use(self.store):
+                return sorted((ref, slug) for ref, slug, _, _ in status._remote_features(self.work))
+        with mock.patch.object(gitops, "cat_files", side_effect=lambda root, specs: {s: None for s in specs}):
+            self.assertEqual(features(), [])
+        self.assertEqual(features(), [("origin/feat/a", "a")])
+        self.assertEqual(features(), [("origin/feat/a", "a")])
+
     def test_deleted_branch_is_pruned(self):
         helpers.write(os.path.join(self.work, "docs/relay/a/only-b.md"), "b only")
         helpers.sh(self.work, "git", "add", ".")
