@@ -339,7 +339,7 @@ def tree(repo, commit):
 
 def prefetch(repo, commits):
     """Read every blob in these commits' relay trees that is not cached, with one `git cat-file --batch`. A blob
-    the batch does not return is absent for this build and not cached (F3)."""
+    the batch does not return is absent for this build, not cached, and makes the build's read of repo failed (F2, F3)."""
     from . import gitops
     from .errors import RelayError
     store = active()
@@ -355,23 +355,8 @@ def prefetch(repo, commits):
     with store.lock:
         have = store.blobs.get(common, {})
         missing = sorted(b for b in wanted if b not in have and b not in store.build["absent"])
-    if not missing:
-        return
-    try:
-        got = gitops.cat_files(repo, missing)
-    except RelayError as e:
-        _fail(store, common, e)
-        got = {}
-    except ValueError:  # truncated output
-        got = {}
-    with store.lock:
-        blobs = store.blobs.setdefault(common, {})
-        for blob in missing:
-            text = got.get(blob)
-            if text is None:
-                store.build["absent"].add(blob)
-            else:
-                blobs[blob] = text
+    if missing:
+        prefetch_blobs(repo, missing)
 
 
 def blob(repo, blob_id):

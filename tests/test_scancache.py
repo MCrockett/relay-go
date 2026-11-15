@@ -236,10 +236,12 @@ class TreesTest(CountingTest):
     def test_remote_features_recover_after_an_unreadable_blob(self):
         from relaylib import status
         def features():
-            with scancache.use(self.store):
+            with scancache.use(self.store):  # as a dashboard build does: prefetch every origin head first
+                scancache.prefetch(self.work, [gitops.head_sha(self.work, r) for r in gitops.remote_branches(self.work)])
                 return sorted((ref, slug) for ref, slug, _, _ in status._remote_features(self.work))
-        with mock.patch.object(gitops, "cat_files", side_effect=lambda root, specs: {s: None for s in specs}):
-            self.assertEqual(features(), [])
+        for broken in (lambda root, specs: {s: None for s in specs}, mock.Mock(side_effect=ValueError("truncated"))):
+            with mock.patch.object(gitops, "cat_files", side_effect=broken):
+                self.assertEqual(features(), [])
         self.assertEqual(features(), [("origin/feat/a", "a")])
         self.assertEqual(features(), [("origin/feat/a", "a")])
 
