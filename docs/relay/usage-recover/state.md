@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "fix/usage-recover",
   "extra_rounds": {},
   "feature": "usage-recover",
@@ -15,9 +17,13 @@
     {
       "action": "owner joined idea",
       "at": "2026-11-16T00:39:47-05:00"
+    },
+    {
+      "action": "owner joined build",
+      "at": "2026-11-16T01:01:41-05:00"
     }
   ],
-  "pr": null,
+  "pr": 35,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -26,15 +32,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-11-16T00:39:47-05:00",
+  "status": "in-review",
+  "updated": "2026-11-16T01:01:41-05:00",
   "verdicts": {}
 }
 ---
