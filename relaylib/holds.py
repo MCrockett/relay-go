@@ -5,7 +5,7 @@ import json
 import math
 import os
 
-from . import config, gitops, merged, state
+from . import config, gitops, merged, scancache, state
 from .errors import RelayError
 
 CACHE = "state-history.json"
@@ -89,8 +89,20 @@ def _is_merged(repo, st, ref):
         return True
     if ref in BASES:
         return True
-    return any(gitops.git(repo, "merge-base", "--is-ancestor", ref, base, check=False).returncode == 0
-               for base in BASES if base in gitops.remote_branches(repo))
+    return any(_is_ancestor(repo, ref, base) for base in BASES if base in gitops.remote_branches(repo))
+
+
+def _is_ancestor(repo, ref, base):
+    """git merge-base --is-ancestor; in a snapshot build kept under the two commits (dashboard-scan T7)."""
+    def ask():
+        return gitops.git(repo, "merge-base", "--is-ancestor", ref, base, check=False).returncode == 0
+    if not scancache.active():
+        return ask()
+    try:
+        key = ("ancestor", gitops.head_sha(repo, ref), gitops.head_sha(repo, base))
+    except RelayError:
+        return ask()
+    return scancache.answer(key, ask)
 
 
 def _feature_windows(repo, name, url, slug, ref, path, cache, handoffs, flags):

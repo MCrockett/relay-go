@@ -5,7 +5,7 @@ import glob
 import json
 import os
 
-from . import config
+from . import buildstats, config, scancache
 from .errors import RelayError
 from .usage import timestamp
 
@@ -24,7 +24,14 @@ def codex_sessions():
 
 def files_for(provider, session):
     """Every log file of one session. A Claude transcript sits under the folder of the cwd the session started
-    in, not the repo, so every projects folder is searched."""
+    in, not the repo, so every projects folder is searched. Inside a snapshot build the answer comes from the
+    provider's index (dashboard-scan Task 7); outside one, from globs."""
+    found = index(provider)
+    if found is not None:
+        if provider == "claude":
+            return sorted(found["sessions"].get(session, ()))
+        tail = f"-{session}.jsonl"
+        return sorted(p for p in found["files"] if _rollout_of(os.path.basename(p), tail))
     if provider == "claude":
         root = claude_projects()
         found = glob.glob(os.path.join(root, "*", glob.escape(session) + ".jsonl"))
@@ -34,6 +41,78 @@ def files_for(provider, session):
     else:
         found = []
     return sorted(found)
+
+
+def _rollout_of(name, tail):
+    """The glob rollout-*-<session>.jsonl, as a name test."""
+    return name.startswith("rollout-") and name.endswith(tail) and len(name) >= len("rollout-") + len(tail)
+
+
+def _stat(folder):
+    try:
+        s = os.stat(folder)
+        return folder, s.st_ino, s.st_mtime_ns
+    except OSError:
+        return folder, None
+
+
+def _entries(folder, stamps):
+    """Visible names in folder, as glob's * sees them: (name, path, is_dir). The folder is stamped before it is
+    listed, so a file added during the walk changes the stamp and the next build walks again."""
+    stamps.append(_stat(folder))
+    try:
+        with os.scandir(folder) as it:
+            return [(e.name, e.path, e.is_dir()) for e in it if not e.name.startswith(".")]
+    except OSError:
+        return []
+
+
+def _walk(provider):
+    """(folder stamps, index). Claude: projects/*/<sid>.jsonl and projects/*/<sid>/subagents/*.jsonl, keyed by
+    session. Codex: every sessions/*/*/*/*.jsonl."""
+    stamps = []
+    if provider == "claude":
+        sessions = {}
+        for _, project, is_dir in _entries(claude_projects(), stamps):
+            if not is_dir:
+                continue
+            for name, path, sub in _entries(project, stamps):
+                if not sub:
+                    if name.endswith(".jsonl"):
+                        sessions.setdefault(name[:-len(".jsonl")], []).append(path)
+                    continue
+                for n, agents, d in _entries(path, stamps):
+                    if n == "subagents" and d:
+                        sessions.setdefault(name, []).extend(
+                            p for n2, p, d2 in _entries(agents, stamps) if not d2 and n2.endswith(".jsonl"))
+        return tuple(stamps), {"sessions": sessions}
+    level = [codex_sessions()]
+    for _ in range(3):
+        level = [p for f in level for _, p, d in _entries(f, stamps) if d]
+    files = [p for day in level for n, p, d in _entries(day, stamps) if not d and n.endswith(".jsonl")]
+    return tuple(stamps), {"files": sorted(files)}
+
+
+def index(provider):
+    """The provider's transcript index inside a snapshot build, or None outside one. It is kept across builds
+    under the (inode, mtime) of every folder it walked: a new or removed file changes its folder's mtime, so an
+    unchanged stamp means no walk (R7b)."""
+    store = scancache.active()
+    if store is None or provider not in ("claude", "codex"):
+        return None
+    return scancache.per_build(("transcripts", provider), lambda: _kept(store, provider))
+
+
+def _kept(store, provider):
+    with store.lock:
+        old = store.transcripts.get(provider)
+    if old is not None and tuple(_stat(s[0]) for s in old[0]) == old[0]:
+        buildstats.hit()
+        return old[1]
+    stamps, found = _walk(provider)
+    with store.lock:
+        store.transcripts[provider] = (stamps, found)
+    return found
 
 
 def _count(value):
@@ -168,16 +247,19 @@ class FileState:
 
 
 def _valid_entry(entry, provider):
+    """The entry's FileState; raises for an entry this module could not have written."""
     if not isinstance(entry, dict) or not all(
             isinstance(entry.get(k), int) and not isinstance(entry.get(k), bool)
             for k in ("inode", "size", "mtime_ns", "offset")):
         raise ValueError("bad cache entry")
-    if FileState.from_json(entry["state"]).provider != provider:
+    fs = FileState.from_json(entry["state"])
+    if fs.provider != provider:
         raise ValueError("bad cache entry")
-    return entry
+    return fs
 
 
-def _usable(entry, provider):
+def _checked(entry, provider):
+    """The FileState of a usable cache entry, or None."""
     try:
         return _valid_entry(entry, provider) if entry else None
     except (ValueError, KeyError, TypeError, AttributeError):
@@ -200,12 +282,15 @@ def _load_cache():
 
 
 def _advance(path, entry, provider):
-    """Parse the bytes after entry's offset in CHUNK-sized reads (F6); a shrunk or replaced file starts over."""
+    """(entry, its FileState) after parsing the bytes after entry's offset in CHUNK-sized reads (F6); a shrunk or
+    replaced file starts over. Each entry is validated once."""
     st = os.stat(path)
-    entry = _usable(entry, provider)
-    if not entry or entry["inode"] != st.st_ino or st.st_size < entry["offset"]:
-        entry = {"inode": st.st_ino, "size": 0, "mtime_ns": 0, "offset": 0, "state": FileState(provider).to_json()}
-    fs, offset = FileState.from_json(entry["state"]), entry["offset"]
+    fs = _checked(entry, provider)
+    if fs and (entry["inode"], entry["size"], entry["mtime_ns"]) == (st.st_ino, st.st_size, st.st_mtime_ns):
+        return entry, fs  # unchanged since it was read: nothing to parse
+    if not fs or entry["inode"] != st.st_ino or st.st_size < entry["offset"]:
+        entry, fs = {"inode": st.st_ino, "size": 0, "mtime_ns": 0, "offset": 0}, FileState(provider)
+    offset = entry["offset"]
     if st.st_size > offset:
         with open(path, "rb") as f:
             f.seek(offset)
@@ -222,7 +307,7 @@ def _advance(path, entry, provider):
                     offset += end
                 carry = data[end:]
     return {"inode": st.st_ino, "size": st.st_size, "mtime_ns": st.st_mtime_ns, "offset": offset,
-            "state": fs.to_json()}
+            "state": fs.to_json()}, fs
 
 
 def read_sessions(sessions):
@@ -237,10 +322,11 @@ def read_sessions(sessions):
         except (RelayError, OSError):
             saving = False
             out["notes"].append("usage cache not saved")
-        cache = _load_cache()
+        cache, changed = _load_cache(), False  # an unchanged cache is not written again (dashboard-scan)
         for provider, session in sorted(sessions):
             key = f"{provider}:{session}"
             known = sorted(set(cache["sessions"].get(key) or []) | set(files_for(provider, session)))
+            changed = changed or cache["sessions"].get(key) != known
             cache["sessions"][key] = known
             if not known:
                 out["unreadable"][(provider, session)] = "log not found"
@@ -248,19 +334,20 @@ def read_sessions(sessions):
             turns, problems = [], []
             for path in known:
                 try:
-                    cache["files"][path] = _advance(path, cache["files"].get(path), provider)
+                    old = cache["files"].get(path)
+                    cache["files"][path], fs = _advance(path, old, provider)
+                    changed = changed or cache["files"][path] is not old
                 except OSError:
                     problems.append("log not found")          # gone now: its cached turns stay counted
-                entry = _usable(cache["files"].get(path), provider)
-                if entry:
-                    fs = FileState.from_json(entry["state"])
+                    fs = _checked(cache["files"].get(path), provider)
+                if fs:
                     turns += fs.turns.values()
                     if fs.problem():
                         problems.append(fs.problem())
             out["turns"][(provider, session)] = sorted(turns, key=lambda t: t["at"])
             if problems:
                 out["unreadable"][(provider, session)] = "; ".join(sorted(set(problems)))
-        if saving:
+        if saving and changed:
             try:
                 config.atomic_write(os.path.join(config.relay_home(), CACHE), json.dumps(cache), 0o600)
             except OSError:

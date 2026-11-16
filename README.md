@@ -250,6 +250,13 @@ Run `relay ui` in your own terminal to open the dashboard, or `relay ui --backgr
 after the terminal closes. Use `--port 8765` to choose the first of eleven ports it tries. A second launch
 opens the running dashboard. Agent sessions cannot start it.
 
+The dashboard rebuilds its snapshot every 60 seconds at low priority (nice 10). It fetches a repository with
+an open feature, or one with a local change since its last fetch, at most once a minute, and every other
+repository every ten minutes. Done features are read again only when their commit or checkout changes. Refresh
+fetches every repository at once and asks GitHub again about closed PRs. The line at the bottom of the page shows
+what the last build cost: its time, CPU, the git and gh processes it started, the repositories it fetched and its
+cache hits. A build over 20 seconds or 300 processes also prints that line to the dashboard's stderr.
+
 The inbox lists features waiting on you, newest wait first. Each card says in plain words what is needed
 ("Decide: plan review stopped. <reason>", "Review failed: <why>", "Merge PR #6", "Take the handoff",
 "Answer the claude session", "Approve Bash in the codex session", "Check the codex session: no activity 2h"),
@@ -325,7 +332,7 @@ a change temporary, each after a confirmation. Writer roles are shown for inform
 
 The server listens only on `127.0.0.1` unless you pass `--host 0.0.0.0`, which only a container needs (see Running in Docker). A random token protects the page and every API request, and requests
 must use a local Host header. The private discovery file `~/.relay/ui.json` has mode 0600. The token is
-removed from the browser address after loading. The cache rebuilds every thirty seconds; Refresh requests
+removed from the browser address after loading. The cache rebuilds every 60 seconds; Refresh requests
 an immediate rebuild. A failed rebuild keeps the last good snapshot and reports its age and error.
 
 Every action asks for confirmation and is bound to the published commit, stage, status and session you

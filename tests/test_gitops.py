@@ -380,6 +380,17 @@ class CatFilesTest(unittest.TestCase):
                                "HEAD:b.txt": "two\nlines\n"})
         self.assertEqual(gitops.cat_files(work, []), {})
 
+    def test_cut_short_output_is_an_error(self):
+        whole = b"aaa blob 6\nhello\n\nbbb blob 4\nabc\n\n"
+        for cut in (whole[:-1], whole[:-3], whole[:-8], whole[:-14]):  # last body short, newline gone, header cut
+            done = mock.Mock(returncode=0, stdout=cut, stderr=b"")
+            with mock.patch.object(gitops.subprocess, "run", return_value=done):
+                with self.assertRaises(ValueError):
+                    gitops.cat_files("/nowhere", ["aaa", "bbb"])
+        done = mock.Mock(returncode=0, stdout=whole, stderr=b"")
+        with mock.patch.object(gitops.subprocess, "run", return_value=done):
+            self.assertEqual(gitops.cat_files("/nowhere", ["aaa", "bbb"]), {"aaa": "hello\n", "bbb": "abc\n"})
+
 
 class ReadMemoTest(unittest.TestCase):
     def setUp(self):

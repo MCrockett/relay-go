@@ -14,7 +14,7 @@ from relaylib.ui import snapshot
 from tests import helpers
 
 
-class SnapshotTest(unittest.TestCase):
+class SnapshotBase(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -38,6 +38,8 @@ class SnapshotTest(unittest.TestCase):
         helpers.sh(self.work, "git", "commit", "-qm", "fixture")
         helpers.sh(self.work, "git", "push", "-qu", "origin", "HEAD")
 
+
+class SnapshotTest(SnapshotBase):
     def test_rows_use_published_state_and_label_local_changes(self):
         self.st["status"] = "drafting"
         state.write_state(state.state_path(self.work, "demo"), self.st)
@@ -759,6 +761,435 @@ class SnapshotTest(unittest.TestCase):
         self.assertIsNone(row.get("health"))
 
 
+FACT_READS = (["rev-parse", "--abbrev-ref"], ["rev-parse", "HEAD"], ["remote", "get-url"], ["--git-common-dir"],
+              ["worktree", "list"], ["for-each-ref"])
+
+
+class StoreBase(SnapshotBase):
+    """Builds that share one store, as relay ui's do."""
+
+    def setUp(self):
+        super().setUp()
+        from relaylib import scancache
+        self.store = scancache.Store()
+        helpers.sh(self.work, "git", "fetch", "-q", "origin")  # a first fetch may add origin/HEAD
+        self.calls = []
+        real_run, real_cat = gitops.run, gitops.cat_files
+
+        def run(args, *a, **k):
+            self.calls.append(list(args))
+            return real_run(args, *a, **k)
+
+        def cat(root, specs):
+            if specs:  # no specs starts no process
+                self.calls.append(["git", "cat-file", "--batch", *specs])
+            return real_cat(root, specs)
+
+        for name, fn in (("run", run), ("cat_files", cat)):
+            p = mock.patch.object(gitops, name, side_effect=fn)
+            p.start()
+            self.addCleanup(p.stop)
+
+        self.clock = 1_000_000.0  # builds are QUIET_FETCH apart unless a test says when (dashboard-scan Task 8)
+        p = mock.patch.object(snapshot, "_now", side_effect=lambda: self.clock)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def build(self, at=None, full=False):
+        self.calls.clear()
+        self.clock = self.clock + 600 if at is None else 1_000_000.0 + at
+        return snapshot.build(full=full, store=self.store)
+
+    def fetches(self):
+        return len(self.reads("fetch"))
+
+    def reads(self, *words):
+        return [c for c in self.calls if c[0] == "git" and all(w in c for w in words)]
+
+
+class SharedStoreTest(StoreBase):
+    """dashboard-scan Task 4."""
+
+    def test_second_build_reads_no_facts_and_no_relay_files(self):
+        self.build()
+        self.build()
+        for words in FACT_READS:
+            self.assertEqual(self.reads(*words), [], words)
+        for words in (["ls-tree"], ["show"], ["cat-file"]):
+            self.assertEqual(self.reads(*words), [], words)
+
+    def test_checkouts_are_listed_once_per_build(self):
+        import glob as globmod
+        with mock.patch("relaylib.status.glob.glob", wraps=globmod.glob) as spy:
+            snapshot.build(store=self.store)
+        roots = [c for c in spy.call_args_list if c.args[0] == os.path.join(self.tmp, "*")]
+        self.assertEqual(len(roots), 1)
+
+    def test_local_changes_are_seen_by_the_next_build(self):
+        self.build()
+        self.st["status"] = "drafting"
+        self.save()
+        self.assertEqual(self.build()["rows"][0]["status"], "drafting")
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        row = self.build()["rows"][0]
+        self.assertIn("on origin/feat/demo (not checked out)", row["flags"])
+        tree = os.path.join(self.tmp, "tree")
+        helpers.sh(self.work, "git", "worktree", "add", "-q", tree, "feat/demo")
+        row = self.build()["rows"][0]
+        self.assertEqual(os.path.realpath(row["checkout"]), os.path.realpath(tree))
+
+    def test_unreadable_origin_branches_show_an_error_row(self):
+        with mock.patch.object(status, "_remote_features", side_effect=RelayError("for-each-ref failed: boom")):
+            rows = snapshot.build(store=self.store)["rows"]
+        flagged = [r for r in rows if any("cannot read origin branches" in f for f in r["flags"])]
+        self.assertEqual([r["feature"] for r in flagged], ["demo"])
+
+    def test_repo_with_no_rows_gets_a_question_row(self):
+        os.makedirs(os.path.join(self.tmp, "solo"))
+        _, other = helpers.make_repo(os.path.join(self.tmp, "solo"))
+        target = os.path.join(self.tmp, "solo-repo")
+        os.rename(other, target)
+        real = status._remote_features
+
+        def fail(checkout):
+            if os.path.realpath(checkout) == os.path.realpath(target):
+                raise RelayError("for-each-ref failed: boom")
+            return real(checkout)
+        with mock.patch.object(status, "_remote_features", side_effect=fail):
+            rows = snapshot.build(store=self.store)["rows"]
+        mine = [r for r in rows if os.path.realpath(r["checkout"]) == os.path.realpath(target)]
+        self.assertEqual([r["feature"] for r in mine], ["?"])
+        self.assertIn("boom", mine[0]["flags"][0])
+
+
+class PublishedTest(StoreBase):
+    """feature() inside a build takes the published commit from the scan (dashboard-scan Task 5)."""
+
+    def test_detail_starts_no_branch_walk_of_its_own(self):
+        for name in ("old-1", "old-2", "old-3"):  # stacked branches carrying older copies of the state
+            helpers.sh(self.work, "git", "push", "-q", "origin", f"HEAD:{name}")
+        self.st["status"] = "drafting"
+        self.save()
+        helpers.sh(self.work, "git", "fetch", "-q", "origin")
+        with mock.patch("relaylib.owneractions.published", wraps=snapshot.owneractions.published) as walk:
+            data = self.build()
+        self.assertEqual(walk.call_count, 0)
+        self.assertEqual(data["rows"][0]["status"], "drafting")
+        self.assertEqual(len(self.reads("for-each-ref")), 1)  # the scan's own read of the origin refs
+        self.assertEqual(len(self.reads("ls-tree")), 3)  # develop, the shared older commit, feat/demo
+        self.assertEqual(data["features"][0]["seen"]["commit"],
+                         helpers.sh(self.work, "git", "rev-parse", "origin/feat/demo").strip())
+
+    def test_detail_endpoint_outside_a_build_walks_the_branches(self):
+        with mock.patch("relaylib.owneractions.fingerprint", wraps=snapshot.owneractions.fingerprint) as spy:
+            snapshot.feature(self.work, "demo")
+        self.assertEqual(spy.call_count, 1)
+
+
+class DoneReuseTest(StoreBase):
+    """Done features cost nothing while their commit is unchanged (dashboard-scan Task 6)."""
+
+    def setUp(self):
+        super().setUp()
+        from relaylib import merged
+        self.merged = merged
+        self.st.update(stage="build", status="ready-to-merge", pr=7)
+        self.save()
+        helpers.sh(self.work, "git", "switch", "-q", "develop")  # merged: nobody has the branch checked out
+        merged.mark_merged(self.work, 7)
+        self.gh_log = os.path.join(self.tmp, "gh.log")
+        info = os.path.join(self.tmp, "pr.json")
+        helpers.write(info, json.dumps({"number": 7, "state": "MERGED", "baseRefName": "develop",
+                                        "headRefOid": "0" * 40, "statusCheckRollup": [], "isDraft": False,
+                                        "mergedAt": "2026-11-01T00:00:00Z"}))
+        patch = mock.patch.dict(os.environ, {"RELAY_GH_BIN": helpers.fake_bin(self.tmp, "gh", helpers.FAKE_GH),
+                                             "FAKE_GH_JSON": info, "FAKE_GH_LOG": self.gh_log})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def gh_calls(self):
+        try:
+            with open(self.gh_log) as f:
+                return f.read().splitlines()
+        except FileNotFoundError:
+            return []
+
+    def row(self, data):
+        return next(r for r in data["rows"] if r["feature"] == "demo")
+
+    def test_second_build_reuses_a_merged_feature(self):
+        first = self.build()
+        self.assertEqual(self.row(first)["stage"], "done")
+        self.assertIsNone(self.row(first)["seen"]["pr_head"])
+        self.assertEqual([c for c in self.gh_calls() if "pr view" in c], ["pr view 7 --json state,mergedAt"])
+        os.remove(self.gh_log)
+        with mock.patch.object(snapshot, "feature", wraps=snapshot.feature) as spy:
+            second = self.build()
+        self.assertEqual(spy.call_count, 0)
+        self.assertEqual([c for c in self.gh_calls() if "pr view" in c], [])
+        for words in (["status", "--porcelain"], ["diff"], ["log"]):
+            self.assertEqual(self.reads(*words), [], words)
+        self.assertEqual(self.row(second), self.row(first))
+
+    def test_new_commit_on_the_branch_rebuilds_it(self):
+        self.build()
+        helpers.sh(self.work, "git", "switch", "-q", "feat/demo")
+        helpers.write(os.path.join(self.folder, "notes.md"), "later")
+        self.save()
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        with mock.patch.object(snapshot, "feature", wraps=snapshot.feature) as spy:
+            data = self.build()
+        self.assertEqual(spy.call_count, 1)
+        self.assertEqual(self.row(data)["seen"]["commit"],
+                         helpers.sh(self.work, "git", "rev-parse", "origin/feat/demo").strip())
+
+    def test_fetch_that_moves_only_another_branch_reuses_the_row(self):
+        helpers.sh(self.work, "git", "push", "-q", "origin", "develop:other")
+        helpers.sh(self.work, "git", "fetch", "-q", "origin")
+        first = self.build(at=0)
+        elsewhere = tempfile.TemporaryDirectory()  # another machine: outside the projects root
+        self.addCleanup(elsewhere.cleanup)
+        other = os.path.join(elsewhere.name, "other")
+        helpers.clone(os.path.join(self.tmp, "origin.git"), other)
+        helpers.sh(other, "git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty",
+                   "-m", "other")
+        helpers.sh(other, "git", "push", "-q", "origin", "HEAD:other")
+        with mock.patch.object(snapshot, "feature", wraps=snapshot.feature) as spy:
+            second = self.build(at=600, full=True)  # fetches: origin/other moves, nothing of demo's does
+        self.assertEqual(spy.call_count, 0)
+        self.assertEqual(self.row(second), self.row(first))
+
+    def test_deleted_branch_rebuilds_the_row_from_develop(self):
+        helpers.sh(self.work, "git", "push", "-q", "origin", "origin/feat/demo:develop")  # merged
+        helpers.sh(self.work, "git", "pull", "-q", "--ff-only", "origin", "develop")
+        self.build()
+        helpers.sh(self.work, "git", "push", "-q", "origin", "--delete", "feat/demo")
+        helpers.sh(self.work, "git", "fetch", "-q", "--prune", "origin")
+        with mock.patch.object(snapshot, "feature", wraps=snapshot.feature) as spy:
+            second = self.build()
+        self.assertEqual(spy.call_count, 1)
+        self.assertEqual(self.row(second)["stage"], "done")
+        self.assertEqual(self.row(second)["seen"]["commit"],
+                         helpers.sh(self.work, "git", "rev-parse", "origin/develop").strip())
+
+    def test_unmoved_origin_refs_parse_no_state(self):
+        self.build()
+        with mock.patch.object(state, "parse_at", wraps=state.parse_at) as parse:
+            self.build()
+        self.assertEqual([c for c in parse.call_args_list if c.args[1].startswith("origin/")], [])
+        helpers.sh(self.work, "git", "push", "-q", "origin", "develop:other")
+        helpers.sh(self.work, "git", "fetch", "-q", "origin")
+        with mock.patch.object(state, "parse_at", wraps=state.parse_at) as parse:
+            data = self.build()
+        self.assertTrue(parse.call_count)  # a ref moved: the branches are read again
+        self.assertEqual(self.row(data)["stage"], "done")
+
+    def test_checked_out_done_branch_is_built_every_time(self):
+        helpers.sh(self.work, "git", "switch", "-q", "feat/demo")
+        self.build()
+        helpers.write(os.path.join(self.work, "edit.txt"), "x")
+        with mock.patch.object(snapshot, "feature", wraps=snapshot.feature) as spy:
+            data = self.build()
+        self.assertEqual(spy.call_count, 1)
+        self.assertIn("local changes not published", self.row(data)["flags"])
+
+    def test_fetch_error_shows_on_a_reused_row(self):
+        self.build(at=0)
+        with mock.patch.object(snapshot, "_fetch", return_value="cannot fetch origin: offline"):
+            data = self.build(at=600)
+            again = self.build(at=660)  # not due: the error is kept
+        self.assertIn("cannot fetch origin: offline", self.row(data)["flags"])
+        self.assertEqual(self.row(again)["flags"], self.row(data)["flags"])
+
+    def test_merge_log_is_read_once_across_builds(self):
+        from relaylib import scancache
+        head = helpers.sh(self.work, "git", "rev-parse", "origin/feat/demo").strip()
+        st = {"feature": "demo", "branch": "feat/demo"}
+        for _ in range(2):
+            with scancache.use(self.store):
+                self.merged.merged_at(self.work, st, branch_head=head)
+                self.store.prune([self.work])
+        self.assertEqual(len(self.reads("log", "--merges")), 1)  # develop; the fixture has no main
+        self.calls.clear()
+        with scancache.use(self.store):
+            self.merged.merged_at(self.work, st, branch_head=head)
+        self.assertEqual(self.reads("log", "--merges"), [])
+
+    def test_fingerprint_outside_a_build_asks_github(self):
+        self.build()
+        with mock.patch("relaylib.gitops.pr_info", return_value={"headRefOid": "1" * 40}) as spy:
+            seen = snapshot.owneractions.fingerprint(self.work, "demo", fetch=False)
+        self.assertEqual(spy.call_count, 1)
+        self.assertEqual(seen["pr_head"], "1" * 40)
+
+
+def scancache_use(store):
+    from relaylib import scancache
+    return scancache.use(store)
+
+
+class SharedReadsTest(StoreBase):
+    """The other steps share the build's reads (dashboard-scan Task 7)."""
+
+    def test_writing_totals_start_no_git_on_a_second_build(self):
+        snapshot.build(store=self.store)
+        from relaylib import scancache
+        with scancache.use(self.store), mock.patch.object(gitops, "network_env"):
+            self.calls.clear()
+            writerusage.summary(status.checkouts(self.tmp))
+        self.assertEqual([c for c in self.calls if c[0] == "git"], [])
+
+    def test_ps_runs_once_per_build(self):
+        with mock.patch("relaylib.sessions._ps", wraps=sessions._ps) as spy:
+            snapshot.build(store=self.store)
+        self.assertEqual(len([c for c in spy.call_args_list if c.args[0] == "pid=,lstart="]), 1)
+
+    def test_usage_samples_parse_once_until_the_file_changes(self):
+        from relaylib import scancache
+        os.makedirs(os.path.join(self.tmp, "relayhome"), exist_ok=True)
+        path = os.path.join(self.tmp, "relayhome", "usage.jsonl")
+        helpers.write(path, json.dumps({"provider": "codex", "sampled_at": "2026-11-12T00:00:00+00:00",
+                                        "resets_at": "2026-11-19T00:00:00+00:00", "used_pct": 10}) + "\n")
+        with mock.patch.object(usage, "_read", wraps=usage._read) as spy:
+            for _ in range(2):
+                with scancache.use(self.store):
+                    self.assertEqual(len(usage.read()), 1)
+                    usage.read()
+            self.assertEqual(spy.call_count, 1)
+            with open(path, "a") as f:
+                f.write(json.dumps({"provider": "claude", "sampled_at": "2026-11-12T00:00:00+00:00",
+                                    "resets_at": "2026-11-19T00:00:00+00:00", "used_pct": 5}) + "\n")
+            with scancache.use(self.store):
+                self.assertEqual(len(usage.read()), 2)
+            self.assertEqual(spy.call_count, 2)
+
+    def test_merged_record_is_parsed_once_per_build(self):
+        from relaylib import merged
+        merged.mark_merged(self.work, 99)
+        self.build()
+        with mock.patch.object(merged, "_read_raw", wraps=merged._read_raw) as spy:
+            self.build()
+        self.assertEqual(spy.call_count, 0)  # unchanged since the last build
+
+    def test_transcripts_are_walked_once_across_builds(self):
+        from relaylib import transcripts
+        helpers.write(os.path.join(transcripts.claude_projects(), "-w", "S1.jsonl"), "")
+        helpers.write(os.path.join(transcripts.codex_sessions(), "2026", "11", "12",
+                                   "rollout-2026-11-12T08-00-00-C1.jsonl"), "")
+        self.build()
+        with mock.patch.object(transcripts, "_walk", wraps=transcripts._walk) as walk, \
+                mock.patch.object(transcripts.glob, "glob", wraps=transcripts.glob.glob) as globbed:
+            self.build()
+            logs = [c for c in globbed.call_args_list
+                    if c.args[0].startswith((transcripts.claude_projects(), transcripts.codex_sessions()))]
+            self.assertEqual((walk.call_count, logs), (0, []))
+            helpers.write(os.path.join(transcripts.claude_projects(), "-w", "S2.jsonl"), "")
+            with scancache_use(self.store):
+                self.assertEqual(len(transcripts.files_for("claude", "S2")), 1)
+            self.assertEqual(walk.call_count, 1)
+
+
+class StatsAndFailureTest(StoreBase):
+    """dashboard-scan Tasks 9 and 10."""
+
+    def test_snapshot_carries_build_stats(self):
+        stats = self.build()["build_stats"]
+        self.assertEqual(set(stats), {"seconds", "cpu_seconds", "processes", "fetched", "cache"})
+        self.assertEqual(stats["fetched"], [os.path.basename(self.work)])
+        self.assertGreater(stats["processes"]["git"], 0)
+
+    def test_a_build_that_raises_keeps_the_store(self):
+        self.build()
+        kept = dict(self.store.trees)
+        with mock.patch.object(snapshot, "_writing_or_error", side_effect=RuntimeError("partway")), \
+                self.assertRaises(RuntimeError):
+            self.build()
+        self.assertEqual(self.store.trees, kept)
+        self.build()
+        self.assertEqual(self.reads("cat-file"), [])  # the next build reuses the kept blobs
+
+
+class FetchScheduleTest(StoreBase):
+    """Active repositories are fetched every minute, quiet ones every ten (dashboard-scan Task 8)."""
+
+    def quiet(self):
+        from relaylib import merged
+        self.st.update(stage="build", status="ready-to-merge", pr=7)
+        self.save()
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        merged.mark_merged(self.work, 7)
+
+    def test_active_repository_every_minute(self):
+        got = [(self.build(at=t), self.fetches())[1] for t in (0, 30, 60)]
+        self.assertEqual(got, [1, 0, 1])
+
+    def test_quiet_repository_every_ten_minutes(self):
+        self.quiet()
+        got = [(self.build(at=t), self.fetches())[1] for t in (0, 60, 599, 600)]
+        self.assertEqual(got, [1, 0, 0, 1])
+
+    def test_local_commit_makes_a_quiet_repository_fetch(self):
+        self.quiet()
+        self.build(at=0)
+        self.build(at=60)
+        self.assertEqual(self.fetches(), 0)
+        helpers.write(os.path.join(self.work, "notes.txt"), "x")
+        helpers.sh(self.work, "git", "add", "notes.txt")
+        helpers.sh(self.work, "git", "commit", "-qm", "local")
+        self.build(at=120)
+        self.assertEqual(self.fetches(), 1)
+        self.build(at=180)  # unchanged since that fetch: quiet again
+        self.assertEqual(self.fetches(), 0)
+
+    def test_full_build_fetches_every_repository(self):
+        self.quiet()
+        self.build(at=0)
+        self.build(at=30, full=True)
+        self.assertEqual(self.fetches(), 1)
+        self.build(at=31)
+        self.assertEqual(self.fetches(), 0)
+
+    def test_failed_fetch_is_flagged_between_fetches_and_retried(self):
+        self.st["status"] = "ready-to-merge"
+        self.st.update(stage="build", pr=7)
+        self.save()
+        good = helpers.sh(self.work, "git", "remote", "get-url", "origin").strip()
+        helpers.sh(self.work, "git", "remote", "set-url", "origin", os.path.join(self.tmp, "nowhere"))
+        rows = []
+        for t in (0, 30, 60):
+            data = self.build(at=t)
+            rows.append((self.fetches(), any("fetch failed" in f for f in data["rows"][0]["flags"])))
+        self.assertEqual(rows, [(1, True), (0, True), (1, True)])
+        helpers.sh(self.work, "git", "remote", "set-url", "origin", good)
+        data = self.build(at=120)
+        self.assertEqual(self.fetches(), 1)
+        self.assertFalse(any("fetch failed" in f for f in data["rows"][0]["flags"]))
+
+    def test_closed_pr_is_asked_once_per_fetch(self):
+        self.st.update(stage="build", status="drafting", pr=7)
+        self.save()
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        log, info = os.path.join(self.tmp, "gh.log"), os.path.join(self.tmp, "pr.json")
+        helpers.write(info, json.dumps({"number": 7, "state": "CLOSED", "baseRefName": "develop"}))
+        with mock.patch.dict(os.environ, {"RELAY_GH_BIN": helpers.fake_bin(self.tmp, "gh", helpers.FAKE_GH),
+                                          "FAKE_GH_JSON": info, "FAKE_GH_LOG": log}):
+            asked = []
+            for t, full in ((0, False), (60, False), (600, False), (601, True)):
+                before = self.gh_views(log)
+                data = self.build(at=t, full=full)
+                asked.append(self.gh_views(log) - before)
+            self.assertEqual(data["hidden"][0]["slug"], "demo")
+        self.assertEqual(asked, [1, 0, 1, 1])
+
+    @staticmethod
+    def gh_views(log):
+        try:
+            with open(log) as f:
+                return sum("pr view 7 --json state,baseRefName" in line for line in f)
+        except FileNotFoundError:
+            return 0
+
+
 class CacheTest(unittest.TestCase):
     def test_loading_success_failure_and_refresh(self):
         gate, called = threading.Event(), threading.Event()
@@ -788,6 +1219,58 @@ class CacheTest(unittest.TestCase):
         self.wait_for(lambda: first.get()["error"])
         self.assertIsNone(first.get()["data"])
         self.assertFalse(first.get()["loading"])
+
+    def test_refresh_during_a_build_runs_a_full_build_right_after(self):
+        gate, calls = threading.Event(), []
+
+        def build(full=False):
+            calls.append(full)
+            if len(calls) == 1:
+                gate.wait(2)
+            return {"rows": []}
+        cache = snapshot.Cache(builder=build)
+        self.addCleanup(cache.close)
+        self.assertEqual(cache.interval, 60)
+        cache.start()
+        self.wait_for(lambda: calls)
+        cache.refresh(full=True)
+        gate.set()
+        self.wait_for(lambda: len(calls) == 2)
+        self.assertEqual(calls, [False, True])
+        cache.refresh()
+        self.wait_for(lambda: len(calls) == 3)
+        self.assertEqual(calls[2], False)
+
+    def test_every_build_shares_the_cache_store(self):  # dashboard-scan plan Task 1: the reuse lives with relay ui
+        stores = []
+
+        def build(full=False, store=None):
+            stores.append(store)
+            return {"rows": []}
+        cache = snapshot.Cache(builder=build)
+        self.addCleanup(cache.close)
+        cache.start()
+        self.wait_for(lambda: stores)
+        cache.refresh(full=True)
+        self.wait_for(lambda: len(stores) == 2)
+        self.assertIsNotNone(stores[0])
+        self.assertIs(stores[0], stores[1])
+        self.assertIs(stores[0], cache.store)
+
+    def test_slow_builds_print_one_line(self):
+        for stats, lines in (({"seconds": 25, "cpu_seconds": 3, "processes": {"git": 30, "gh": 6, "other": 2},
+                               "fetched": ["a"], "cache": {"hits": 9, "misses": 0}}, 1),
+                             ({"seconds": 2, "cpu_seconds": .5, "processes": {"git": 40, "gh": 0, "other": 0},
+                               "fetched": [], "cache": {"hits": 0, "misses": 0}}, 0)):
+            with self.subTest(seconds=stats["seconds"]), mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+                cache = snapshot.Cache(builder=lambda: {"rows": [], "build_stats": stats})
+                cache.start()
+                self.wait_for(lambda: cache.get()["data"] is not None)
+                cache.close()
+                printed = [l for l in err.getvalue().splitlines() if l.startswith("relay: build ")]
+                self.assertEqual(len(printed), lines)
+        self.assertEqual(snapshot.build_line(stats),
+                         "Last build 2.0 s, 0.5 s CPU, 40 processes (git 40, gh 0, other 0), fetched 0, cache 0 hits")
 
     def wait_for(self, predicate):
         until = time.monotonic() + 2

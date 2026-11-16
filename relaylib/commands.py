@@ -1362,6 +1362,11 @@ def cmd_hooks(args):
 
 def cmd_ui(args):
     from .ui.server import launch
+    if not args.serve_child:  # a background child inherits nice 10 from this process (dashboard-scan D7)
+        try:
+            os.nice(10)
+        except OSError as e:
+            print(f"relay: warning: could not lower the dashboard's priority: {e}", file=sys.stderr)
     return launch(args.port, args.background, args.serve_child, args.host)
 
 

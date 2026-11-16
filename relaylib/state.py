@@ -17,7 +17,12 @@ def now_iso():
 
 def relay_dir(root):
     """docs/relay spelled the way it exists on disk; a repo may track it as Docs/relay, which a
-    case-sensitive checkout would otherwise not find."""
+    case-sensitive checkout would otherwise not find. A snapshot build looks once per checkout."""
+    from . import scancache
+    return scancache.per_build(("relay_dir", root), lambda: _relay_dir(root))
+
+
+def _relay_dir(root):
     path = root
     for part in RELAY_DIR.split("/"):
         try:
@@ -75,6 +80,17 @@ def write_state(path, st):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write("---\n" + json.dumps(st, indent=2, sort_keys=True) + "\n---\n" + BODY)
+
+
+def parse_at(root, ref, path, where=None):
+    """parse_state of the file at ref:path, as git shows it (missing reads as empty). Inside a snapshot build the
+    parse is cached by blob id (dashboard-scan F4)."""
+    from . import gitops, scancache
+    found, blob = scancache.lookup(root, ref, path)
+    where = where or path
+    if found and blob is not None:
+        return scancache.parsed(root, blob, where, scancache.blob(root, blob))
+    return parse_state(gitops.show(root, ref, path) or "", where)
 
 
 def list_features(root):

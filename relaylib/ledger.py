@@ -31,19 +31,22 @@ def parse_since(text):
 
 
 def read(since=None):
-    if not os.path.exists(_path()):
-        return []
+    from . import scancache
     cutoff = datetime.datetime.now().astimezone() - since if since else None
+    rows = scancache.parsed_file(_path(), _rows)  # once per snapshot build while unchanged (dashboard-scan R7b)
+    return [row for row in rows if not cutoff or datetime.datetime.fromisoformat(row["at"]) >= cutoff]
+
+
+def _rows(path):
+    if not os.path.exists(path):
+        return []
     rows = []
-    with open(_path()) as f:
+    with open(path) as f:
         for line in f:
             try:
-                row = json.loads(line)
+                rows.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
-            if cutoff and datetime.datetime.fromisoformat(row["at"]) < cutoff:
-                continue
-            rows.append(row)
     return rows
 
 

@@ -234,6 +234,34 @@ class OwnerActionsTest(OwnerFixture):
             self.assertIn("pr merge 7 -R owner/project", f.read())
 
 
+class FreshAfterBuildTest(OwnerFixture):  # dashboard-scan Task 12, R10, D6
+    def test_a_merge_after_a_cached_build_reads_live(self):
+        from relaylib import scancache
+        from relaylib.ui import snapshot
+        self.ready()
+        with mock.patch.dict(os.environ, {"RELAY_ROOT": self.tmp, "RELAY_HOME": os.path.join(self.tmp, "home")}):
+            store = scancache.Store()
+            for _ in range(2):  # the second build answers from the store
+                data = snapshot.build(store=store)
+            seen = next(r for r in data["rows"] if r["feature"] == "demo")["seen"]
+            self.assertEqual(seen["commit"], gitops.head_sha(self.work))
+            self.assertIsNone(scancache.active())
+            helpers.sh(self.other, "git", "pull", "-q", "--ff-only")
+            st = state.read_state(state.state_path(self.other, "demo"))
+            st["status"] = "drafting"
+            self.save(self.other, st)
+            self.publish(self.other)
+            open(self.log, "w").close()
+            with mock.patch("relaylib.gitops.run", wraps=gitops.run) as run, \
+                    self.assertRaises(owneractions.Conflict) as caught:
+                owneractions.merge(self.work, "demo", seen)
+        self.assertEqual(caught.exception.fresh["commit"], gitops.head_sha(self.other))
+        self.assertTrue(any(c.args[0][:2] == ["git", "fetch"] or "fetch" in c.args[0][:4]
+                            for c in run.call_args_list))
+        with open(self.log) as f:
+            self.assertIn("pr view 7", f.read())
+
+
 class LocalMergeTest(OwnerFixture):  # ci-modes R10
     CMD = "true"
 

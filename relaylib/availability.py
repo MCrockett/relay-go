@@ -18,6 +18,13 @@ TAIL_BYTES = 256 * 1024
 STALE_S = 3600  # a 5-hour sample older than this is shown as stale (five-hour-usage D2)
 
 
+def _mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0  # removed since it was listed
+
+
 def _codex_home():
     return os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
 
@@ -38,11 +45,24 @@ def codex_weekly():
     return codex_window(WEEK_MINUTES)
 
 
+def _newest_codex_logs():
+    from . import transcripts  # a snapshot build lists from its Codex index (dashboard-scan R7b)
+    found = transcripts.index("codex")
+    files = found["files"] if found is not None else glob.glob(
+        os.path.join(_codex_home(), "sessions", "*", "*", "*", "*.jsonl"))
+    return sorted(files, key=_mtime, reverse=True)[:5]
+
+
 def codex_window(minutes):
-    """(used_percent, resets_at, source_time) for the Codex limit window of this length, or None."""
-    files = sorted(glob.glob(os.path.join(_codex_home(), "sessions", "*", "*", "*", "*.jsonl")),
-                   key=os.path.getmtime, reverse=True)
-    for path in files[:5]:
+    """(used_percent, resets_at, source_time) for the Codex limit window of this length, or None. A snapshot
+    build reads it once and shares it with every repository's review choices (dashboard-scan R7b)."""
+    from . import scancache
+    return scancache.per_build(("codex_window", minutes),
+                               lambda: _codex_window(scancache.per_build("codex_logs", _newest_codex_logs), minutes))
+
+
+def _codex_window(files, minutes):
+    for path in files:
         try:  # limits are logged on every turn: the end of the file is enough, however long the session
             with open(path, "rb") as f:
                 f.seek(max(0, os.path.getsize(path) - TAIL_BYTES))

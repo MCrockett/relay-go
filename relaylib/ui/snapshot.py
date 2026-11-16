@@ -3,6 +3,7 @@ import concurrent.futures
 import contextvars
 import dataclasses
 import datetime as dt
+import inspect
 import json
 import os
 import re
@@ -11,17 +12,22 @@ import threading
 import time
 import tomllib
 
-from .. import (agentask, availability, config, events, gitops, health, hookinstall, ledger, leftoff, merged,
-               othersessions, notes as ownernotes, owneractions, reviewjobs, reviewtables, sessions, state, status,
+from .. import (agentask, availability, buildstats, config, events, gitops, health, hookinstall, ledger, leftoff, merged,
+               othersessions, notes as ownernotes, owneractions, reviewjobs, reviewtables, scancache, sessions, state, status,
                usage as samples, verdict, waiting, writerusage)
 from ..errors import RelayError
 
 WORKERS = 8  # parallel fetches and feature details; gh and git are the wait, not the CPU
 
 
+def _allowed():
+    root = status.projects_root()
+    return scancache.per_build(("allowed", root), lambda: {os.path.realpath(p) for p in status.checkouts(root)})
+
+
 def allowed_repo(repo):
     real = os.path.realpath(repo)
-    if real not in {os.path.realpath(p) for p in status.checkouts(status.projects_root())}:
+    if real not in _allowed():
         raise RelayError("repository is not in relay's projects or worktrees")
     return real
 
@@ -72,11 +78,42 @@ def _local(repo, slug, branch, commit, handoff):
     return changed, local
 
 
-def feature(repo, slug, records=None):
+def published_for(repo, slug, ref):
+    """(commit, state) of the feature on its own origin branch ref, from the build's scan results; None when ref is
+    not that branch, so the caller walks the branches as owner actions do (dashboard-scan R4)."""
+    if not ref or not gitops.remote_ref_exists(repo, ref):
+        return None
+    commit = gitops.head_sha(repo, ref)
+    try:
+        st = owneractions.state_at(repo, slug, commit)
+    except RelayError:
+        return None
+    return (commit, st) if ref == f"origin/{st.get('branch')}" else None
+
+
+def _scan_ref(row):
+    """The origin branch the scan found the row's feature on: its own path for a remote row, else the branch the
+    checked-out state names."""
+    path = row.get("path") or ""
+    if ":" in path:
+        return path.split(":", 1)[0]
+    try:
+        branch = state.read_state(state.state_path(row["checkout"], row["feature"])).get("branch")
+    except (RelayError, OSError):
+        return None
+    return f"origin/{branch}" if branch else None
+
+
+def feature(repo, slug, records=None, published=None):
+    """One feature's detail. published=(commit, state) comes from the snapshot's scan; without it the published
+    branch is found as owner actions find it."""
     repo = allowed_repo(repo)
     archived = False
     try:
-        seen = owneractions.fingerprint(repo, slug, fetch=False)
+        if published is not None:
+            seen = owneractions.seen_at(repo, published[0], published[1])
+        else:
+            seen = owneractions.fingerprint(repo, slug, fetch=False)
     except RelayError:
         # Merging deletes the feature branch. Keep its published history readable on the base.
         seen = None
@@ -95,7 +132,7 @@ def feature(repo, slug, records=None):
         if seen is None:
             raise
     commit = seen["commit"]
-    st = owneractions.state_at(repo, slug, commit)
+    st = published[1] if published is not None and not archived else owneractions.state_at(repo, slug, commit)
     files = gitops.ls_files(repo, commit, f"{state.RELAY_DIR}/{slug}")
     handoff_path = next((p for p in files if p.lower().endswith("/handoff.md")), None)
     handoff = gitops.show(repo, commit, handoff_path) if handoff_path else None
@@ -125,7 +162,7 @@ def feature(repo, slug, records=None):
         except (RelayError, OSError) as e:
             info["state"], ci = "unknown", "unknown"
             reasons["merge"] = f"GitHub is unknown: {e}"
-    if "merge" in actions:
+    if "merge" in actions and info["state"] != "MERGED":  # a merged PR has no actions: ask GitHub nothing more
         if "merge" not in reasons:
             try:
                 owneractions.merge_readiness(repo, st, seen)
@@ -140,11 +177,7 @@ def feature(repo, slug, records=None):
     job = reviewjobs.status(repo, slug)
     if job and job.get("state") == "running":  # the running review owns the feature until it ends
         actions = []
-    repo_cfg = config.load(repo)  # the repository's effective table, the one prepare checks against
-    options = reviewjobs.choices(repo_cfg)
-    review_default = dict(zip(("id", "label", "note"), reviewjobs.default(repo_cfg, st, options)))
-    review_defaults = {stage: dict(zip(("id", "label", "note"), reviewjobs.default(repo_cfg, st, options, stage)))
-                       for stage in reviewjobs.STAGES}
+    options, review_default, review_defaults = _review_choices(repo, st)
     reviews = [_review(repo, commit, p) for p in files if "/reviews/" in p.lower() and p.endswith(".md")]
     reviews.sort(key=lambda r: (r.get("at", ""), r["path"]), reverse=True)
     local_error = None
@@ -178,6 +211,20 @@ def feature(repo, slug, records=None):
             "pending_tools": [] if (found or {}).get("stopped") else  # its approval died with it
             [p.get("tool_name") for p in (record or {}).get("pending") or [] if p.get("tool_name")],
             "session_record": record}
+
+
+def _review_choices(repo, st):
+    """(choices, default, per-stage defaults) of the review dialog. They depend on the time through the timed
+    tables and availability, so a build computes the choices once per repository and never reuses them."""
+    def make():
+        repo_cfg = config.load(repo)  # the repository's effective table, the one prepare checks against
+        return repo_cfg, reviewjobs.choices(repo_cfg)
+    repo_cfg, options = scancache.per_build(("review", os.path.realpath(repo)), make)
+    options = json.loads(json.dumps(options))  # each row gets its own copy
+    review_default = dict(zip(("id", "label", "note"), reviewjobs.default(repo_cfg, st, options)))
+    review_defaults = {stage: dict(zip(("id", "label", "note"), reviewjobs.default(repo_cfg, st, options, stage)))
+                       for stage in reviewjobs.STAGES}
+    return options, review_default, review_defaults
 
 
 def _listed(data, provider, session_id):
@@ -370,6 +417,27 @@ def _parallel(fn, items):
         return list(pool.map(lambda pair: pair[0].run(fn, pair[1]), zip(contexts, items)))
 
 
+def _prefetch(members):
+    """Read every relay blob of the repository's origin heads in one batch (dashboard-scan R3)."""
+    repo = members[0]
+    try:
+        heads = {gitops.head_sha(repo, ref) for ref in gitops.remote_branches(repo)}
+    except (RelayError, OSError):
+        return
+    scancache.prefetch(repo, sorted(heads))
+
+
+def _now():
+    return time.time()
+
+
+def _note_live(groups, rows):
+    """Record which repositories have a not-done feature, for the next build's fetch schedule."""
+    live = {os.path.realpath(r["checkout"]) for r in rows if r.get("checkout") and r.get("stage") != "done"}
+    for common, members in groups.items():
+        scancache.fetch_live(common, any(os.path.realpath(m) in live for m in members))
+
+
 def _fetch(repo):
     try:
         gitops.fetch(repo)
@@ -378,14 +446,79 @@ def _fetch(repo):
         return str(e)
 
 
+REVIEW_KEYS = ("review_choices", "review_default", "review_defaults")
+
+
+BASE_REFS = ("origin/develop", "origin/main")
+
+
+def _done_key(repo, row, fetched):
+    """The reuse key of a done row (dashboard-scan R6), or None when it must be built: the origin refs the row is
+    read from, its checkouts' own stamps, the fetch error, the config files and, for a closed or gone PR, how often
+    the repository was fetched (D5).
+
+    The refs are the commit of the origin branch the scan found the feature on and of the R6a fallbacks, plus the
+    names of all origin branches, so a branch that appears or goes is seen. A fetch that moves only other branches
+    keeps the row: that is most fetches in a repository with live work."""
+    if not scancache.active() or row.get("stage") != "done" or row.get("scan_error") or scancache.failed(repo):
+        return None
+    try:
+        trees = sorted(c for c in gitops.worktrees(repo) if os.path.isdir(c))
+        common, own = scancache.checkouts_key(repo, trees)
+        facts = scancache.repo_facts(repo)
+    except (RelayError, OSError):
+        return None
+    if common is None or facts is None:
+        return None
+    refs = facts["refs"]
+    ref = _scan_ref(row)
+    commits = tuple((r, refs.get(r)) for r in (ref,) + BASE_REFS)
+    configs = scancache.stamp([config.config_path(), os.path.join(state.relay_dir(repo), "config.toml")])
+    return (facts["url"], tuple(trees), commits, tuple(sorted(refs)), own, fetched.get(row.get("checkout")), configs,
+            scancache.generation(repo) if row.get("hidden") else 0, tuple(row.get("flags") or ()))
+
+
+def _reuse(repo, row, key):
+    """The done row and detail of an earlier build under the same key, with this build's review choices."""
+    got = scancache.done_get(os.path.realpath(repo), row["feature"], key)
+    if got is None:
+        return None
+    old_row, detail = got
+    branch = detail["state"].get("branch")
+    try:  # a done branch someone has checked out can gain local changes: build it every time
+        if any(gitops.current_branch(c) == branch for c in gitops.worktrees(repo) if os.path.isdir(c)):
+            return None
+    except (RelayError, OSError):
+        return None
+    row.clear()
+    row.update(old_row)
+    options, default, defaults = _review_choices(repo, detail["state"])
+    for target in (row, detail):
+        target.update(review_choices=options, review_default=default, review_defaults=defaults)
+    return detail
+
+
 def _enrich(row, errors, fetched, records):
     repo = row.get("checkout")
     row.update(actions=[], action_reasons={}, health=None, health_inbox=False)
     if not repo or row["feature"] == "?":
         return None
     row["repo_path"] = os.path.realpath(repo)
+    key = _done_key(repo, row, fetched)
+    reused = _reuse(repo, row, key) if key is not None else None
+    if reused is not None:
+        return reused
+    detail = _enrich_one(row, errors, fetched, records)
+    if (key is not None and detail is not None and not row.get("error") and detail.get("health") is None
+            and detail.get("session_record") is None and detail.get("agent_text") is None):
+        scancache.done_put(row["repo_path"], row["feature"], key, row, detail)
+    return detail
+
+
+def _enrich_one(row, errors, fetched, records):
+    repo = row["checkout"]
     try:
-        detail = feature(repo, row["feature"], records)
+        detail = feature(repo, row["feature"], records, published_for(repo, row["feature"], _scan_ref(row)))
         st, seen = detail["state"], detail["seen"]
         published = status._remote_row(repo, seen["commit"], row["feature"], st, bool(detail["handoff"]), fetched)
         published["flags"] = [f.replace(seen["commit"], "origin/" + seen["branch"]) for f in published["flags"]]
@@ -406,6 +539,8 @@ def _enrich(row, errors, fetched, records):
             row["flags"].append("local handoff drafted, not pushed yet")
         if detail["local_error"]:
             row["flags"].append(f"could not read the local checkout: {detail['local_error']}")
+        if row.get("scan_error"):
+            row["flags"].append(row["scan_error"])
         if row["repo_path"] in errors:
             row["flags"].append(errors[row["repo_path"]])
             row["actions"] = detail["actions"] = []
@@ -430,56 +565,89 @@ def _left_marks(details):
     return {sid: {"slug": m["slug"], "done": m["done"]} for sid, m in found.items()}
 
 
-def build():
+def build(full=False, store=None):
+    """One snapshot. store is the cross-build cache (dashboard-scan D1); a fresh one when not given, as for the
+    hub's one-shot build (D9)."""
+    store = scancache.Store() if store is None else store
+    with gitops.read_memo(), scancache.use(store), buildstats.collect() as stats:
+        data = _build(root=status.projects_root(), full=full)
+        store.prune(status.checkouts(status.projects_root()))
+        data["build_stats"] = stats.finish()
+    return data
+
+
+def build_line(stats):
+    """One line for a build's cost (dashboard-scan R12), the same words as the page's."""
+    p = stats.get("processes") or {}
+    return (f"Last build {stats.get('seconds', 0):.1f} s, {stats.get('cpu_seconds', 0):.1f} s CPU, "
+            f"{sum(p.values())} processes (git {p.get('git', 0)}, gh {p.get('gh', 0)}, other {p.get('other', 0)}), "
+            f"fetched {len(stats.get('fetched') or ())}, cache {(stats.get('cache') or {}).get('hits', 0)} hits")
+
+
+def _slow(stats):
+    """A build worth a line on stderr (R13)."""
+    return stats.get("seconds", 0) > 20 or sum((stats.get("processes") or {}).values()) > 300
+
+
+def _build(root, full):
     samples.record_codex_sample()
     samples.prune()
-    root = status.projects_root()
     sessions.prune()
     ownernotes.prune()  # with the session records (session-notify D5)
     try:
         records = sessions.read_records()
     except Exception:  # where-i-left-off F4: no records
         records = []
-    with gitops.read_memo():
-        repos, groups = status.checkouts(root), {}
-        for repo in repos:  # linked worktrees share refs: concurrent fetches of one repository collide
-            try:
-                groups.setdefault(gitops.common_dir(repo), []).append(repo)
-            except RelayError:
-                groups.setdefault(repo, []).append(repo)
-        fetched = {}
-        for members, error in zip(groups.values(), _parallel(lambda members: _fetch(members[0]), list(groups.values()))):
-            fetched.update(dict.fromkeys(members, error))
-        errors = {os.path.realpath(repo): error for repo, error in fetched.items() if error}
+    repos, groups = status.checkouts(root), {}
+    for repo in repos:  # linked worktrees share refs: concurrent fetches of one repository collide
         try:
-            rows, claimed = status.scan_with_claims(root)  # kept for rows whose details fail to load (D2)
-            details = [d for d in _parallel(lambda row: _enrich(row, errors, fetched, records), rows) if d]
-            waiting.one_ask_per_session(rows)
-            scan_note = None
-        except Exception as e:  # where-i-left-off F5: the rest of the dashboard is still built
-            rows, claimed, details, scan_note = [], set(), [], f"Features could not be read: {e}"
-        writing = _writing_or_error(repos, errors)
-        try:
-            marks = _left_marks(details)
-        except Exception:  # where-i-left-off F5: sessions without feature marks
-            marks = {}
-        try:
-            alive = sessions.alive(records)
-        except Exception:  # running-now D2: unknown liveness
-            alive = None
-        now = time.time()
-        try:
-            turns = leftoff.codex_turns(records, alive, now)  # one read per run, for both lists (codex-liveness D4)
-        except Exception:  # D5: unknown, running-now D3 decides
-            turns = None
-        try:
-            left = leftoff.projects(records, marks, root, alive=alive, now=now, turns=turns)
-        except Exception:  # F4
-            left = []
-        try:
-            run = leftoff.running(records, marks, root, alive, now, turns)
-        except Exception:  # running-now F4
-            run = []
+            groups.setdefault(gitops.common_dir(repo), []).append(repo)
+        except RelayError:
+            groups.setdefault(repo, []).append(repo)
+    fetched, now, due = {}, _now(), {}
+    for common, members in groups.items():  # the fetch schedule (dashboard-scan D4): due, or the last error
+        due[common] = scancache.fetch_due(common, members, now, full)
+    todo = [(common, members) for common, members in groups.items() if due[common][0]]
+    for (common, members), error in zip(todo, _parallel(lambda pair: _fetch(pair[1][0]), todo)):
+        scancache.restamp(common)  # the fetch wrote its refs
+        scancache.fetched(members[0])
+        buildstats.note_fetch(os.path.basename(members[0]))
+        scancache.fetch_done(common, members, now, error)
+        due[common] = (True, error)
+    for common, members in groups.items():
+        fetched.update(dict.fromkeys(members, due[common][1]))
+    _parallel(_prefetch, list(groups.values()))
+    errors = {os.path.realpath(repo): error for repo, error in fetched.items() if error}
+    try:
+        rows, claimed = status.scan_with_claims(root, records, fetched)  # kept for rows whose details fail to load (D2)
+        details = [d for d in _parallel(lambda row: _enrich(row, errors, fetched, records), rows) if d]
+        waiting.one_ask_per_session(rows)
+        _note_live(groups, rows)
+        scan_note = None
+    except Exception as e:  # where-i-left-off F5: the rest of the dashboard is still built
+        rows, claimed, details, scan_note = [], set(), [], f"Features could not be read: {e}"
+    writing = _writing_or_error(repos, errors)
+    try:
+        marks = _left_marks(details)
+    except Exception:  # where-i-left-off F5: sessions without feature marks
+        marks = {}
+    try:
+        alive = sessions.alive(records)
+    except Exception:  # running-now D2: unknown liveness
+        alive = None
+    now = time.time()
+    try:
+        turns = leftoff.codex_turns(records, alive, now)  # one read per run, for both lists (codex-liveness D4)
+    except Exception:  # D5: unknown, running-now D3 decides
+        turns = None
+    try:
+        left = leftoff.projects(records, marks, root, alive=alive, now=now, turns=turns)
+    except Exception:  # F4
+        left = []
+    try:
+        run = leftoff.running(records, marks, root, alive, now, turns)
+    except Exception:  # running-now F4
+        run = []
     seen = {r["provider"] for r in records}
     hints = {}
     for provider in hookinstall.EVENTS:
@@ -517,11 +685,12 @@ def build():
 
 
 class Cache:
-    def __init__(self, builder=build, interval=30):
+    def __init__(self, builder=build, interval=60):
         self.builder, self.interval = builder, interval
         self._lock, self._wake, self._stop = threading.Lock(), threading.Event(), threading.Event()
         self._data, self._error, self._at, self._attempted = None, None, None, False
-        self._thread = None
+        self._full, self._thread = False, None
+        self.store = scancache.Store()  # one store for every build: the cross-build reuse lives here (D1)
 
     def get(self):
         with self._lock:
@@ -534,8 +703,12 @@ class Cache:
             self._thread = threading.Thread(target=self._run, name="relay-snapshot", daemon=True)
             self._thread.start()
 
-    def refresh(self):
-        self._wake.set()
+    def refresh(self, full=False):
+        """Build again now. full (the page's Refresh) also fetches every repository and asks GitHub again about
+        closed PRs (dashboard-scan D5). One that arrives during a build is kept for the next."""
+        with self._lock:
+            self._full = self._full or full
+            self._wake.set()
 
     def close(self):
         self._stop.set()
@@ -543,14 +716,27 @@ class Cache:
         if self._thread:
             self._thread.join(timeout=1)
 
+    def _call(self, full):
+        try:
+            params = inspect.signature(self.builder).parameters
+        except (TypeError, ValueError):
+            params = {}
+        kwargs = {k: v for k, v in (("full", full), ("store", self.store)) if k in params}
+        return self.builder(**kwargs)
+
     def _run(self):
         while not self._stop.is_set():
-            self._wake.clear()
+            with self._lock:  # cleared here, not before the wait: a refresh during the build starts the next one
+                full, self._full = self._full, False
+                self._wake.clear()
             with events.collect() as batch:  # merges a build discovers are announced after it is stored (D10)
                 try:
-                    data = self.builder()
+                    data = self._call(full)
                     with self._lock:
                         self._data, self._error, self._at, self._attempted = data, None, time.time(), True
+                    stats = data.get("build_stats") if isinstance(data, dict) else None
+                    if isinstance(stats, dict) and _slow(stats):
+                        print("relay: build " + build_line(stats).removeprefix("Last build "), file=sys.stderr)
                 except Exception as e:
                     with self._lock:
                         self._error, self._attempted = str(e), True

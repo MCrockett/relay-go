@@ -8,7 +8,7 @@ import json
 import os
 import threading
 
-from . import gitops
+from . import gitops, scancache
 from .config import relay_home
 from .errors import RelayError
 
@@ -25,6 +25,11 @@ def _gone_path():
 
 
 def _read(path):
+    """The JSON object in path, or {}; parsed once per snapshot build while unchanged (dashboard-scan R7b)."""
+    return scancache.parsed_file(path, _read_raw, copier=dict)  # flat: _store sets top-level keys only
+
+
+def _read_raw(path):
     try:
         with open(path) as f:
             data = json.load(f)
@@ -109,6 +114,10 @@ def resolve(repo_dir, st):
         named = None
     if not named:  # gh would pick a repository from GH_REPO or its default: its answer is not about origin
         return "unknown", "origin is not a GitHub repository, so relay cannot ask about its PR"
+    from . import scancache
+    closed_key = scancache.closed_key(repo_dir, pr)
+    if closed_key is not None and scancache.recall(closed_key):  # asked again after the next fetch (D5)
+        return "closed", f"PR #{pr} was closed without merging"
     try:
         info = gitops.gh_json(repo_dir, ["pr", "view", str(pr), "--json", "state,baseRefName", "-R", named])
     except (RelayError, OSError) as e:
@@ -130,10 +139,17 @@ def resolve(repo_dir, st):
             _queue_merge_event(repo_dir, st, info.get("baseRefName"))
         return "merged", None
     if state_ == "CLOSED":
+        if closed_key is not None:
+            scancache.remember(closed_key, True)
         return "closed", f"PR #{pr} was closed without merging"
     if state_ == "OPEN":
         return "open", None
     return "unknown", f"gh gave PR #{pr} the state {state_!r}"
+
+
+def recorded(repo_dir, st):
+    """True when the local merged record already shows the feature's PR as merged (no GitHub call)."""
+    return bool(st.get("pr")) and _load().get(_key(repo_dir, st["pr"])) is True
 
 
 def is_done(repo_dir, st):
@@ -152,9 +168,16 @@ def merged_at(repo_dir, st, branch_head=None):
         cached = _load().get(key, True)
         if isinstance(cached, (int, float)) and not isinstance(cached, bool):
             return float(cached)
+        unmerged = scancache.closed_key(repo_dir, st["pr"])
+        if unmerged is not None:
+            unmerged = ("not-merged",) + unmerged
+            if scancache.recall(unmerged):  # GitHub said not merged: asked again after the next fetch (D5)
+                cached = False
         try:
             # False in the cache: gh said merged but gave no time, so it is not asked again
             info = gitops.gh_json(repo_dir, ["pr", "view", str(st["pr"]), "--json", "state,mergedAt"]) if cached else {}
+            if cached and info.get("state") != "MERGED" and unmerged is not None:
+                scancache.remember(unmerged, True)
             if info.get("state") == "MERGED":
                 at = (datetime.datetime.fromisoformat(info["mergedAt"].replace("Z", "+00:00")).timestamp()
                       if info.get("mergedAt") else False)
@@ -162,12 +185,22 @@ def merged_at(repo_dir, st, branch_head=None):
                     _store(_cache_path(), key, at)
                 if at is not False:
                     return at
-        except (RelayError, OSError, ValueError, AttributeError):
-            pass
+        except (RelayError, OSError, ValueError, AttributeError) as e:
+            if NOT_FOUND in str(e) and unmerged is not None:  # no such PR is an answer too; a network error is not
+                scancache.remember(unmerged, True)
     if branch_head:
         for base in ("origin/develop", "origin/main"):
-            out = gitops.git(repo_dir, "log", "--merges", "--ancestry-path", "--reverse", "--format=%ct",
-                             f"{branch_head}..{base}", check=False).stdout.split()
+            def merges(base=base):
+                return gitops.git(repo_dir, "log", "--merges", "--ancestry-path", "--reverse", "--format=%ct",
+                                  f"{branch_head}..{base}", check=False).stdout.split()
+            if scancache.active():  # kept under the two commits, which cannot change (dashboard-scan T6)
+                try:
+                    key = ("merges", branch_head, gitops.head_sha(repo_dir, base))
+                except RelayError:
+                    continue  # no such base: git log would find nothing
+                out = scancache.answer(key, merges)
+            else:
+                out = merges()
             if out:
                 return float(out[0])
     return None

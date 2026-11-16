@@ -1,6 +1,7 @@
 import json, os, shutil, tempfile, unittest
 from unittest import mock
 from relaylib import merged
+from relaylib.errors import RelayError
 from tests import helpers
 
 
@@ -73,6 +74,38 @@ class MergedTest(unittest.TestCase):
         os.remove(self.data)  # gh would now fail loudly; it is not asked
         with mock.patch.object(merged.gitops, "gh_json", side_effect=AssertionError("asked again")):
             self.assertIsNone(merged.merged_at(self.tmp, {"status": "ready-to-merge", "pr": 7}))
+
+    def test_a_build_asks_about_an_unmerged_pr_once_per_fetch(self):  # dashboard-scan D5
+        from relaylib import scancache
+        helpers.write(self.data, '{"state": "CLOSED"}')
+        st, store = {"status": "ready-to-merge", "pr": 7}, scancache.Store()
+        with mock.patch.object(merged.gitops, "gh_json", wraps=merged.gitops.gh_json) as gh:
+            for _ in range(2):
+                with scancache.use(store):
+                    self.assertIsNone(merged.merged_at(self.tmp, st))
+                    store.prune([self.tmp])
+            self.assertEqual(gh.call_count, 1)
+            with scancache.use(store):
+                scancache.fetched(self.tmp)
+                self.assertIsNone(merged.merged_at(self.tmp, st))
+            self.assertEqual(gh.call_count, 2)
+            self.assertIsNone(merged.merged_at(self.tmp, st))  # outside a build: asked every time
+            self.assertEqual(gh.call_count, 3)
+
+    def test_a_build_asks_about_a_missing_pr_once_per_fetch(self):
+        from relaylib import scancache
+        st, store = {"status": "ready-to-merge", "pr": 57}, scancache.Store()
+        missing = RelayError("gh failed: GraphQL: Could not resolve to a PullRequest with the number of 57.")
+        with mock.patch.object(merged.gitops, "gh_json", side_effect=missing) as gh:
+            for _ in range(2):
+                with scancache.use(store):
+                    self.assertIsNone(merged.merged_at(self.tmp, st))
+            self.assertEqual(gh.call_count, 1)
+        with mock.patch.object(merged.gitops, "gh_json", side_effect=RelayError("offline")) as gh:
+            for _ in range(2):
+                with scancache.use(store):
+                    self.assertIsNone(merged.merged_at(self.tmp, dict(st, pr=58)))
+            self.assertEqual(gh.call_count, 2)  # a network error is asked again
 
 
 NOT_FOUND_GH = '''#!/usr/bin/env python3
@@ -237,3 +270,16 @@ class GoneRecoveryTest(ResolveTest):  # merge-and-tidy F7: undoing a wrong gone
 for _name in dir(ResolveTest):  # run only the recovery test here
     if _name.startswith("test_") and _name not in GoneRecoveryTest.__dict__:
         setattr(GoneRecoveryTest, _name, None)
+
+
+class BuildCopyTest(unittest.TestCase):  # dashboard-scan: the record is copied one level per read in a build
+    def test_a_changed_copy_leaves_the_kept_record_alone(self):
+        from relaylib import scancache
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        with mock.patch.dict(os.environ, {"RELAY_HOME": tmp}):
+            helpers.write(os.path.join(tmp, "merged.json"), json.dumps({"a#1": True}))
+            with scancache.use(scancache.Store()):
+                got = merged._load()
+                got["b#2"] = True
+                self.assertEqual(merged._load(), {"a#1": True})

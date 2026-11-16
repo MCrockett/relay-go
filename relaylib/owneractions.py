@@ -7,7 +7,7 @@ import tempfile
 import threading
 import time
 
-from . import ciskip, cimode, config, freshness, gitops, localtests, state
+from . import ciskip, cimode, config, freshness, gitops, localtests, merged, scancache, state
 from .errors import RelayError
 
 ACTION_LOCK = threading.Lock()
@@ -44,7 +44,7 @@ def published(repo, slug):
         path = next((p for p in files if p.lower() == f"{state.RELAY_DIR}/{slug}/state.md"), None)
         if path:
             commit = gitops.head_sha(repo, ref)
-            st = state.parse_state(gitops.show(repo, commit, path) or "", path)
+            st = state.parse_at(repo, commit, path)
             if ref == f"origin/{st.get('branch')}":
                 return commit, st
     raise RelayError(f"no published branch for {slug}; it may have been deleted")
@@ -56,7 +56,7 @@ def find_by_pr(repo, number):
         for path in gitops.ls_files(repo, ref, state.RELAY_DIR):
             if not path.lower().endswith("/state.md"):
                 continue
-            st = state.parse_state(gitops.show(repo, ref, path) or "", path)
+            st = state.parse_at(repo, ref, path)
             if st.get("pr") == number and ref == f"origin/{st.get('branch')}":
                 return st["feature"]
     raise RelayError(f"PR #{number} is not a relay feature; merge it on GitHub")
@@ -66,8 +66,15 @@ def fingerprint(repo, slug, fetch=True):
     if fetch:
         gitops.fetch(repo)
     commit, st = published(repo, slug)
+    return seen_at(repo, commit, st)
+
+
+def seen_at(repo, commit, st):
+    """The fingerprint of a feature published at commit with state st: the PR head is read from GitHub."""
     result = {"commit": commit, "branch": st["branch"], "stage": st["stage"], "status": st["status"],
               "owner": st.get("owner") or {}, "pr": st.get("pr"), "pr_head": None}
+    if st.get("pr") and scancache.active() and (st.get("status") == "done" or merged.recorded(repo, st)):
+        return result  # a snapshot build asks GitHub nothing about a merged PR (dashboard-scan R6)
     if st.get("pr"):
         try:
             result["pr_head"] = gitops.pr_info(repo, st["pr"])["headRefOid"]
@@ -81,7 +88,7 @@ def state_at(repo, slug, commit):
     path = next((p for p in paths if p.lower() == f"{state.RELAY_DIR}/{slug}/state.md"), None)
     if not path:
         raise RelayError("feature state is missing at the displayed commit")
-    return state.parse_state(gitops.show(repo, commit, path) or "", path)
+    return state.parse_at(repo, commit, path)
 
 
 def applicable(st):

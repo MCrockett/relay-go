@@ -46,6 +46,19 @@ class AvailabilityTest(unittest.TestCase):
         self.log(json.dumps(event))
         self.assertEqual(availability.codex_weekly(), (12, 2000000000, 1790186400))
 
+    def test_a_build_reads_the_codex_logs_once(self):  # dashboard-scan R7b: one read for every repo's choices
+        from relaylib import scancache
+        reset = int(time.time()) + 3600
+        self.log(session_line(40, reset), session_line(20, reset, window=300))
+        with scancache.use(scancache.Store()), \
+                mock.patch.object(availability, "_mtime", wraps=availability._mtime) as stat:
+            for _ in range(3):
+                self.assertEqual(availability.codex_weekly()[0], 40)
+                self.assertEqual(availability.five_hour("codex")["used_pct"], 20)
+        self.assertEqual(stat.call_count, 1)  # one log file, sorted once
+        self.log(session_line(50, reset))
+        self.assertEqual(availability.codex_weekly()[0], 50)  # outside a build every call reads
+
     def test_a_usage_limit_failure_is_remembered_until_reset(self):
         self.log(session_line(99, int(time.time()) + 3600))
         self.assertTrue(availability.is_usage_limit("codex reported: {\"message\": \"You've hit your usage limit.\"}"))
