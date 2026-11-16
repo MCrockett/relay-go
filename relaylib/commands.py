@@ -1352,7 +1352,7 @@ def cmd_hook(args):
 def cmd_hooks(args):
     from . import hookinstall
     if args.action == "install":
-        identity.require_owner_terminal(dict(os.environ), "relay hooks install")
+        identity.require_owner_terminal(dict(os.environ), "relay hooks install", relayed=False)
         lines = hookinstall.install()
     else:
         lines = hookinstall.status_lines()
