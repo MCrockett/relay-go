@@ -54,10 +54,14 @@ def in_agent_session(env):
     return any(env.get(k) for k in AGENT_MARKERS)
 
 
-def require_owner_terminal(env, what):
-    if in_agent_session(env):
+def require_owner_terminal(env, what, relayed=True):
+    """Refuse agent sessions. relayed says whether the command takes --relayed, so the error offers it only then."""
+    if not in_agent_session(env):
+        return
+    if relayed:
         raise RelayError(f"{what} is owner-only: the owner runs it in their own terminal. An agent may run it with "
                          "--relayed, and only when the owner told it to in this conversation")
+    raise RelayError(f"{what} is owner-only: the owner runs it in their own terminal; agents cannot run it")
 
 
 def child_env(env, provider):

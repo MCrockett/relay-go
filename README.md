@@ -399,4 +399,8 @@ snapshot above. Each dashboard Usage card shows it under the weekly limit, the t
 `Codex: out of usage, 5-hour limit used up until 18:40 · weekly 51% · 5-hour 100%, resets 18:40`.
 A sample is "stale" after 60 minutes, "reset since last sample" once its reset time has passed, and "unknown" when
 there is none. Like the weekly figure, it covers only this machine.
+When a review fails on a usage limit, relay saves that in `~/.relay/unavailable.json` and leaves the provider
+alone until the limit resets (Codex) or for an hour (Claude, or a limit relay could not name). If a sample taken
+after the failure shows that same limit under 100% again, for example after you reset it by hand and the
+provider has run one turn, relay asks the provider again without waiting.
 Background server errors are in `~/.relay/ui.log`; stop the process listed in `~/.relay/ui.json` to stop it.

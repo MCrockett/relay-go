@@ -37,6 +37,14 @@ class IdentityTest(unittest.TestCase):
             identity.require_owner_terminal({"CODEX_THREAD_ID": "x"}, "relay override go")
         identity.require_owner_terminal({"PATH": "/bin"}, "relay override go")
 
+    def test_owner_only_without_relayed_does_not_offer_it(self):
+        with self.assertRaises(RelayError) as e:
+            identity.require_owner_terminal({"CODEX_THREAD_ID": "x"}, "relay ui", relayed=False)
+        self.assertNotIn("--relayed", str(e.exception))
+        self.assertIn("agents cannot run it", str(e.exception))
+        with self.assertRaisesRegex(RelayError, "--relayed"):
+            identity.require_owner_terminal({"CODEX_THREAD_ID": "x"}, "relay override go")
+
     def test_child_env_strips_parent_markers(self):
         parent = {"PATH": "/bin", "CODEX_HOME": "/c", "CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "c",
                   "CLAUDE_CODE_ENTRYPOINT": "cli", "RELAY_PROVIDER": "claude", "RELAY_SESSION": "s1"}

@@ -155,18 +155,35 @@ def is_usage_limit(error):
 
 
 def _entry(value):
-    """One unavailable.json value as {until, limit, resets_at}, or None. A bare number is the old format."""
+    """One unavailable.json value as {until, limit, resets_at, at}, or None. A bare number is the old format. at is
+    when the failure was saved; entries from before relay saved it use the file's modified time."""
     if isinstance(value, dict):
-        until, limit, reset = value.get("until"), value.get("limit"), value.get("resets_at")
+        until, limit, reset, at = value.get("until"), value.get("limit"), value.get("resets_at"), value.get("at")
     else:
-        until, limit, reset = value, "unknown", None
+        until, limit, reset, at = value, "unknown", None, None
     if isinstance(until, bool) or not isinstance(until, (int, float)):
         return None
     if limit not in ("5-hour", "weekly"):
         limit = "unknown"
     if isinstance(reset, bool) or not isinstance(reset, (int, float)) or limit == "unknown":
         reset = None
-    return {"until": until, "limit": limit, "resets_at": reset}
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        at = _mtime(_store())
+    return {"until": until, "limit": limit, "resets_at": reset, "at": at}
+
+
+def _back(provider, entry):
+    """True when a usage sample taken after the failure was saved shows the limit it hit under 100% again, as after
+    the owner resets a limit by hand. An unknown limit has nothing to check and waits for its retry time."""
+    if entry["limit"] == "unknown" or entry["at"] is None:
+        return False
+    if provider == "codex":
+        window = codex_window(WEEK_MINUTES if entry["limit"] == "weekly" else FIVE_HOUR_MINUTES)
+    elif provider == "claude":
+        window = _claude_window("seven_day" if entry["limit"] == "weekly" else "five_hour")
+    else:
+        return False
+    return bool(window) and window[2] is not None and window[2] > entry["at"] and window[0] < 100
 
 
 def _cause(provider, now):
@@ -194,7 +211,7 @@ def record_out(provider, until=None):
     if until is None:
         until = reset if provider == "codex" and reset else int(now) + 3600
     data = _load()
-    data[provider] = {"until": until, "limit": limit, "resets_at": reset}
+    data[provider] = {"until": until, "limit": limit, "resets_at": reset, "at": now}
     os.makedirs(relay_home(), exist_ok=True)
     with open(_store(), "w") as f:
         json.dump(data, f)
@@ -204,7 +221,7 @@ def blocked(provider, limits):
     """(True, reason) when the provider should not be asked to review now."""
     now = time.time()
     entry = _entry(_load().get(provider))
-    if entry and entry["until"] > now:
+    if entry and entry["until"] > now and not _back(provider, entry):
         until, limit, reset = entry["until"], entry["limit"], entry["resets_at"]
         if limit == "unknown":
             return True, f"a review failed on a usage limit; relay tries again {_when(until)}"

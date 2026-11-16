@@ -272,7 +272,7 @@ class Runtime:
 
 
 def launch(port=8765, background=False, child=False, host="127.0.0.1"):
-    identity.require_owner_terminal(dict(os.environ), "relay ui")
+    identity.require_owner_terminal(dict(os.environ), "relay ui", relayed=False)
     validate_port(port)
     validate_host(host)
     runtime = None
