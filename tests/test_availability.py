@@ -245,7 +245,7 @@ class RecordTest(FiveHourHome):  # R3
         availability.record_out("codex")
         entry = self.stored("codex")
         self.assertAlmostEqual(entry.pop("at"), self.now, delta=5)
-        self.assertEqual(entry, {"until": now + 1800, "limit": "5-hour", "resets_at": now + 1800})
+        self.assertEqual(entry, {"until": now + 1800, "limit": "5-hour", "resets_at": now + 1800, "full": True})
 
     def test_codex_weekly_cause(self):
         now = int(self.now)
@@ -253,7 +253,7 @@ class RecordTest(FiveHourHome):  # R3
         availability.record_out("codex")
         entry = self.stored("codex")
         self.assertAlmostEqual(entry.pop("at"), self.now, delta=5)
-        self.assertEqual(entry, {"until": now + 86400, "limit": "weekly", "resets_at": now + 86400})
+        self.assertEqual(entry, {"until": now + 86400, "limit": "weekly", "resets_at": now + 86400, "full": True})
 
     def test_codex_unknown_cause(self):
         availability.record_out("codex")
@@ -301,10 +301,12 @@ class RecoveryTest(FiveHourHome):
             "primary": {"used_percent": five, "window_minutes": 300, "resets_at": int(self.now) + 1800},
             "secondary": {"used_percent": week, "window_minutes": 10080, "resets_at": int(self.now) + 86400}}}}))
 
-    def saved(self, provider, limit, at=None):
+    def saved(self, provider, limit, at=None, full=True):
         entry = {"until": int(self.now) + 86400, "limit": limit, "resets_at": int(self.now) + 86400}
         if at is not None:
             entry["at"] = at
+        if full is not None:
+            entry["full"] = full
         helpers.write(os.path.join(self.relay_home, "unavailable.json"), json.dumps({provider: entry}))
 
     def test_a_newer_codex_sample_under_the_limit_ends_a_weekly_outage(self):
@@ -325,6 +327,28 @@ class RecoveryTest(FiveHourHome):
         self.assertTrue(availability.blocked("codex", LIMITS)[0])
         self.window(12, 3, sampled=self.now)
         self.assertEqual(availability.blocked("codex", LIMITS), (False, ""))
+
+    def test_a_guessed_5_hour_limit_waits_for_its_reset(self):
+        # Codex names the 5-hour limit when its window has a future reset, even under 100%: that is a guess
+        self.window(60, 40, sampled=self.now)
+        availability.record_out("codex")
+        entry = self.stored("codex")
+        self.assertEqual((entry["limit"], entry["full"]), ("5-hour", False))
+        self.window(12, 3, sampled=time.time() + 1)
+        self.assertTrue(availability.blocked("codex", LIMITS)[0])
+
+    def test_an_entry_saved_without_full_counts_only_weekly_as_full(self):
+        for limit, out in (("weekly", False), ("5-hour", True)):
+            self.saved("codex", limit, at=self.now - 600, full=None)
+            self.window(12, 3, sampled=self.now)
+            self.assertEqual(availability.blocked("codex", LIMITS)[0], out, limit)
+
+    def test_claude_status_line_sample_ends_a_weekly_outage(self):
+        self.saved("claude", "weekly", at=self.now - 600)
+        self.claude(week=(100, self.now + 86400), sampled=self.now)
+        self.assertTrue(availability.blocked("claude", LIMITS)[0])
+        self.claude(week=(30, self.now + 86400), sampled=self.now)
+        self.assertEqual(availability.blocked("claude", LIMITS), (False, ""))
 
     def test_an_unknown_limit_waits_its_hour(self):
         self.saved("codex", "unknown", at=self.now - 600)
