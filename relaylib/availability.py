@@ -155,12 +155,15 @@ def is_usage_limit(error):
 
 
 def _entry(value):
-    """One unavailable.json value as {until, limit, resets_at, at}, or None. A bare number is the old format. at is
-    when the failure was saved; entries from before relay saved it use the file's modified time."""
+    """One unavailable.json value as {until, limit, resets_at, at, full}, or None. A bare number is the old format.
+    at is when the failure was saved; entries from before relay saved it use the file's modified time. full says
+    the limit's window was at 100% then; entries from before relay saved it count only a weekly limit as full,
+    since relay names that one only when it is used up."""
     if isinstance(value, dict):
         until, limit, reset, at = value.get("until"), value.get("limit"), value.get("resets_at"), value.get("at")
+        full = value.get("full")
     else:
-        until, limit, reset, at = value, "unknown", None, None
+        until, limit, reset, at, full = value, "unknown", None, None, None
     if isinstance(until, bool) or not isinstance(until, (int, float)):
         return None
     if limit not in ("5-hour", "weekly"):
@@ -169,13 +172,16 @@ def _entry(value):
         reset = None
     if isinstance(at, bool) or not isinstance(at, (int, float)):
         at = _mtime(_store())
-    return {"until": until, "limit": limit, "resets_at": reset, "at": at}
+    if not isinstance(full, bool):
+        full = limit == "weekly"
+    return {"until": until, "limit": limit, "resets_at": reset, "at": at, "full": full}
 
 
 def _back(provider, entry):
     """True when a usage sample taken after the failure was saved shows the limit it hit under 100% again, as after
-    the owner resets a limit by hand. An unknown limit has nothing to check and waits for its retry time."""
-    if entry["limit"] == "unknown" or entry["at"] is None:
+    the owner resets a limit by hand. Only a limit that was full at the failure counts: an unknown or guessed one
+    has nothing to check and waits for its retry time."""
+    if entry["limit"] == "unknown" or not entry["full"]:
         return False
     if provider == "codex":
         window = codex_window(WEEK_MINUTES if entry["limit"] == "weekly" else FIVE_HOUR_MINUTES)
@@ -187,19 +193,20 @@ def _back(provider, entry):
 
 
 def _cause(provider, now):
-    """(limit, resets_at) of the limit a usage failure most likely hit, from this machine's latest samples."""
+    """(limit, resets_at, full) of the limit a usage failure most likely hit, from this machine's latest samples.
+    full is False when the window was under 100%: Codex's 5-hour limit is then a guess from its reset time."""
     if provider == "codex":
         weekly, five = codex_weekly(), codex_window(FIVE_HOUR_MINUTES)
         if weekly and weekly[0] >= 100 and weekly[1] > now:
-            return "weekly", weekly[1]
+            return "weekly", weekly[1], True
         if five and five[1] > now:
-            return "5-hour", five[1]
+            return "5-hour", five[1], five[0] >= 100
     elif provider == "claude":
         for limit, name in (("weekly", "seven_day"), ("5-hour", "five_hour")):
             window = _claude_window(name)
             if window and window[0] >= 100 and window[1] > now:
-                return limit, window[1]
-    return "unknown", None
+                return limit, window[1], True
+    return "unknown", None, False
 
 
 def record_out(provider, until=None):
@@ -207,11 +214,11 @@ def record_out(provider, until=None):
     Codex: until the limit's reset (weekly only when used up, else the 5-hour reset). Claude, or no known reset:
     an hour."""
     now = time.time()
-    limit, reset = _cause(provider, now)
+    limit, reset, full = _cause(provider, now)
     if until is None:
         until = reset if provider == "codex" and reset else int(now) + 3600
     data = _load()
-    data[provider] = {"until": until, "limit": limit, "resets_at": reset, "at": now}
+    data[provider] = {"until": until, "limit": limit, "resets_at": reset, "at": now, "full": full}
     os.makedirs(relay_home(), exist_ok=True)
     with open(_store(), "w") as f:
         json.dump(data, f)
