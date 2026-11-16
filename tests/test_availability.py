@@ -243,13 +243,17 @@ class RecordTest(FiveHourHome):  # R3
         now = int(self.now)
         self.both((100, now + 1800), (51, now + 86400))
         availability.record_out("codex")
-        self.assertEqual(self.stored("codex"), {"until": now + 1800, "limit": "5-hour", "resets_at": now + 1800})
+        entry = self.stored("codex")
+        self.assertAlmostEqual(entry.pop("at"), self.now, delta=5)
+        self.assertEqual(entry, {"until": now + 1800, "limit": "5-hour", "resets_at": now + 1800})
 
     def test_codex_weekly_cause(self):
         now = int(self.now)
         self.both((40, now + 1800), (100, now + 86400))
         availability.record_out("codex")
-        self.assertEqual(self.stored("codex"), {"until": now + 86400, "limit": "weekly", "resets_at": now + 86400})
+        entry = self.stored("codex")
+        self.assertAlmostEqual(entry.pop("at"), self.now, delta=5)
+        self.assertEqual(entry, {"until": now + 86400, "limit": "weekly", "resets_at": now + 86400})
 
     def test_codex_unknown_cause(self):
         availability.record_out("codex")
@@ -286,6 +290,62 @@ class RecordTest(FiveHourHome):  # R3
         availability.record_out("claude")
         availability.record_out("codex")
         self.assertEqual(self.stored("claude")["limit"], "unknown")
+
+
+class RecoveryTest(FiveHourHome):
+    """A saved outage ends early when a usage sample taken after it shows that limit back under 100%, as after
+    the owner resets a limit by hand."""
+
+    def window(self, five, week, sampled):
+        self.log(json.dumps({"timestamp": sampled, "payload": {"rate_limits": {
+            "primary": {"used_percent": five, "window_minutes": 300, "resets_at": int(self.now) + 1800},
+            "secondary": {"used_percent": week, "window_minutes": 10080, "resets_at": int(self.now) + 86400}}}}))
+
+    def saved(self, provider, limit, at=None):
+        entry = {"until": int(self.now) + 86400, "limit": limit, "resets_at": int(self.now) + 86400}
+        if at is not None:
+            entry["at"] = at
+        helpers.write(os.path.join(self.relay_home, "unavailable.json"), json.dumps({provider: entry}))
+
+    def test_a_newer_codex_sample_under_the_limit_ends_a_weekly_outage(self):
+        self.saved("codex", "weekly", at=self.now - 600)
+        self.window(10, 3, sampled=self.now)
+        self.assertEqual(availability.blocked("codex", LIMITS), (False, ""))
+
+    def test_an_older_or_still_full_sample_keeps_the_outage(self):
+        self.saved("codex", "weekly", at=self.now - 600)
+        self.window(10, 3, sampled=self.now - 900)  # taken before the failure
+        self.assertTrue(availability.blocked("codex", LIMITS)[0])
+        self.window(10, 100, sampled=self.now)  # newer, but the weekly limit is still used up
+        self.assertTrue(availability.blocked("codex", LIMITS)[0])
+
+    def test_only_the_limit_that_was_hit_counts(self):
+        self.saved("codex", "5-hour", at=self.now - 600)
+        self.window(100, 3, sampled=self.now)  # weekly has room, the 5-hour window does not
+        self.assertTrue(availability.blocked("codex", LIMITS)[0])
+        self.window(12, 3, sampled=self.now)
+        self.assertEqual(availability.blocked("codex", LIMITS), (False, ""))
+
+    def test_an_unknown_limit_waits_its_hour(self):
+        self.saved("codex", "unknown", at=self.now - 600)
+        self.window(1, 1, sampled=self.now)
+        self.assertTrue(availability.blocked("codex", LIMITS)[0])
+
+    def test_claude_status_line_sample_ends_a_5_hour_outage(self):
+        self.saved("claude", "5-hour", at=self.now - 600)
+        self.claude(five=(100, self.now + 3600), sampled=self.now)
+        self.assertTrue(availability.blocked("claude", LIMITS)[0])
+        self.claude(five=(4, self.now + 3600), sampled=self.now)
+        self.assertEqual(availability.blocked("claude", LIMITS), (False, ""))
+
+    def test_an_entry_saved_without_its_time_uses_the_file_time(self):
+        self.saved("codex", "weekly")
+        store = os.path.join(self.relay_home, "unavailable.json")
+        os.utime(store, (self.now - 600, self.now - 600))
+        self.window(10, 3, sampled=self.now)
+        self.assertEqual(availability.blocked("codex", LIMITS), (False, ""))
+        os.utime(store, (self.now + 60, self.now + 60))  # saved after the sample
+        self.assertTrue(availability.blocked("codex", LIMITS)[0])
 
 
 class ReasonTest(FiveHourHome):  # R4
