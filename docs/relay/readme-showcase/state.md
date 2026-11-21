@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "docs/readme-showcase",
   "extra_rounds": {},
   "feature": "readme-showcase",
@@ -12,7 +14,7 @@
     "worktree": "relay-go"
   },
   "owner_actions": [],
-  "pr": null,
+  "pr": 37,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -21,15 +23,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-11-21T12:54:16-05:00",
+  "status": "in-review",
+  "updated": "2026-11-21T13:05:49-05:00",
   "verdicts": {}
 }
 ---
