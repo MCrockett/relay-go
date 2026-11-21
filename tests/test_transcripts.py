@@ -225,6 +225,16 @@ class IncrementalTest(Homes):
         self.assertEqual(got[0]["at"], timestamp("2026-10-06T18:00:00Z"))
         self.assertEqual(len(got), 3)                                             # the old file's turns are gone
 
+    def test_model_is_the_newest_main_log_turn(self):
+        with open(self.path, "a") as f:
+            f.write(claude("m3", "2026-10-06T16:02:00Z", model="claude-fable-5-2") + "\n")
+        sub = os.path.join(os.path.dirname(self.path), "S1", "subagents", "agent-1.jsonl")
+        helpers.write(sub, claude("s1", "2026-10-06T16:30:00Z", model="claude-haiku-5-5") + "\n")  # a subagent's model is not the session's
+        codex = os.path.join(transcripts.codex_sessions(), "2026", "10", "06", "rollout-2026-10-06T12-00-00-C1.jsonl")
+        helpers.write(codex, codex_ctx("gpt-6-astra") + "\n" + codex_count("2026-10-06T16:00:00Z", 10, 0, 5) + "\n")
+        got = transcripts.read_sessions({("claude", "S1"), ("codex", "C1"), ("codex", "gone")})
+        self.assertEqual(got["models"], {("claude", "S1"): "claude-fable-5-2", ("codex", "C1"): "gpt-6-astra"})
+
     def test_a_vanished_subagent_file_keeps_its_turns_and_is_reported(self):
         sub = os.path.join(os.path.dirname(self.path), "S1", "subagents", "agent-1.jsonl")
         helpers.write(sub, claude("s1", "2026-10-06T16:30:00Z") + "\n")

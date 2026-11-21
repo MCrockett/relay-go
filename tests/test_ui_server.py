@@ -466,6 +466,33 @@ console.log(JSON.stringify({
         self.assertEqual(out["after404"], [["notice", "This session is no longer waiting.", False], ["load"]])
         self.assertEqual(out["offline"], [["notice", "Failed to fetch", True]])
 
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_session_model_pills_run_in_node(self):  # session-model
+        page = self.request("/?t=test-token")[1]
+        self.assertIn("--claude:", page)
+        self.assertIn("--codex:", page)
+        funcs = re.search(r"function ageText\(.*?(?=function cardFlags\()", page, re.S).group(0)
+        funcs += re.search(r"function runLine\(.*?(?=function renderRunning\()", page, re.S).group(0)
+        script = """
+class El{constructor(tag){this.tag=tag;this.children=[];this.className='';this.textContent='';}
+  append(...xs){this.children.push(...xs);} querySelectorAll(){return [];}}
+const document={createElement:t=>new El(t)};
+const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined&&text!==null)n.textContent=text;if(cls)n.className=cls;return n;};
+const notice=()=>{},load=async()=>{},api=async()=>({}),$=()=>({});
+""" + funcs + """
+const now=Date.now()/1000,base={label:'p',project:'p',state:'waiting',since:now-60,pending_tools:[]};
+const pill=c=>c.children[0].children.slice(2).map(x=>[x.textContent,x.className,x.title]);
+console.log(JSON.stringify({
+  names:['claude-opus-5-5','claude-fable-5-2','claude-sonnet-4-5-20250929','claude-haiku-5','gpt-6-astra'].map(modelName),
+  claude:pill(sessionCard({...base,provider:'claude',session_id:'S1',model:'claude-opus-5-5'})),
+  codex:pill(runCard({...base,provider:'codex',session_id:'C1',model:'gpt-6-astra'})),
+  unknown:pill(sessionCard({...base,provider:'claude',session_id:'S2',model:null}))}));"""
+        out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["names"], ["Opus 5.5", "Fable 5.2", "Sonnet 4.5", "Haiku 5", "gpt-6-astra"])
+        self.assertEqual(out["claude"], [["Opus 5.5", "model model-claude", "claude-opus-5-5"]])
+        self.assertEqual(out["codex"], [["gpt-6-astra", "model model-codex", "gpt-6-astra"]])
+        self.assertEqual(out["unknown"], [])
+
     def test_page_shows_where_you_left_off(self):
         page = self.request("/?t=test-token")[1]
         for piece in ('<section id="left-off"', "Where you left off", "'No sessions to show yet.'",

@@ -765,6 +765,32 @@ FACT_READS = (["rev-parse", "--abbrev-ref"], ["rev-parse", "HEAD"], ["remote", "
               ["worktree", "list"], ["for-each-ref"])
 
 
+class SessionModelTest(unittest.TestCase):
+    """Each listed session and each tracked feature row names the model its session last used."""
+
+    def test_models_attach_to_sessions_and_feature_rows(self):
+        others = [{"provider": "claude", "session_id": "S1"}]
+        run = [{"provider": "codex", "session_id": "C1"}]
+        left = [{"project": "p", "sessions": [{"provider": "claude", "session_id": "S2"}]}]
+        rows = [{"repo_path": "/r", "feature": "f"}, {"repo_path": "/r", "feature": "g"}]
+        details = [{"repo_path": "/r", "feature": "f", "owner_session": {"provider": "claude", "session": "S3"}},
+                   {"repo_path": "/r", "feature": "g", "owner_session": None}]
+        models = {("claude", "S1"): "claude-opus-5-5", ("codex", "C1"): "gpt-6-astra", ("claude", "S3"): "claude-fable-5-2"}
+        with mock.patch("relaylib.transcripts.read_sessions", return_value={"models": models}) as read:
+            snapshot._attach_models(rows, details, others, run, left)
+        self.assertEqual(read.call_args.args[0], {("claude", "S1"), ("codex", "C1"), ("claude", "S2"), ("claude", "S3")})
+        self.assertEqual([others[0]["model"], run[0]["model"], left[0]["sessions"][0]["model"]],
+                         ["claude-opus-5-5", "gpt-6-astra", None])
+        self.assertEqual([r.get("model") for r in rows], ["claude-fable-5-2", None])
+        self.assertEqual(rows[0]["session_provider"], "claude")
+
+    def test_an_unreadable_log_leaves_models_unknown(self):
+        others = [{"provider": "claude", "session_id": "S1"}]
+        with mock.patch("relaylib.transcripts.read_sessions", side_effect=OSError("busy")):
+            snapshot._attach_models([], [], others, [], [])
+        self.assertIsNone(others[0]["model"])
+
+
 class StoreBase(SnapshotBase):
     """Builds that share one store, as relay ui's do."""
 
