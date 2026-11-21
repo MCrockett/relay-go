@@ -400,6 +400,12 @@ def reviewers(now=None, repos=None):
     known = {f"{p['provider']}:{p['model']}" for a in authors.values() for p in a["entries"] + a["permanent"]}
     for provider, model in base["roles"]["reviewer_models"].items():
         known.add(f"{provider}:{config.parse_model_spec(model, provider).model}")
+    for role in config.ROLE_KEYS:  # a writer model can review too, though it never has (reviewer-suggest)
+        try:
+            spec = config.parse_model_spec(base["roles"][role])
+        except (RelayError, KeyError, TypeError):
+            continue
+        known.add(f"{spec.provider}:{spec.model}")
     for row in ledger.read():
         if row.get("provider") in config.PROVIDERS and row.get("model"):
             known.add(f"{row['provider']}:{row['model']}")

@@ -1340,6 +1340,9 @@ class ReviewersTest(unittest.TestCase):
         known = [k["id"] for k in r["known"]]
         self.assertIn("claude:claude-haiku-4-5", known)                 # from the ledger
         self.assertIn("codex:gpt-6-astra", known)                       # from the config, without effort
+        for role, writer in r["writers"].items():                          # writers that never reviewed can be picked
+            spec = config.parse_model_spec(writer)
+            self.assertIn(f"{spec.provider}:{spec.model}", known, role)
         self.assertEqual([(o["repo"], o["authors"]) for o in r["overriding"]], [("proj", ["codex"])])
         self.assertEqual(set(r["writers"]), {"spec", "plan", "build", "audit"})
         self.assertEqual(r["effort"]["effort"], "medium")
