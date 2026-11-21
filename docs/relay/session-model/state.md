@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "feat/session-model",
   "extra_rounds": {},
   "feature": "session-model",
@@ -15,9 +17,13 @@
     {
       "action": "owner joined idea",
       "at": "2026-11-21T16:35:06-05:00"
+    },
+    {
+      "action": "owner joined build",
+      "at": "2026-11-21T17:01:16-05:00"
     }
   ],
-  "pr": null,
+  "pr": 38,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -26,15 +32,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-11-21T16:35:06-05:00",
+  "status": "in-review",
+  "updated": "2026-11-21T17:01:16-05:00",
   "verdicts": {}
 }
 ---
