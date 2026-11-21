@@ -313,8 +313,9 @@ def _advance(path, entry, provider):
 def read_sessions(sessions):
     """Turns of each (provider, session), every file of a session merged and sorted by time. The cache in relay
     home makes a refresh read only what was appended. When its lock is busy or relay home is not writable, the
-    work is done in memory and notes says so (D5)."""
-    out = {"turns": {}, "unreadable": {}, "notes": []}
+    work is done in memory and notes says so (D5). models holds each session's model: that of the newest turn in its
+    own log, not a subagent's."""
+    out = {"turns": {}, "unreadable": {}, "notes": [], "models": {}}
     with contextlib.ExitStack() as stack:
         try:
             stack.enter_context(config.write_lock(name=LOCK))
@@ -331,7 +332,7 @@ def read_sessions(sessions):
             if not known:
                 out["unreadable"][(provider, session)] = "log not found"
                 continue
-            turns, problems = [], []
+            turns, problems, newest = [], [], None
             for path in known:
                 try:
                     old = cache["files"].get(path)
@@ -342,9 +343,13 @@ def read_sessions(sessions):
                     fs = _checked(cache["files"].get(path), provider)
                 if fs:
                     turns += fs.turns.values()
+                    if os.sep + "subagents" + os.sep not in path:
+                        newest = max(filter(None, [newest, *fs.turns.values()]), key=lambda t: t["at"], default=None)
                     if fs.problem():
                         problems.append(fs.problem())
             out["turns"][(provider, session)] = sorted(turns, key=lambda t: t["at"])
+            if newest and newest["model"] != "unknown":
+                out["models"][(provider, session)] = newest["model"]
             if problems:
                 out["unreadable"][(provider, session)] = "; ".join(sorted(set(problems)))
         if saving and changed:

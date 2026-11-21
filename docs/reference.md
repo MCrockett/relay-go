@@ -282,6 +282,9 @@ between "By project" and "Most recent" (one list, newest first); your browser re
 have no buttons. Only sessions you started yourself are shown, not automated runs such as relay's own reviews
 (`claude -p`, `codex exec`), and only sessions that said something or wait for a tool approval. relay's hooks keep
 session records for 7 days, so older sessions and ones started before the hooks were installed are not shown.
+Each session card, and each inbox feature card whose session relay knows, shows the model that session last used:
+orange for Claude (such as "Opus 5.5"), blue for Codex (such as "gpt-6-astra"). It comes from the session's own log on
+this machine, not its subagents'; a card shows none when the log cannot be read.
 
 Every session dialog (Running now, the inbox, "Where you left off") has a "Send a note" box. Each note starts with
 "Note from the owner, sent from the relay dashboard:" and reaches the session one of two ways:

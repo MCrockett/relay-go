@@ -248,6 +248,30 @@ def _attach_notes(others, run, left):
         e["notes"] = ownernotes.list_for(e["provider"], e["session_id"])
 
 
+def _attach_models(rows, details, others, run, left):
+    """The model each listed session last used, from its own log (session-model); None when unknown. A feature row
+    takes its owner session's model and provider."""
+    from .. import transcripts
+    real = lambda p: os.path.realpath(p) if p else p  # rows hold the resolved path, details the checkout's
+    owners = {(real(d.get("repo_path")), d.get("feature")): d.get("owner_session") or {} for d in details}
+    sessions = list(others) + list(run) + [e for p in left for e in p["sessions"]]
+    wanted = {(e["provider"], e["session_id"]) for e in sessions}
+    for r in rows:
+        o = owners.get((real(r.get("repo_path")), r.get("feature"))) or {}
+        if o.get("provider") and o.get("session"):
+            wanted.add((o["provider"], o["session"]))
+    try:
+        models = transcripts.read_sessions(wanted)["models"] if wanted else {}
+    except Exception:  # a model is a nicety: the lists are shown whatever happens here
+        models = {}
+    for e in sessions:
+        e["model"] = models.get((e["provider"], e["session_id"]))
+    for r in rows:
+        o = owners.get((real(r.get("repo_path")), r.get("feature"))) or {}
+        if o.get("provider") and o.get("session"):
+            r["session_provider"], r["model"] = o["provider"], models.get((o["provider"], o["session"]))
+
+
 def _not_running(entry):
     return entry.get("shown_state", entry["state"]) in ("ended", "stopped")
 
@@ -678,6 +702,7 @@ def _build(root, full):
         notes.add(scan_note)
     notes = sorted(notes)
     _attach_notes(others, run, left)
+    _attach_models(rows, details, others, run, left)
     hidden = [{"repo": os.path.basename(r["checkout"]), "slug": r["feature"], "reason": r["hidden"]}
               for r in rows if r.get("hidden")]  # closed or gone PRs: why they left the inbox (merge-and-tidy D12)
     return {"rows": rows, "features": details, "other_sessions": others, "left_off": left, "running": run, "usage": usage(), "session_hints": hints, "notes": notes,
