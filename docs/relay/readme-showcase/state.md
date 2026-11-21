@@ -18,8 +18,17 @@
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
+  "review_notes": {},
   "reviewed": {
-    "build": null,
+    "build": {
+      "base_ref": "origin/develop",
+      "base_sha": "6a712eb0e7c36f12e8a9cb45fb3432dc8f311831",
+      "head": "dc359ad2c05d0a00a1e6bdaf3fb0c654461c78f8",
+      "inputs": {
+        "idea": "fb4c234b09f4fd1d068f11746583c3cc4c91e2471fc6d263d2d7aa314626b043"
+      },
+      "merge": "8528f59f2b7c157316e0b753f96b69bd303216168692f1304b14c60eb6ecb4a8"
+    },
     "plan": null,
     "spec": null
   },
@@ -32,9 +41,11 @@
   ],
   "small": true,
   "stage": "build",
-  "status": "in-review",
-  "updated": "2026-11-21T13:05:49-05:00",
-  "verdicts": {}
+  "status": "ready-to-merge",
+  "updated": "2026-11-21T13:06:46-05:00",
+  "verdicts": {
+    "build": "GO"
+  }
 }
 ---
 
