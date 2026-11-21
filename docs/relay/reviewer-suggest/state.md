@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "fix/reviewer-suggest",
   "extra_rounds": {},
   "feature": "reviewer-suggest",
@@ -15,9 +17,13 @@
     {
       "action": "owner joined idea",
       "at": "2026-11-21T17:40:23-05:00"
+    },
+    {
+      "action": "owner joined build",
+      "at": "2026-11-21T17:53:47-05:00"
     }
   ],
-  "pr": null,
+  "pr": 39,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -26,15 +32,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-11-21T17:40:23-05:00",
+  "status": "in-review",
+  "updated": "2026-11-21T17:53:47-05:00",
   "verdicts": {}
 }
 ---
