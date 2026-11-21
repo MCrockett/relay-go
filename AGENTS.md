@@ -2,7 +2,7 @@
 
 ## Project Structure
 
-- [README.md](README.md) for how relay works. `relaylib/` holds the modules, `prompts/` the review prompts, `skills/` the agent skills.
+- [README.md](README.md) for what relay is, [docs/reference.md](docs/reference.md) for how it works. `relaylib/` holds the modules, `prompts/` the review prompts, `skills/` the agent skills.
 
 ## Build and Test
 

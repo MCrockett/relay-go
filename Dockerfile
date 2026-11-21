@@ -1,5 +1,5 @@
 # relay with everything it runs: Python 3.11, git, gh, Claude Code and Codex.
-# See "Running in Docker" in README.md, and compose.example.yaml.
+# See "Running in Docker" in docs/reference.md, and compose.example.yaml.
 FROM node:22-bookworm-slim
 
 RUN apt-get update \

@@ -2,405 +2,79 @@
 
 **Nothing merges without a GO.**
 
-One pipeline for every project: idea, spec, plan, build. Each stage after idea is reviewed by the other provider (Claude reviews Codex's work and Codex reviews Claude's) before it moves on. The owner merges and releases; agents never do. You are the owner; your Claude Code and Codex sessions are the authors and reviewers. Every review ends in a GO or a NO-GO. A stage moves on only with a GO from the other provider, or with your decision when the reviews stall. The command is `relay`.
+relay is a review pipeline for AI coding agents. Claude Code and Codex take turns: whatever one of them writes, the other reviews. A feature moves from idea to spec to plan to build, and each stage after the idea needs a GO from the other provider before it moves on. The owner (you) merges and releases. Agents never do. The command is `relay`.
 
-## Requirements
+## Why
 
-- Python 3.11 or later (standard library only; `bin/relay` runs `python3.11`).
-- git, and the GitHub CLI `gh`, logged in. Each project needs a GitHub remote named `origin`. Features start from `develop` by default (`relay new --base` picks another branch).
-- Claude Code (`claude`) and Codex (`codex`), both installed and logged in. relay runs them headless for reviews and never stores credentials; it uses your existing logins.
-- macOS for notifications and the SwiftBar menu. Everything else, the dashboard included, is plain Python and git. The test suite runs on Linux in CI.
-- Or Docker, with all of the above in one image: see Running in Docker.
+Coding agents are fast and confident, and a model reviewing its own work tends to miss the same things twice. relay puts a second, different model in front of every stage, keeps the whole trail in git, and stops to ask you when the reviews stall instead of letting the agents go around in circles. You get the speed of agents with the checks a regulated team would expect: separation of duties, a recorded decision at every step, and a human merge.
 
-## Limits
+## How a feature moves
 
-- Built for one owner on one machine. Ownership, handoffs and usage history live in `~/.relay/` and in each project's `docs/relay/`; there is no shared server.
-- Reviews spend your Claude and Codex plan usage. `relay cost` and the dashboard show how much.
-- A reviewer's verdict is advice. relay stops the loop and shows you the findings; it does not prove the code correct. You still read the PR before you merge.
-- relay skips a reviewer whose weekly limit Codex's local logs show as used up, whose 5-hour window is at 100% (Codex's logs, or Claude's status line once it is set up; see the end of this file), or whose last review failed on a usage limit. The reason says which limit it was and when it comes back.
+```mermaid
+flowchart LR
+    idea[Idea] --> spec[Spec]
+    spec -->|GO from the other provider| plan[Plan]
+    plan -->|GO from the other provider| build[Build and PR]
+    build -->|GO from the other provider| ready[Ready to merge]
+    ready -->|owner merges| done[Merged]
+    spec -. NO-GO .-> spec
+    plan -. NO-GO .-> plan
+    build -. NO-GO .-> build
+```
 
-## Setup (once per machine)
+- Every review ends in a GO or a NO-GO with findings. A NO-GO goes back to the author for another round.
+- Reviews continue while they make progress, up to 4 rounds. If they stall, relay writes a summary of the open findings and waits for your decision: accept the stage, allow another round, or narrow the work.
+- Small changes (`--small`) go straight to the build stage. They still get a cross-provider review.
+- Every stage, review and owner decision is a file under `docs/relay/<feature>/` and a commit, so the history explains itself.
 
-    ./install.sh      # links the relay skills into Claude and Codex, and `relay` into ~/.local/bin
+## What it looks like
 
-Then add this line to a repo's AGENTS.md to opt it in:
+`relay status` lists every feature across your projects. Rows marked `*` are waiting on you (example data):
+
+```
+  REPO     FEATURE         STAGE  STATUS          ROUND  OWNER   VERDICT
+* webapp   login-timeout   build  ready-to-merge  2      claude  GO
+    Merge PR #41 · waiting 20m
+* api      rate-limits     plan   waiting-owner   4      codex   NO-GO
+    Decide: plan review stopped. blocking findings rose (2 -> 3)
+  mobile   offline-sync    spec   in-review       1      claude
+```
+
+A local dashboard (`relay ui`) shows the same inbox with a button for each decision, plus usage for both providers and the history of every feature. From a phone, a Claude session running the relay hub answers "what needs me?" and passes on "merge 41".
+
+## Quick start
+
+You need Python 3.11, git, the GitHub CLI (`gh`), and both Claude Code and Codex installed and logged in. relay uses your existing logins and stores no credentials.
+
+    git clone https://github.com/MCrockett/relay-go.git && cd relay-go
+    ./install.sh          # links the skills into Claude and Codex, and `relay` into ~/.local/bin
+
+Opt a repo in by adding this line to its AGENTS.md:
 
     Follow <your relay checkout>/README.md.
 
-## Existing PRs
+Then, in that repo:
 
-A PR opened before relay can join it: on the PR's branch, `relay adopt <slug> [--plan <existing plan>] [--spec <existing spec>]`, then `relay submit`. It starts at the build stage and the other provider reviews the whole PR.
+    relay new <slug>      start a feature: a branch, docs/relay/<slug>/, and you own it
+    relay submit          hand in the current stage; the other provider reviews it
+    relay status          what is waiting on you, across every project
+    relay merge <pr>      merge a feature that has a fresh GO and passing tests
 
-## The loop
+A Docker image with everything installed is described in the reference.
 
-    relay new <slug>              start: branch, docs/relay/<slug>/, you own the repo
-    relay new <slug> --small --type fix --idea "..."   small change: straight to build
-    relay submit                  hand in the current stage; the other provider reviews it
-    relay status                  every feature in your projects folder; * = waiting on you, with what
-                                  it needs, how long it has waited, and what the agent last said
-    relay review                  re-run a review after an error or a stale GO
+## Documentation
 
-Reviews continue while they make progress, up to 4 rounds. "Partly fixed" counts as progress. A stage stops and waits on you (with a `reviews/<stage>-stuck.md` summary) only when blocking findings rise, when the count stays the same and a finding the author already tried to fix is marked unresolved, or at round 4. A review you request (Request review, Re-review spec or plan) is independent: its NO-GO goes back to the author for at least one more round, even at round 4, and is not compared with earlier reviewers' findings.
+- **[docs/reference.md](docs/reference.md)**: the full manual. Agents working in a repo that follows this README read it for the rules of the loop, owner decisions, CI modes, merging and handoffs.
+- **[docs/relay/](docs/relay/)**: relay is built with relay. Each folder there is one real feature of this project, with its idea, spec, plan, reviews and owner decisions. Some mention the owner's other projects, where the problems were first seen.
+- `skills/` holds the agent skills, `prompts/` the review prompts, `relaylib/` the code and `tests/` the test suite.
 
-## CI modes
+## Limits
 
-`[build] ci` says how a PR's tests gate it. Set it in `~/.relay/config.toml` for every project or in a project's own `docs/relay/config.toml`. The default is `pr`.
+- Built for one owner on one machine. There is no shared server.
+- Reviews spend your Claude and Codex plan usage. `relay cost` and the dashboard show how much.
+- A reviewer's GO is advice, not proof. You still read the PR before you merge.
+- Notifications and the menu bar are macOS only. Everything else is plain Python and git, and the tests run on Linux in CI.
 
-- `pr`: GitHub CI on the PR must be green. This is the old `require_ci = true`.
-- `local`: relay runs the repo's `test_command` on this machine, in the background, and merge needs a recorded pass. GitHub CI is neither required nor read.
-- `release`: `pr` for a PR into `main`, `local` for a PR into any other branch. It fits the policy "tests run locally, GitHub CI runs on releases".
-- `none`: no test gate. This is the old `require_ci = false`, and `relay status` says "tests: not gated (ci = none)".
+## License
 
-Two more settings go with it: `test_command` (a shell command, empty by default) and `test_timeout_min` (default 60). relay takes the command only from config, never from AGENTS.md or other docs. A repo whose full suite is slow can name a fast subset. In local mode with no `test_command`, submit, review, `relay test` and merge stop with "set [build] test_command in docs/relay/config.toml on <base>, or set ci = "none"".
-
-A PR's gate reads its settings from the global config plus `docs/relay/config.toml` as it is on the tip of the PR's base branch on origin, never from the PR's own branch or the folder you run in. So every checkout on the machine agrees, and a PR cannot weaken its own gate: a PR that changes the repo config takes effect for later PRs, after it merges. A config that is broken on the base is fixed directly on the base, outside relay.
-
-How a local run works:
-
-- `relay submit` (and every build review, including `relay review` after a GO goes stale) makes sure a run exists for the PR head's code: it starts one in the background unless a pass or a live run is already there, and the review goes on at once. Nothing waits for the tests.
-- The run uses a clean detached checkout of the commit, made under `<git common dir>/relay/test-runs/`, so you can keep editing. It has no gitignored files: the command does its own setup, such as installing dependencies. Output goes to a log. A run past `test_timeout_min` is ended and recorded as a failure.
-- A result is keyed by the code (relay's own bookkeeping commits do not count) and the exact `test_command`. Records and logs live in `<git common dir>/relay/tests/` on this machine only; merging from another machine says to run `relay test` there. relay keeps the newest 20 logs and never removes the record of a feature that is still open.
-- Starting a run for new code stops the feature's older run. A run that is killed or whose machine restarts reads as `stopped`, never as running or passed.
-
-Commands:
-
-    relay test            start a background run for the feature's PR head, or report the existing result
-    relay test --status   print the result, the log path and the reason; start nothing
-    relay test --again    start a new run even over a pass (for a flaky failure, or after a restart)
-    relay test --wait     run in the foreground until the result; for your own terminal, refused in an agent session
-
-`relay test` needs the PR open first. If a result is already a pass it says so and `--again` reruns it (a small change from "always rerun", so an agent that asks twice does not burn a suite run). `relay status` and the dashboard show one flag per feature: `tests: local, green at <sha8>`, `running since <time>`, `failed at <sha8>`, `stopped at <sha8>`, `not run for <sha8>`, or `no test command`. A feature whose tests are not green is not shown as "Merge PR" in the inbox, and the "ready to merge" notification waits for a pass. A failed run sends a "tests failed" notification with the log path.
-
-At a local-mode submit relay warns when a workflow in `.github/workflows/` still runs on `pull_request` to the base branch, because that spends GitHub minutes. It only warns.
-
-Moving from `require_ci`: in each config file, `require_ci = true` now reads as `ci = "pr"` and `require_ci = false` as `ci = "none"`, so a repo file's `require_ci = false` still overrides a global `ci = "release"`. A file that sets both uses `ci` and relay prints one warning. Nothing gains or loses a gate until you change it.
-
-## CI on relay's commits
-
-relay's own commits (`relay: submit build`, `relay: build GO (codex)` and the like) change only `docs/relay/`, yet each push used to start your repo's whole CI. relay now adds a `[skip ci]` line to the body of such a commit when CI has nothing new to test: origin already has the same code, and GitHub already has a CI result for it. relay's build gate, its review and the dashboard's Merge button read the result from the commit with that code, so nothing waits on the skipped run. A push that carries new code always starts CI.
-
-In a repo whose merge branch requires status checks, a PR whose newest commit skipped CI could never merge. There, relay leaves the marker off any commit after which the feature is ready to merge (the build GO, or your `go` override), so the commit you merge on runs CI and the required checks report.
-
-- Turn it off for a project with `[build] skip_ci = "never"` in its `docs/relay/config.toml` (the default is `"auto"`). `relay roles` shows the setting.
-- Merge with a merge commit, as the dashboard does. A squash or rebase merge copies commit messages into the base branch, and the marker then skips the CI run after the merge.
-- To start CI by hand, make a new commit and push it: `git commit --allow-empty -m "chore: run CI"` and `git push`. Setting `skip_ci = "never"` only stops future markers; it starts nothing for a commit that already has one.
-
-### CI once per submit
-
-A build PR runs CI once per `relay submit`, on the final commit, not on every push.
-
-- The agent opens the PR as a draft. A repo set up for this (below) skips its CI jobs on a draft, and skipped jobs are not billed.
-- `relay submit` marks the draft ready, which starts one run on the head. If that code already passed CI, relay first adds an empty `relay: mark PR ready` commit with the skip marker, so marking it ready starts nothing.
-- A build NO-GO, or failing CI at submit, turns the PR back into a draft, so the fix pushes start no CI either.
-- `relay commit "docs: ..."` commits and pushes the agent's own edits under `docs/relay/<slug>/`, with the skip marker when CI has nothing new to test.
-
-relay ignores two kinds of result when it looks for CI on the code: a job GitHub refused to start (it fails in about two seconds with the annotation "The job was not started", for example when the spending limit is reached), and a commit whose jobs were all skipped (a draft). It looks past them to an older run on the same code. If a refused run is all there is, `relay submit` and the dashboard say so and point at billing, rather than reporting a code failure.
-
-A repo needs this in its workflow for drafts to skip CI; without it nothing breaks, the draft just runs CI as before:
-
-    on:
-      pull_request:
-        types: [opened, synchronize, reopened, ready_for_review]
-      push:
-        branches: [main]
-    concurrency:
-      group: ci-${{ github.workflow }}-${{ github.ref }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-    jobs:
-      test:
-        if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-
-In a repo with required status checks, the commit that records the GO still runs CI once, so the checks report on the commit you merge.
-
-## What reaches you
-
-- A macOS notification when a feature needs you: ready to merge, a review stopped, a review failed, or a handoff was pushed. Turn it off with `[notify] enabled = false` in `~/.relay/config.toml`.
-- `relay status`: the `*` rows are your inbox, newest wait first (`--json` keeps its oldest-first order). Below the features, "Other sessions waiting on you" lists Claude and Codex sessions on this machine that are waiting on you for work outside any open feature (for example after its PR merged), with how long each has waited and the start of its last message.
-- `relay left`: where you left off, for coming back after a break, a closed project or a restart. Per project (a repository and its worktrees count as one), your newest 3 sessions on this machine in any state (waiting on you, needs approval, stopped, was working, ended), how long ago each was last active, the feature it holds, the start of its last message, and the command to resume it from its own folder, such as `cd ~/app && claude --resume <id>`. `relay left --all` shows every session, and `relay left --recent` shows them as one list, newest first across projects. A "Running now" block comes first: your sessions in the middle of a task. relay's hooks record the Claude or Codex process each session runs in, and a session counts as running while that process is alive and the session has sent a hook event in the last 2 hours. Sessions without a recorded process (older ones, or when the check fails) count as running only if they sent an event in the last 10 minutes. A session mid-task, waiting on you or waiting for approval whose process is gone shows as "stopped", and features and other-session lists stop asking you to answer or approve it; one that went quiet without a known process shows as "was working". For Codex, relay also reads the session's own log: a Codex session leaves Running now as soon as its turn ends or is interrupted, or after 30 minutes without the log changing (a hung turn, or a very long silent command), even when its Codex process lives on, as editor sessions' shared process does. When the log cannot be read, the rules above decide alone. It reads only this machine: no fetch, no GitHub.
-- One open PR per repo: `relay new` refuses while another feature's PR is unmerged, unless you ask the agent for a stack (`--stack`, recorded as your decision).
-
-## Owner decisions
-
-    relay override go             accept a stuck stage
-    relay override extra-round    allow one more round
-    relay override reset-rounds   after narrowing or splitting the stage
-    relay override release        free a feature whose agent is gone, so another can `relay take`
-    relay override review [--reviewer provider:model]   a fresh build review from the reviewer you pick
-    relay override review --stage spec|plan             review an approved spec or plan again
-    relay owner fingerprint <repo> <slug>   JSON: the published commit, stage, status, round and PR
-    relay owner act <repo> <slug> <go|extra-round|reset-rounds> --expect-commit SHA --via CH --actor ID --event ID
-    relay hooks install | status  add relay's session hooks to Claude Code and Codex (owner), or check them
-
-`relay owner` is for tools that collect your decision somewhere else and apply it to the revision you saw. `<repo>` is a folder under your projects root. It prints JSON, records the channel, actor and event in state.md and the commit message, and refuses inside agent sessions. Exit codes: 0 done, 3 stale (the commit is not the published one, or the action no longer applies), 4 replay (the event is already recorded), 5 busy (another owner action is running), 1 error.
-
-Two ways to make one:
-
-- Run the command in your own terminal. Inside an agent session it refuses, so this form proves it was you.
-- Tell the agent in the session ("give it an extra round"). It runs the same command with `--relayed`, which
-  records the decision as relayed by that agent in state.md, the commit message and, for a build, a PR comment.
-  The skills forbid relaying anything you did not say in that conversation; you see every relayed decision
-  when you merge.
-
-## Merging
-
-    relay merge <pr number|feature>   merge a ready feature's PR, then tidy this machine
-
-`relay merge` checks the PR the way the dashboard's Merge button does: the build GO is fresh for the PR's code,
-CI is green (in `local` mode, a recorded local pass for the PR's code and the base branch's `test_command`, see CI modes), the PR head is the reviewed code, and no review is still running. If anything fails, it
-refuses and changes nothing. Otherwise it merges with a merge commit (GitHub deletes the branch) and tidies the
-copy of the repo on this machine:
-
-- removes each worktree that has the feature branch checked out, but only one with nothing git does not hold:
-  no uncommitted, untracked or ignored files (ignored files can be local data such as `.env` or a database).
-  Otherwise it lists the files and the `git worktree remove --force <path>` you can run after checking them;
-- switches the main checkout from the feature branch to the base branch and pulls it, when it is clean and
-  the move would not overwrite an ignored file. On another branch, the main checkout stays put and the local
-  base branch is fast-forwarded;
-- deletes the local feature branch when nothing is checked out on it and it has no commits the PR lacked;
-- prunes worktrees.
-
-relay never forces a step. A step it skips is reported with the command that finishes it, and the merge
-stands. Run it yourself, or tell the agent "merge 23": it runs `relay merge 23 --relayed`, and a PR comment
-records that it passed on your word. The dashboard's Merge button and the hub's merge run the same steps.
-
-### Events for the hub
-
-relay writes a one-line event to the hub log (`~/.relay/hub/log.jsonl`) when a build gets a GO, when a feature
-waits on you (a review loop stopped or a review failed), when a PR merges and when a PR into `main` merges (a
-release). Each hub session gets the line as a note starting "relay event:", except the hub that caused it.
-relay writes events only after the change is pushed, and after the command has shown its own result.
-
-### Finished features leave the list
-
-A feature whose PR is merged, closed without merging, or not in this repository at all leaves the inbox,
-`relay status` and the hub. The last happens when a repository is split and keeps another repository's
-`docs/relay/` folders: their PR numbers point at the other repository. `relay status` ends with one
-"Hidden:" line for each closed or missing feature saying why; the dashboard lists them under "Hidden features".
-If GitHub cannot be reached, the feature stays, as before. relay remembers a missing PR in
-`~/.relay/prgone.json`; if that was wrong (for example `origin` pointed at the wrong repository for a while),
-delete its entry there.
-
-### Updating relay without interrupting sessions
-
-`relay` runs from your clone of this repository, so updating it is a pull there. Every hook call is a new
-process and picks up the new code at its next event; a running dashboard and a review in progress keep the
-code they started with. Run `tools/deploy_check.py` first: it lists what is in flight (reviews running, a held
-owner-action lock, relay processes) and exits 0 when nothing is. Then pull, and restart the dashboard (stop it,
-then `relay ui --background`) so it runs one version. Sessions need nothing.
-
-## Handoffs
-
-At about 60% context, or when switching provider or machine: `relay handoff`, fill it in, `relay handoff --commit`. A handoff covers every feature that session holds in the repo (ownership is per repo). The next session runs `relay take`, which takes over all of them, including stacked PRs on other branches.
-
-## Reviewer preferences
-
-`[review.prefer]` in `~/.relay/config.toml` lists, for each stage author (claude, codex, owner), the reviewers in order of preference. relay uses the first one that is available. A provider is skipped while its weekly limit is used up (read from Codex's own logs) or after a review failed on a usage limit (remembered until the reset: for Codex, the weekly reset when its weekly limit is used up, otherwise the 5-hour reset from its logs, or an hour when neither is known; for Claude, an hour, with the reason naming the limit and its reset when the status line shows it), or while its 5-hour window is at 100% until that window resets; the next entry reviews in the same `relay submit`. Fallback and same-provider reviews are recorded in the review file, the commit and `relay status`. A fallback GO is a full GO: the owner can merge on it, and relay does not ask the first choice to confirm it. Reviewers run at `effort` (medium) each round, at `final_effort` (high) in the last round before a stage comes to you, and at `release_effort` (high) for a PR to main; an entry like `codex:gpt-6-astra@low` pins its own effort. A same-provider review on purpose (`--same-provider`) is your call: an agent passes it only when you ask, with `--relayed`, and it is recorded as your decision. `relay roles` shows the table and who is out right now; `relay roles set review.claude "codex:gpt-6-astra@high, claude:claude-fable-5-2"` changes it for every repo.
-
-Changing a table is your decision: `relay roles set` and `relay roles end` run in your own terminal, and an agent passes them on only when you ask, with `--relayed` (logged with its session). A list may not name the same model twice, and an effort is one lowercase word (`low`, `high`, `xhigh`). Add `--until 23:00` (or an ISO date-time with a zone, at most 7 days away) to make a change temporary: relay keeps it in `~/.relay/review-until.json` and returns to your normal table by itself when the time passes, even if nothing is running then. A temporary table wins over a project's own `docs/relay/config.toml`, and setting the normal table leaves it in place. `relay roles end review.claude` (or `all`) ends it early. Every change is logged in `~/.relay/roles-log.jsonl`, and `relay roles` shows the latest one per author.
-
-## Settings
-
-    relay roles                              show who does what
-    relay roles set build claude:claude-sonnet-5
-    relay roles set reviewer.codex gpt-6-astra@medium
-    relay roles set review.claude "claude:claude-fable-5-2, codex:gpt-6-astra" --until 23:00
-    relay roles end review.claude            back to the normal table now (or: all)
-    relay rule "Prefer Sonnet for plan reviews under 200 lines"
-    relay cost --since 7d                    tokens used by relay-launched reviews and by writing sessions
-
-Your own files live in `~/.relay/` (`RELAY_HOME` moves it), never in this repo:
-
-- `config.toml`: roles, limits, reviewer preferences, and `[projects] root`, the folder relay scans for repos (default `~/Projects`; `RELAY_ROOT` overrides it). Start from `config.example.toml`. A project can override settings in its own `docs/relay/config.toml`.
-- `RULES.md`: your global judgment rules, included in every review. Add one with `relay rule --global "..."`.
-
-A project's own rules live in its `docs/relay/RULES.md`, committed with the project and applied after the global ones. Add one from inside the project with `relay rule "..."`. Rules are the owner's decisions: an agent may add one only with `--relayed`, which records that it is passing on your words. `relay rules` prints the rules in effect for the current project. `RULES.example.md` shows the format.
-
-Your own skills, such as a release runbook for your apps, stay outside this repo: everything in `skills/` is
-installed for every relay user. Keep them in a folder of your own, link them into `~/.claude/skills` (and
-`~/.codex/skills`) the way `install.sh` links relay's, and tie them to the work through rules. A project rule like
-`relay rule "Releases follow the ios-release skill"` reaches the author through `relay rules` and the reviewer
-through every review prompt; the release review checks that a release follows the runbook its rules name. Use
-`relay rule --global` for a skill that applies to every project.
-
-Repo files: `prompts/` (review prompts), `skills/` (agent skills), `config.example.toml`. Run tests: `python3.11 -m unittest discover -s tests -t . -v`.
-
-## Running in Docker
-
-The image holds Python 3.11, git, gh, Claude Code, Codex and relay, with the skills linked. Your projects folder
-is mounted at `/projects`; logins, git identity and `~/.relay` live in a named volume, so they survive rebuilds.
-
-    cp compose.example.yaml compose.yaml
-    export RELAY_PROJECTS=~/Projects RELAY_UID=$(id -u) RELAY_GID=$(id -g)
-    docker compose up -d --build           # starts the dashboard
-    docker compose logs relay              # prints the dashboard link
-    docker compose exec relay bash         # a shell in the container
-
-Once, in that shell: `gh auth login`, `claude` (then `/login`), `codex login --device-auth`, and
-`git config --global user.name "..."` and `user.email`. Then run your Claude Code and Codex sessions in the
-container too, so relay sees them, and run `relay hooks install` there for session health.
-
-The compose file publishes the dashboard on your machine's loopback only (`127.0.0.1:8765`). Keep the same port
-number on both sides: the dashboard checks that the browser's address matches its own port. There are no desktop
-notifications or menu bar in the container; the dashboard and `relay status` show what waits on you. A git
-worktree whose main repo is outside the mounted folder cannot be read in the container and is skipped.
-
-## Local dashboard and menu bar
-
-Run `relay ui` in your own terminal to open the dashboard, or `relay ui --background` to keep it running
-after the terminal closes. Use `--port 8765` to choose the first of eleven ports it tries. A second launch
-opens the running dashboard. Agent sessions cannot start it.
-
-The dashboard rebuilds its snapshot every 60 seconds at low priority (nice 10). It fetches a repository with
-an open feature, or one with a local change since its last fetch, at most once a minute, and every other
-repository every ten minutes. Done features are read again only when their commit or checkout changes. Refresh
-fetches every repository at once and asks GitHub again about closed PRs. The line at the bottom of the page shows
-what the last build cost: its time, CPU, the git and gh processes it started, the repositories it fetched and its
-cache hits. A build over 20 seconds or 300 processes also prints that line to the dashboard's stderr.
-
-The inbox lists features waiting on you, newest wait first. Each card says in plain words what is needed
-("Decide: plan review stopped. <reason>", "Review failed: <why>", "Merge PR #6", "Take the handoff",
-"Answer the claude session", "Approve Bash in the codex session", "Check the codex session: no activity 2h"),
-how long it has waited, and the buttons for that ask: Override GO, Extra round, Reset rounds, Request review or
-Merge PR. When a session is waiting on you, the card shows the start of what the agent last said (Claude's
-summary while you were away, or the agent's last message), and the feature's details show all of it. relay reads
-that text live from the CLI's own log on this machine and never stores it. `relay status` shows the same asks.
-A failed review's reason is saved in state.md without paths, usernames, emails or tokens, since state.md is
-published with the branch.
-
-The inbox also shows other sessions waiting on you: Claude and Codex sessions on this machine that no open
-feature accounts for, such as one asking for a key after its feature merged. A session is listed when relay's
-hooks say it is waiting on you or for a tool approval (past `[ui] health_grace_minutes`), its wait started within
-`[ui] other_sessions_hours` (default 24, up to 168), and, unless it waits for an approval, it has said something.
-A session already shown under one of its features is not listed again. These cards only show what is waiting:
-you answer in the session's terminal. Clicking one shows the full last message and how to resume the session if
-its terminal is gone (such as `cd ~/app && claude --resume <id>`, or `codex resume <id>`). Both settings are read from
-`~/.relay/config.toml` only, since many sessions are outside any repository. Nothing about these sessions is
-stored or published.
-
-"Running now" at the top of the page lists your sessions in the middle of a task, as `relay left` does, with how
-long each has been running; click one for its last message. Below the inbox, "Where you left off" shows the same as
-`relay left`: per project, your newest 3 sessions in any state, with the feature each holds. Its menu switches
-between "By project" and "Most recent" (one list, newest first); your browser remembers the choice. Clicking one shows its full last message and the resume command; the cards
-have no buttons. Only sessions you started yourself are shown, not automated runs such as relay's own reviews
-(`claude -p`, `codex exec`), and only sessions that said something or wait for a tool approval. relay's hooks keep
-session records for 7 days, so older sessions and ones started before the hooks were installed are not shown.
-
-Every session dialog (Running now, the inbox, "Where you left off") has a "Send a note" box. Each note starts with
-"Note from the owner, sent from the relay dashboard:" and reaches the session one of two ways:
-
-- **Inbox (Claude):** relay's hook records each Claude session's inbox socket (the path only, never its token), and
-  the dashboard posts the note there. Claude Code shows it in that terminal as a message from "Another Claude session" (the note's first line says it
-  is from you, through the dashboard) and
-  hands it to Claude at once: between tool calls if it is working, as a new turn if it is waiting on you (which
-  uses usage like a prompt you type). If that session skips permission prompts, Claude Code asks you to approve
-  the note in its terminal first; if it refuses messages from other sessions, the note is dropped. relay cannot
-  see which happened, so the note shows as "posted".
-- **Next event:** when there is no inbox to post to (Codex, a Claude session without one, or a session that has
-  ended or stopped), relay queues the note, and relay's hook adds it to the session's context with its next prompt
-  (Codex and Claude) or tool call (Claude). It then shows as "delivered".
-
-A note is information from you, not your approval: it cannot answer a permission prompt, so approve tools in the
-session's own terminal. The dialog lists the session's notes from the last 7 days with their status, and a queued
-note can be removed until the session takes it. relay never starts or resumes a session to deliver a note. Notes
-stay on this machine, in `~/.relay/notes`, and are pruned after 7 days.
-
-### Notes to a hub session from your own tools
-
-    relay note --hub --list --json                  JSON list of the registered hub sessions
-    relay note --hub [--session ID] "text"          send a note to one that is open
-
-For a local app of yours that talks to your hub session. `--list --json` prints `provider`, `session_id`,
-`last_active` (epoch seconds, or null when the session's record is missing or unusable) and `open` for each hub
-session, and `[]` when there are none. A session is open when it is a Claude session, is not shown as ended or
-stopped, and its inbox socket is present. The send goes only to a registered hub session that is open; with no
-`--session` it needs exactly one open, and otherwise says which are open. The note is cleaned and recorded like
-any other. Unlike the dashboard, this command never queues: if the note was not posted to the inbox socket it
-exits non-zero, says so, and leaves nothing waiting for the session's next prompt.
-
-Open a feature to see its stage history, reviews, owner decisions,
-session, handoff and CI. Reviews open even when their branch is not checked out. The All features table
-can include completed work. Models shows Codex and Claude weekly limits, daily carry-forward budgets, and the
-review runs relay launched, by project and model, for seven or thirty days. Writing sessions shows the Claude Code
-and Codex sessions that held a relay feature, by feature and stage and by model, read from each CLI's own logs on
-this machine (`~/.claude/projects`, `~/.codex/sessions`). relay reads only timestamps, model names and token
-counts, never the conversation, and only for sessions that held a feature. Work a session does outside relay
-while it holds a feature counts toward that feature; work you write by hand is not counted; turns outside any
-hold show as unattributed, and a log relay cannot read shows as unreadable rather than zero. The log formats are
-not published contracts, so a CLI update can change them. Daily budgets need a sample from before today's midnight in the current week; until then they say "no
-baseline yet". Below them are the reviewer tables: reorder, add and remove reviewers, set their effort, or make
-a change temporary, each after a confirmation. Writer roles are shown for information.
-
-The server listens only on `127.0.0.1` unless you pass `--host 0.0.0.0`, which only a container needs (see Running in Docker). A random token protects the page and every API request, and requests
-must use a local Host header. The private discovery file `~/.relay/ui.json` has mode 0600. The token is
-removed from the browser address after loading. The cache rebuilds every 60 seconds; Refresh requests
-an immediate rebuild. A failed rebuild keeps the last good snapshot and reports its age and error.
-
-Every action asks for confirmation and is bound to the published commit, stage, status and session you
-saw. A changed revision is refused with fresh details. Overrides and release use temporary detached
-worktrees and a fast-forward push, leaving the session's checkout and branch untouched. Sessions pick
-up published owner actions before submit, review, handoff, take and override. Merge also requires a fresh GO
-and green CI, and passes the displayed PR head to GitHub's merge guard.
-
-Request review, in a feature's detail, runs a fresh build review for a PR that is ready to merge or whose
-review errored. It defaults to the author's first choice, and
-you can pick any reviewer from the preference table. It runs in the background in a temporary worktree and
-publishes only if the branch has not moved; a NO-GO sends the build back to the author like any review, and
-a failed request changes nothing. `relay override review` does the same from your terminal.
-
-Re-review spec and Re-review plan, in the same place, ask for an approved spec or plan to be reviewed again,
-for example by Codex once it is back after a same-provider GO. The default reviewer is the first choice for
-that stage's author. A spec re-review carries on to the plan, without new rounds, and the feature returns to
-where it was; a NO-GO sends that stage back to the author. `relay override review --stage spec|plan` does the
-same from your terminal. relay never suggests a re-review: a same-provider GO is a valid GO.
-
-Session health shows, for each feature a session holds, whether it needs permission, is waiting on you,
-has gone quiet, or is active. Run `relay hooks install` once in your terminal: it adds relay's hooks to
-~/.claude/settings.json and ~/.codex/hooks.json, keeping everything else and backing up each file it
-changes. Codex runs new hooks only after you trust them with /hooks inside Codex. `relay hooks status`
-shows what is configured and when the last event arrived. Without hooks, health comes from file and
-commit activity alone. The same hooks tell a session, once, when a PR it owns was merged: the
-notice appears in the agent's next turn, as soon as the dashboard or `relay status` has seen the merge. `[ui] health_grace_minutes` (default 1) and `quiet_minutes` (default 30) tune it.
-
-### The hub: relay from your phone
-
-Start a Claude session in any folder, run `/relay-hub`, and turn on remote control. From your phone, ask
-"what needs me?". The hub runs `relay hub`, which lists what waits on you across your projects, oldest
-first, numbered and sized for a phone. It uses a running dashboard's data when there is one, and builds it
-otherwise. Answer in plain words: "merge 2" or "tell 3 to go ahead". The hub passes on only what you type
-in its chat, and only for an item you were shown; if that item changed since, it shows you the new state and
-asks again. Each action is recorded as relayed by the hub, and a merge it relays gets a PR comment saying so.
-It cannot answer a session stopped at a permission prompt or a question: it tells you to open that session.
-The hub never lists itself as waiting on you, and it publishes nothing on its own beyond that merge comment.
-
-Ask the hub to "show me the page" for the same digest as a phone page: a private claude.ai artifact with one
-card per item and the same numbers, at one link the hub updates each time you ask. The page is read-only; you
-still act by typing in the hub chat. relay builds it (`relay hub --page`) without session ids, workstation
-paths or tokens, and redacts secrets and email addresses in quoted text. It shows how old it is and says so
-once its numbers expire after 24 hours.
-
-For SwiftBar, choose its plugin folder and run `./install.sh`. The installer links `menubar/relay.30s.py`.
-The menu shows how many features need you, links to the dashboard or GitHub, and can open the UI.
-The installer prints setup instructions when SwiftBar has no `PluginDirectory` setting.
-
-To capture Claude usage, approve adding this after `input=$(cat);` in the existing Claude status-line
-command, without changing its display code:
-
-```bash
-printf '%s' "$input" | ~/.local/bin/relay usage-snapshot claude >/dev/null 2>&1 &
-```
-
-The command is silent, ignores malformed input and saves the weekly and five-hour limits independently
-of the usage history append. It waits at most 100 ms for the history lock. Codex samples retain their
-original log timestamps. History is kept locally in `~/.relay/usage.jsonl` and pruned after 35 days.
-
-The 5-hour window is read live and never stored: Codex's from its newest `rate_limits` log line, Claude's from the
-snapshot above. Each dashboard Usage card shows it under the weekly limit, the top strip shows "5h N%", and
-`relay hub` and `relay roles` end with one line per provider, for example
-`Codex: out of usage, 5-hour limit used up until 18:40 · weekly 51% · 5-hour 100%, resets 18:40`.
-A sample is "stale" after 60 minutes, "reset since last sample" once its reset time has passed, and "unknown" when
-there is none. Like the weekly figure, it covers only this machine.
-When a review fails on a usage limit, relay saves that in `~/.relay/unavailable.json` and leaves the provider
-alone until the limit resets (Codex) or for an hour (Claude, or a limit relay could not name). If that limit's
-window was at 100% at the failure and a sample taken after it shows the window under 100% again, for example after you reset it by hand and the
-provider has run one turn, relay asks the provider again without waiting.
-Background server errors are in `~/.relay/ui.log`; stop the process listed in `~/.relay/ui.json` to stop it.
+MIT. See [LICENSE](LICENSE).
