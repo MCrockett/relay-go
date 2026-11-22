@@ -248,26 +248,43 @@ def _attach_notes(others, run, left):
         e["notes"] = ownernotes.list_for(e["provider"], e["session_id"])
 
 
-def _attach_models(rows, details, others, run, left):
-    """The model each listed session last used, from its own log (session-model); None when unknown. A feature row
-    takes its owner session's model and provider."""
-    from .. import transcripts
+def _owners(details):
     real = lambda p: os.path.realpath(p) if p else p  # rows hold the resolved path, details the checkout's
     owners = {(real(d.get("repo_path")), d.get("feature")): d.get("owner_session") or {} for d in details}
-    sessions = list(others) + list(run) + [e for p in left for e in p["sessions"]]
-    wanted = {(e["provider"], e["session_id"]) for e in sessions}
+    return lambda r: owners.get((real(r.get("repo_path")), r.get("feature"))) or {}
+
+
+def _listed_sessions(rows, details, others, run, left):
+    """(provider, session) of every listed session and every feature row's owner session (session-model)."""
+    owner = _owners(details)
+    wanted = {(e["provider"], e["session_id"]) for e in list(others) + list(run) + [e for p in left for e in p["sessions"]]}
     for r in rows:
-        o = owners.get((real(r.get("repo_path")), r.get("feature"))) or {}
+        o = owner(r)
         if o.get("provider") and o.get("session"):
             wanted.add((o["provider"], o["session"]))
+    return wanted
+
+
+def _models_for(writing, wanted):
+    """Each wanted session's model, from the writing totals' read, which covered them (usage-read-once). When that
+    read failed, the sessions are read on their own."""
+    if "models" in writing:
+        return writing["models"]
+    from .. import transcripts
     try:
-        models = transcripts.read_sessions(wanted)["models"] if wanted else {}
+        return transcripts.read_sessions(wanted)["models"] if wanted else {}
     except Exception:  # a model is a nicety: the lists are shown whatever happens here
-        models = {}
-    for e in sessions:
+        return {}
+
+
+def _attach_models(rows, details, others, run, left, models):
+    """The model each listed session last used, from its own log (session-model); None when unknown. A feature row
+    takes its owner session's model and provider."""
+    owner = _owners(details)
+    for e in list(others) + list(run) + [e for p in left for e in p["sessions"]]:
         e["model"] = models.get((e["provider"], e["session_id"]))
     for r in rows:
-        o = owners.get((real(r.get("repo_path")), r.get("feature"))) or {}
+        o = owner(r)
         if o.get("provider") and o.get("session"):
             r["session_provider"], r["model"] = o["provider"], models.get((o["provider"], o["session"]))
 
@@ -403,7 +420,7 @@ def reviewers(now=None, repos=None):
     for role in config.ROLE_KEYS:  # a writer model can review too, though it never has (reviewer-suggest)
         try:
             spec = config.parse_model_spec(base["roles"][role])
-        except (RelayError, KeyError, TypeError):
+        except (RelayError, KeyError, TypeError, AttributeError):  # a writer setting that is not text
             continue
         known.add(f"{spec.provider}:{spec.model}")
     for row in ledger.read():
@@ -428,10 +445,11 @@ def _reviewers_or_error(repos=None):
         return {"error": str(e)}
 
 
-def _writing_or_error(repos, errors):
-    """Writing-session totals (writer-usage R9). A repo whose fetch failed is read from its last fetched refs."""
+def _writing_or_error(repos, errors, also=frozenset()):
+    """Writing-session totals (writer-usage R9). A repo whose fetch failed is read from its last fetched refs. also:
+    the listed sessions, read in the same pass for their models."""
     try:
-        writing = writerusage.summary(repos)
+        writing = writerusage.summary(repos, also=also)
     except (RelayError, OSError, ValueError, KeyError, TypeError) as e:
         return {"error": str(e)}
     failed = sorted({os.path.basename(repo) for repo in repos if os.path.realpath(repo) in errors})
@@ -656,7 +674,6 @@ def _build(root, full):
         scan_note = None
     except Exception as e:  # where-i-left-off F5: the rest of the dashboard is still built
         rows, claimed, details, scan_note = [], set(), [], f"Features could not be read: {e}"
-    writing = _writing_or_error(repos, errors)
     try:
         marks = _left_marks(details)
     except Exception:  # where-i-left-off F5: sessions without feature marks
@@ -708,7 +725,10 @@ def _build(root, full):
         notes.add(scan_note)
     notes = sorted(notes)
     _attach_notes(others, run, left)
-    _attach_models(rows, details, others, run, left)
+    listed = _listed_sessions(rows, details, others, run, left)
+    writing = _writing_or_error(repos, errors, listed)  # one read of the session logs per build (usage-read-once)
+    _attach_models(rows, details, others, run, left, _models_for(writing, listed))
+    writing.pop("models", None)  # pairs are not JSON; the pills carry them
     hidden = [{"repo": os.path.basename(r["checkout"]), "slug": r["feature"], "reason": r["hidden"]}
               for r in rows if r.get("hidden")]  # closed or gone PRs: why they left the inbox (merge-and-tidy D12)
     return {"rows": rows, "features": details, "other_sessions": others, "left_off": left, "running": run, "usage": usage(), "session_hints": hints, "notes": notes,
