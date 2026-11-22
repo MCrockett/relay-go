@@ -6,7 +6,22 @@
   "branch": "fix/usage-read-once",
   "extra_rounds": {},
   "feature": "usage-read-once",
-  "history": {},
+  "history": {
+    "build": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2",
+          "R1-3",
+          "R1-4"
+        ],
+        "head": "5a4d8c4c8fcebae5fb6e344b52b370d5a8ae02d2",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ]
+  },
   "owner": {
     "provider": "claude",
     "session": "64dd3837-ab64-43a0-8d14-c7aa66c038c3",
@@ -27,6 +42,7 @@
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
+  "review_notes": {},
   "reviewed": {
     "build": null,
     "plan": null,
@@ -41,9 +57,11 @@
   ],
   "small": true,
   "stage": "build",
-  "status": "in-review",
-  "updated": "2026-11-21T19:54:40-05:00",
-  "verdicts": {}
+  "status": "changes-requested",
+  "updated": "2026-11-21T19:55:49-05:00",
+  "verdicts": {
+    "build": "NO-GO"
+  }
 }
 ---
 
