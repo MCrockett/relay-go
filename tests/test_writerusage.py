@@ -94,6 +94,17 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(got["models"], {("claude", "S1"): "claude-opus-5-5"})
         self.assertEqual(got["unreadable"], [])  # only held sessions are reported under Writing sessions
 
+    def test_extra_sessions_count_toward_no_total(self):  # R1-1: a model-only session is not writing work
+        windows = [W("a", 0, None, [[0, "spec"]])]
+        with mock.patch.object(holds, "windows", return_value={"windows": windows, "flags": []}), \
+                mock.patch.object(transcripts, "read_sessions", return_value={
+                    "turns": {("claude", "S1"): [turn(900)], ("codex", "C9"): [turn(900), turn(950)]},
+                    "unreadable": {}, "notes": [], "models": {}}):
+            got = writerusage.summary(["/repo"], now=1000, also={("codex", "C9")})
+            alone = writerusage.summary(["/repo"], now=1000)
+        self.assertEqual(got["7"], alone["7"])
+        self.assertEqual(got["7"]["unattributed"], {})
+
     def test_summary_takes_periods_in_days(self):
         with mock.patch.object(holds, "windows", return_value={"windows": [W("a", 0, None, [[0, "spec"]])], "flags": []}), \
                 mock.patch.object(transcripts, "read_sessions", return_value={

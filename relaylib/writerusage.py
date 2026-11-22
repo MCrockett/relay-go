@@ -86,7 +86,7 @@ def summary(checkouts, now=None, periods=PERIODS, also=frozenset()):
     held = holds.windows(checkouts)
     sessions = {(w["provider"], w["session"]) for w in held["windows"] if w["provider"] in ("claude", "codex")}
     read = transcripts.read_sessions(sessions | set(also))
-    attributed = attribute(held["windows"], read["turns"])
+    attributed = attribute(held["windows"], {k: v for k, v in read["turns"].items() if k in sessions})  # also: no totals
     out = {str(days): totals(attributed, days * 86400, now) for days in periods}
     out["unreadable"] = [{"provider": p, "session": s, "reason": r} for (p, s), r in sorted(read["unreadable"].items())
                          if (p, s) in sessions]
