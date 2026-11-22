@@ -4,7 +4,6 @@ import contextlib
 import glob
 import json
 import os
-import time
 
 from . import buildstats, config, scancache
 from .errors import RelayError
@@ -13,7 +12,6 @@ from .usage import timestamp
 FORMAT_LINES = 200
 CACHE, LOCK = "writer-usage.json", "writer-usage.lock"
 VERSION, CHUNK = 2, 1 << 20   # 2: a context record alone no longer makes a file healthy
-KEEP_S = 35 * 86400  # turns older than this count toward no total (the longest is 30 days) and leave the cache
 
 
 def claude_projects():
@@ -312,22 +310,6 @@ def _advance(path, entry, provider):
             "state": fs.to_json()}, fs
 
 
-def _prune(cache, cutoff):
-    """Drop turns older than cutoff from every file entry, and the entries of logs that are gone with no turn left.
-    An entry whose log is still there stays, so the log is read on from where it stopped, not parsed again."""
-    for path, entry in list(cache["files"].items()):
-        turns = (entry.get("state") or {}).get("turns")
-        if isinstance(turns, dict):
-            for key in [k for k, t in turns.items() if isinstance(t, dict) and t.get("at", cutoff) < cutoff]:
-                del turns[key]
-        if not turns and not os.path.exists(path):
-            del cache["files"][path]
-    for key, paths in list(cache["sessions"].items()):
-        cache["sessions"][key] = [p for p in paths if p in cache["files"] or os.path.exists(p)]
-        if not cache["sessions"][key]:
-            del cache["sessions"][key]
-
-
 def read_sessions(sessions):
     """Turns of each (provider, session), every file of a session merged and sorted by time. The cache in relay
     home makes a refresh read only what was appended. When its lock is busy or relay home is not writable, the
@@ -371,7 +353,6 @@ def read_sessions(sessions):
             if problems:
                 out["unreadable"][(provider, session)] = "; ".join(sorted(set(problems)))
         if saving and changed:
-            _prune(cache, time.time() - KEEP_S)
             try:
                 config.atomic_write(os.path.join(config.relay_home(), CACHE), json.dumps(cache), 0o600)
             except OSError:

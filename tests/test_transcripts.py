@@ -32,9 +32,6 @@ class Homes(unittest.TestCase):
                                          "CODEX_HOME": os.path.join(self.tmp, "codex")})
         p.start()
         self.addCleanup(p.stop)
-        keep = mock.patch.object(transcripts, "KEEP_S", 100 * 365 * 86400)  # fixture turns are dated 2026-10-06
-        keep.start()
-        self.addCleanup(keep.stop)
 
 
 class ParseTest(Homes):
@@ -237,28 +234,6 @@ class IncrementalTest(Homes):
         helpers.write(codex, codex_ctx("gpt-6-astra") + "\n" + codex_count("2026-10-06T16:00:00Z", 10, 0, 5) + "\n")
         got = transcripts.read_sessions({("claude", "S1"), ("codex", "C1"), ("codex", "gone")})
         self.assertEqual(got["models"], {("claude", "S1"): "claude-fable-5-2", ("codex", "C1"): "gpt-6-astra"})
-
-    def test_saving_drops_turns_no_total_uses(self):  # usage-read-once: writer-usage.json stays bounded
-        old_at = timestamp("2026-10-06T16:00:00Z")
-        gone = os.path.join(os.path.dirname(self.path), "S2.jsonl")
-        helpers.write(gone, claude("g1", "2026-10-06T16:00:00Z") + "\n")
-        transcripts.read_sessions({("claude", "S1"), ("claude", "S2")})
-        os.unlink(gone)
-        with open(self.path, "a") as f:  # a new turn, 40 days on, makes the next read save
-            f.write(claude("m9", "2026-11-15T16:00:00Z") + "\n")
-        with mock.patch.object(transcripts.time, "time", return_value=old_at + 40 * 86400), \
-                mock.patch.object(transcripts, "KEEP_S", 35 * 86400):
-            got = transcripts.read_sessions({("claude", "S1")})
-        self.assertEqual(len(got["turns"][("claude", "S1")]), 3)  # this read still returns what it parsed
-        with open(self.cache) as f:
-            cache = json.load(f)
-        self.assertNotIn(gone, cache["files"])                     # gone, and nothing recent: dropped
-        self.assertNotIn("claude:S2", cache["sessions"])
-        kept = cache["files"][self.path]["state"]["turns"]
-        self.assertEqual(sorted(kept), ["m9"])                      # older than 35 days: dropped
-        with mock.patch.object(transcripts.FileState, "parse") as parse:
-            transcripts.read_sessions({("claude", "S1")})
-        parse.assert_not_called()                                   # the kept entry is still read from where it stopped
 
     def test_a_vanished_subagent_file_keeps_its_turns_and_is_reported(self):
         sub = os.path.join(os.path.dirname(self.path), "S1", "subagents", "agent-1.jsonl")
