@@ -58,7 +58,15 @@
   "retried": false,
   "review_notes": {},
   "reviewed": {
-    "build": null,
+    "build": {
+      "base_ref": "origin/develop",
+      "base_sha": "8196431fce0883a4f775ca80d757d836c09974a1",
+      "head": "0f6292a848ee04f0650681401a83f97454ab739b",
+      "inputs": {
+        "idea": "12bc192b7be8fa7d4835c44e1cb2910a1fd0ef5f62b872c0c7f583bfe914a42d"
+      },
+      "merge": "bfc7a45e0c0c3309819ac726d0c51c8fade8a6040fcb43542ab17054a55c3e20"
+    },
     "plan": null,
     "spec": null
   },
@@ -71,10 +79,10 @@
   ],
   "small": true,
   "stage": "build",
-  "status": "in-review",
-  "updated": "2026-11-21T23:18:04-05:00",
+  "status": "ready-to-merge",
+  "updated": "2026-11-21T23:18:43-05:00",
   "verdicts": {
-    "build": "NO-GO"
+    "build": "GO"
   }
 }
 ---
