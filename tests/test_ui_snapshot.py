@@ -54,6 +54,15 @@ class SnapshotTest(SnapshotBase):
         self.assertEqual(detail["local_handoff"]["text"], "Unpushed work")
         self.assertFalse(detail["local_handoff"]["published"])
 
+    def test_a_build_reads_the_session_logs_once(self):  # usage-read-once
+        from relaylib import transcripts
+        with mock.patch.object(transcripts, "read_sessions", wraps=transcripts.read_sessions) as read:
+            data = snapshot.build()
+        self.assertEqual(read.call_count, 1)
+        self.assertIn(("codex", "s1"), read.call_args.args[0])  # the feature's owner session, for its model
+        self.assertNotIn("models", data["writing"])
+        json.dumps(data)
+
     def test_github_failures_are_per_feature(self):
         self.st.update(stage="build", status="ready-to-merge", pr=7)
         self.save()
@@ -776,19 +785,22 @@ class SessionModelTest(unittest.TestCase):
         details = [{"repo_path": "/r", "feature": "f", "owner_session": {"provider": "claude", "session": "S3"}},
                    {"repo_path": "/r", "feature": "g", "owner_session": None}]
         models = {("claude", "S1"): "claude-opus-5-5", ("codex", "C1"): "gpt-6-astra", ("claude", "S3"): "claude-fable-5-2"}
-        with mock.patch("relaylib.transcripts.read_sessions", return_value={"models": models}) as read:
-            snapshot._attach_models(rows, details, others, run, left)
-        self.assertEqual(read.call_args.args[0], {("claude", "S1"), ("codex", "C1"), ("claude", "S2"), ("claude", "S3")})
+        self.assertEqual(snapshot._listed_sessions(rows, details, others, run, left),
+                         {("claude", "S1"), ("codex", "C1"), ("claude", "S2"), ("claude", "S3")})
+        snapshot._attach_models(rows, details, others, run, left, models)
         self.assertEqual([others[0]["model"], run[0]["model"], left[0]["sessions"][0]["model"]],
                          ["claude-opus-5-5", "gpt-6-astra", None])
         self.assertEqual([r.get("model") for r in rows], ["claude-fable-5-2", None])
         self.assertEqual(rows[0]["session_provider"], "claude")
 
-    def test_an_unreadable_log_leaves_models_unknown(self):
-        others = [{"provider": "claude", "session_id": "S1"}]
+    def test_a_failed_writing_read_still_reads_the_models(self):
+        with mock.patch("relaylib.transcripts.read_sessions", return_value={"models": {("claude", "S1"): "m"}}) as read:
+            self.assertEqual(snapshot._models_for({"error": "boom"}, {("claude", "S1")}), {("claude", "S1"): "m"})
+            self.assertEqual(snapshot._models_for({"models": {("claude", "S1"): "w"}}, {("claude", "S1")}),
+                             {("claude", "S1"): "w"})
+        read.assert_called_once()  # only for the failed writing read
         with mock.patch("relaylib.transcripts.read_sessions", side_effect=OSError("busy")):
-            snapshot._attach_models([], [], others, [], [])
-        self.assertIsNone(others[0]["model"])
+            self.assertEqual(snapshot._models_for({"error": "boom"}, {("claude", "S1")}), {})
 
 
 class StoreBase(SnapshotBase):
@@ -1348,6 +1360,15 @@ class ReviewersTest(unittest.TestCase):
         self.assertEqual(r["effort"]["effort"], "medium")
         self.assertEqual(r["revision"], reviewtables.revision())
         self.assertEqual(r["problems"], [])
+
+    def test_a_writer_setting_that_is_not_text_is_skipped(self):
+        with open(self.cfg, "a") as f:
+            f.write('[roles]\nspec = 5\n')
+        try:
+            r = snapshot.reviewers()
+        except RelayError:
+            return  # config validation refuses it first: also fine, the panel shows that error
+        self.assertNotIn("error", r)
 
     def test_reviewers_with_no_files_still_has_a_revision(self):
         os.unlink(self.cfg)

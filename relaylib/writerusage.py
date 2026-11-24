@@ -78,15 +78,18 @@ def totals(attributed, since_s, now):
             "unattributed": unattributed}
 
 
-def summary(checkouts, now=None, periods=PERIODS):
-    """Totals for each period (in days, keyed by str(days)), plus the sessions whose logs could not be read and
-    notes about history and cache."""
+def summary(checkouts, now=None, periods=PERIODS, also=frozenset()):
+    """Totals for each period (in days, keyed by str(days)), plus the sessions whose logs could not be read, notes
+    about history and cache, and each session's model. also names more sessions to read in the same pass, so a
+    dashboard build reads the logs once (usage-read-once); they count toward no total and are not reported."""
     now = time.time() if now is None else now
     held = holds.windows(checkouts)
     sessions = {(w["provider"], w["session"]) for w in held["windows"] if w["provider"] in ("claude", "codex")}
-    read = transcripts.read_sessions(sessions)
-    attributed = attribute(held["windows"], read["turns"])
+    read = transcripts.read_sessions(sessions | set(also))
+    attributed = attribute(held["windows"], {k: v for k, v in read["turns"].items() if k in sessions})  # also: no totals
     out = {str(days): totals(attributed, days * 86400, now) for days in periods}
-    out["unreadable"] = [{"provider": p, "session": s, "reason": r} for (p, s), r in sorted(read["unreadable"].items())]
+    out["unreadable"] = [{"provider": p, "session": s, "reason": r} for (p, s), r in sorted(read["unreadable"].items())
+                         if (p, s) in sessions]
     out["notes"] = held["flags"] + read["notes"]
+    out["models"] = read.get("models") or {}
     return out
