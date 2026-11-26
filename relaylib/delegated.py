@@ -161,3 +161,33 @@ def table_reason(st, meta):
         if spec.provider == meta["reviewer"] and spec.model == meta["model"]:
             return None
     return NOT_IN_TABLE
+
+
+def conditions(repo, st, commit, remote, base, base_sha, pr_head):
+    """R9: (reason, facts). The first failure of R3 to R8, in that order, or (None, facts). The caller adds PREFIX.
+    `base_sha` is the base commit relay checked: the opt-in is read at it and the protected-path diff starts from it."""
+    name = repo_name(remote)
+    try:
+        listed, reason = production_branches(repo, base_sha, base, name)
+    except RelayError as e:  # a TOML error names its file
+        return str(e), None
+    if reason:
+        return reason, None
+    reason = not_control_plane(remote) or not_production(base, listed)
+    if reason:
+        return reason, None
+    meta, reason = review_evidence(repo, st, commit)
+    reason = reason or table_reason(st, meta)
+    if reason:
+        return reason, None
+    try:
+        mode = cimode.settings(repo, base)
+    except RelayError as e:
+        return str(e), None
+    reason = ci_reason(mode)
+    if reason:
+        return reason, None
+    path = protected_path(repo, base_sha, pr_head)
+    if path:
+        return f"touches {path}, which the owner merges", None
+    return None, {"reviewer": meta["reviewer"], "mode": mode.mode}

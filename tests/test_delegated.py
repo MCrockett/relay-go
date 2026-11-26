@@ -21,6 +21,14 @@ class DelegatedBase(test_commands.CommandsTest):
         p.start()
         self.addCleanup(p.stop)
 
+    def set_base(self, text, base="develop"):
+        """Push `text` as the base's relay config unless it is already there."""
+        if getattr(self, "_base_texts", {}).get(base) == text:
+            return
+        self._base_texts = {**getattr(self, "_base_texts", {}), base: text}
+        self.n += 1  # base_config names its clone by this counter and the text
+        self.base_config(text, base)
+
     def other_clone(self):
         self.n += 1
         other = helpers.clone(self.origin, os.path.join(self.tmp, f"other-{self.n}"))
@@ -326,6 +334,74 @@ class OverrideEvidenceTest(DelegatedBase):  # R6: an override GO has no review b
         self.assertEqual(st["status"], "ready-to-merge")
         self.assertEqual(delegated.review_evidence(self.work, st, seen["commit"]),
                          (None, "no review evidence for the build GO"))
+
+
+class ConditionsTest(DelegatedBase):  # R9: R3 to R8 in one function
+    def setUp(self):
+        super().setUp()
+        self.ready_small_feature()
+        self.pr()
+        self.set_base(OPT_IN)
+        seen = owneractions.fingerprint(self.work, "tiny", fetch=False)
+        self.commit, self.pr_head = seen["commit"], seen["pr_head"]
+        self.st_ = owneractions.state_at(self.work, "tiny", self.commit)
+
+    def conditions(self, remote="owner/project", base="develop", pr_head=None):
+        return delegated.conditions(self.work, self.st_, self.commit, remote, base, self.base_sha(base),
+                                    pr_head or self.pr_head)
+
+    def test_conditions_pass_when_every_one_holds(self):
+        self.assertEqual(self.conditions(), (None, {"reviewer": "codex", "mode": "pr"}))
+
+    def test_each_condition_fails_alone(self):
+        touching = self.push_branch("agents", {"AGENTS.md": "x\n"})
+        cases = {
+            "no opt-in": (lambda: self.set_base('[build]\nci = "pr"\n'), {},
+                          "project has not opted in: no [merge] production_branches on develop"),
+            "control plane": (lambda: None, {"remote": "owner/hordle"}, "hordle is control plane; the owner merges it"),
+            "production": (lambda: self.set_base('[merge]\nproduction_branches = ["develop"]\n'), {},
+                           "develop is a production branch"),
+            "no evidence": (lambda: None, {}, "no review evidence for the build GO"),
+            "ci none": (lambda: self.set_base('[build]\nci = "none"\n' + OPT_IN), {},
+                        "ci = none never qualifies for D1"),
+            "protected path": (lambda: None, {"pr_head": touching}, "touches AGENTS.md, which the owner merges"),
+        }
+        for name, (setup, kwargs, reason) in cases.items():
+            with self.subTest(name):
+                setup()
+                if name == "no evidence":
+                    with mock.patch.object(delegated, "review_evidence", return_value=(None, reason)):
+                        self.assertEqual(self.conditions(**kwargs), (reason, None))
+                else:
+                    self.assertEqual(self.conditions(**kwargs), (reason, None))
+                self.set_base(OPT_IN)  # restore for the next case
+
+    def test_the_first_failure_wins(self):
+        touching = self.push_branch("agents", {"AGENTS.md": "x\n"})
+        self.set_base('[merge]\nproduction_branches = ["develop"]\n')
+        self.assertEqual(self.conditions(remote="owner/hordle", pr_head=touching)[0],
+                         "hordle is control plane; the owner merges it")
+        self.set_base("[build]\nci = \"none\"\n")  # no list at all: R3 speaks first
+        self.assertEqual(self.conditions(remote="owner/hordle", pr_head=touching)[0],
+                         "hordle has not opted in: no [merge] production_branches on develop")
+        self.set_base('[merge]\nproduction_branches = ["develop"]\n')
+        self.assertEqual(self.conditions(pr_head=touching)[0], "develop is a production branch")
+
+    def test_a_toml_error_is_a_reason(self):
+        self.set_base("[merge\n")
+        reason, _ = self.conditions()
+        self.assertTrue(reason.startswith("origin/develop:docs/relay/config.toml:"), reason)
+
+    def test_a_pr_that_edits_the_list_is_refused_by_r8(self):
+        head = self.push_branch("edits", {"docs/relay/config.toml": '[merge]\nproduction_branches = ["main", "x"]\n'})
+        self.assertEqual(self.conditions(pr_head=head)[0],
+                         "touches docs/relay/config.toml, which the owner merges")
+
+    def test_a_pr_that_adds_the_list_is_not_opted_in(self):
+        self.set_base('[build]\nci = "pr"\n')
+        head = self.push_branch("adds", {"docs/relay/config.toml": OPT_IN})
+        self.assertEqual(self.conditions(pr_head=head)[0],
+                         "project has not opted in: no [merge] production_branches on develop")
 
 
 def _only_own_tests():
