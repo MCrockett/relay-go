@@ -7,7 +7,20 @@
   "branch": "feat/delegated-merge",
   "extra_rounds": {},
   "feature": "delegated-merge",
-  "history": {},
+  "history": {
+    "spec": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2"
+        ],
+        "head": "001a870ff7b30a4f5f9ce412c270326bf317258e",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ]
+  },
   "owner": {
     "provider": "claude",
     "session": "ea35512a-39cb-46ea-a1f0-80b2575d3397",
@@ -28,6 +41,7 @@
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
+  "review_notes": {},
   "reviewed": {
     "build": null,
     "plan": null,
@@ -39,9 +53,11 @@
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "in-review",
-  "updated": "2026-11-26T16:33:23-05:00",
-  "verdicts": {}
+  "status": "changes-requested",
+  "updated": "2026-11-26T16:34:24-05:00",
+  "verdicts": {
+    "spec": "NO-GO"
+  }
 }
 ---
 
