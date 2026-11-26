@@ -217,6 +217,23 @@ def network_git(root, *args):
     return run(["git", *args], root, check=False, env=network_env(root), timeout=FETCH_TIMEOUT_S)
 
 
+HOOKS_OFF = ("-c", "core.hooksPath=/dev/null")  # a local hook must not change what a delegated merge checked
+
+
+def hookless(root, *args, network=False):
+    """git with every local hook off (delegated-merge R10). With `network`, the bounded, prompt-free origin env."""
+    if network:
+        return run(["git", *HOOKS_OFF, *args], root, check=False, env=network_env(root), timeout=FETCH_TIMEOUT_S)
+    return run(["git", *HOOKS_OFF, *args], root, check=False)
+
+
+def pr_state(root, remote, number):
+    """The PR as GitHub shows it now: state, base, head and draft flag. Never memoized or cached (a poll must always
+    ask; pr_info keeps a MERGED answer for good)."""
+    return _gh_json(root, ["pr", "view", str(number), "--json", "state,baseRefName,headRefOid,isDraft",
+                           "-R", remote])
+
+
 def push(root, branch):
     p = network_git(root, "push", "-q", "-u", "origin", branch)
     if p.returncode != 0:

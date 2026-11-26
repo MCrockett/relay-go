@@ -404,6 +404,149 @@ class ConditionsTest(DelegatedBase):  # R9: R3 to R8 in one function
                          "project has not opted in: no [merge] production_branches on develop")
 
 
+class MergeAndPushTest(DelegatedBase):  # R10 steps 1, 2, 5, 6
+    def setUp(self):
+        super().setUp()
+        self.ready_small_feature()
+        self.pr()
+        seen = owneractions.fingerprint(self.work, "tiny", fetch=False)
+        self.pr_head = seen["pr_head"]
+        self.base = self.base_sha()
+        self.marker = os.path.join(self.tmp, "pushed")
+        helpers.mark_pushes(self.origin, self.marker)
+
+    def go(self, pr_head=None, base_sha=None):
+        return delegated.merge_and_push(self.work, "owner/project", 7, "fix/tiny", pr_head or self.pr_head,
+                                        "develop", base_sha or self.base)
+
+    def origin_log(self, fmt, ref="develop"):
+        return helpers.sh(self.origin, "git", "log", "-1", f"--format={fmt}", ref).strip()
+
+    def worktrees(self):
+        return helpers.sh(self.work, "git", "worktree", "list")
+
+    def test_merge_commit_shape_and_push(self):
+        sha = self.go()
+        self.assertEqual(self.origin_log("%H"), sha)
+        self.assertEqual(self.origin_log("%P"), f"{self.base} {self.pr_head}")
+        self.assertEqual(self.origin_log("%s"), "Merge pull request #7 from owner/fix/tiny")
+        self.assertIn("Delegated-merge: D1", self.origin_log("%b").splitlines())
+        self.assertEqual(self.origin_log("%an"), "Relay Test")
+        self.assertTrue(os.path.exists(self.marker))
+
+    def test_the_temporary_worktree_is_removed_on_success_and_on_every_refusal(self):
+        before = self.worktrees()
+        self.go()
+        self.assertEqual(self.worktrees(), before)
+        with mock.patch.object(delegated, "reread_pr", return_value={"state": "CLOSED"}):
+            with self.assertRaises(delegated.Refused):
+                self.go(base_sha=self.origin_sha())
+        self.assertEqual(self.worktrees(), before)
+
+    def origin_sha(self):
+        return helpers.sh(self.origin, "git", "rev-parse", "develop").strip()
+
+    def test_a_conflict_is_refused_and_nothing_is_pushed(self):
+        other = self.other_clone()
+        helpers.write(os.path.join(other, "app.py"), "print(2)\n")  # the PR also adds app.py
+        helpers.sh(other, "git", "add", "-A")
+        helpers.sh(other, "git", "commit", "-q", "-m", "conflicting base")
+        helpers.sh(other, "git", "push", "-q", "origin", "develop")
+        helpers.sh(self.work, "git", "fetch", "-q", "origin")
+        moved = self.base_sha()
+        if os.path.exists(self.marker):
+            os.remove(self.marker)  # the other clone's own push touched it
+        with self.assertRaises(delegated.Refused) as cm:
+            self.go(base_sha=moved)
+        self.assertEqual(str(cm.exception), "not delegated (D1): the PR does not merge cleanly into develop")
+        self.assertEqual(self.origin_sha(), moved)
+        self.assertFalse(os.path.exists(self.marker))
+
+    def test_a_moved_base_is_refused_by_the_lease(self):
+        real = delegated.reread_pr
+
+        def moves_the_base(*args):
+            other = self.other_clone()
+            helpers.write(os.path.join(other, "later.txt"), "later\n")
+            helpers.sh(other, "git", "add", "-A")
+            helpers.sh(other, "git", "commit", "-q", "-m", "somebody else")
+            helpers.sh(other, "git", "push", "-q", "origin", "develop")
+            return real(*args)
+        with mock.patch.object(delegated, "reread_pr", side_effect=moves_the_base):
+            with self.assertRaises(delegated.Refused) as cm:
+                self.go()
+        self.assertIn("not delegated (D1): GitHub refused the push to develop", str(cm.exception))
+        self.assertEqual(self.origin_log("%s"), "somebody else")
+        self.assertNotIn(self.pr_head, self.origin_log("%P"))
+
+    def test_a_push_refused_by_a_rule_is_reported_with_its_message(self):
+        helpers.reject_pushes(self.origin, "protected branch: only pull requests")
+        with self.assertRaises(delegated.Refused) as cm:
+            self.go()
+        self.assertIn("protected branch: only pull requests", str(cm.exception))
+        self.assertEqual(self.origin_sha(), self.base)
+
+    def test_the_reread_refuses_a_closed_a_draft_a_retargeted_and_a_moved_pr(self):
+        ok = {"state": "OPEN", "baseRefName": "develop", "headRefOid": self.pr_head, "isDraft": False}
+        for name, change in (("closed", {"state": "CLOSED"}), ("draft", {"isDraft": True}),
+                             ("retargeted", {"baseRefName": "other"}), ("moved", {"headRefOid": "f" * 40})):
+            with self.subTest(name), mock.patch.object(delegated, "reread_pr", return_value={**ok, **change}):
+                with self.assertRaises(delegated.Refused) as cm:
+                    self.go()
+                self.assertEqual(str(cm.exception), "not delegated (D1): the PR changed while it was checked")
+                self.assertFalse(os.path.exists(self.marker))
+
+    def test_an_unreadable_pr_before_the_push_is_refused(self):
+        with mock.patch.object(delegated, "reread_pr", side_effect=RelayError("boom")):
+            with self.assertRaises(delegated.Refused) as cm:
+                self.go()
+        self.assertEqual(str(cm.exception), "not delegated (D1): GitHub could not be read: boom")
+        self.assertFalse(os.path.exists(self.marker))
+
+    def test_the_reread_happens_after_the_merge_commit_and_before_the_push(self):
+        calls, hookless, reread = [], gitops.hookless, delegated.reread_pr
+
+        def spy_git(root, *args, **kw):
+            if args[0] in ("merge", "push"):
+                calls.append(args[0])
+            return hookless(root, *args, **kw)
+
+        def spy_reread(*args):
+            calls.append("reread")
+            return reread(*args)
+        with mock.patch.object(gitops, "hookless", side_effect=spy_git), \
+                mock.patch.object(delegated, "reread_pr", side_effect=spy_reread):
+            self.go()
+        self.assertEqual(calls, ["merge", "reread", "push"])
+
+    def test_local_hooks_do_not_run(self):
+        for name in ("pre-merge-commit", "commit-msg", "pre-push", "post-checkout", "pre-commit"):
+            helpers.hook(os.path.join(self.work, ".git"), name, "exit 1\n")
+        self.go()
+        self.assertTrue(os.path.exists(self.marker))
+
+    def test_head_already_in_the_base_is_refused(self):
+        ancestor = helpers.sh(self.work, "git", "rev-parse", f"{self.base}~0").strip()  # the base itself
+        with self.assertRaises(delegated.Refused) as cm:
+            self.go(pr_head=ancestor)
+        self.assertEqual(str(cm.exception),
+                         "not delegated (D1): develop already holds the PR head; nothing to merge")
+        self.assertFalse(os.path.exists(self.marker))
+
+    def test_the_lease_names_the_checked_base_commit(self):
+        seen, hookless = [], gitops.hookless
+
+        def spy(root, *args, **kw):
+            if args[0] == "push":
+                seen.append(args)
+            return hookless(root, *args, **kw)
+        with mock.patch.object(gitops, "hookless", side_effect=spy):
+            sha = self.go()
+        (argv,) = seen
+        self.assertIn(f"--force-with-lease=refs/heads/develop:{self.base}", argv)
+        self.assertIn(f"{sha}:refs/heads/develop", argv)
+
+
 def _only_own_tests():
     """Run only this file's tests, not the CommandsTest ones the classes inherit."""
     for cls in [c for c in globals().values() if isinstance(c, type) and issubclass(c, test_commands.CommandsTest)]:

@@ -6,6 +6,8 @@ import datetime
 import json
 import os
 import re
+import shutil
+import tempfile
 
 from . import cimode, config, gitops, state
 from .errors import RelayError
@@ -191,3 +193,53 @@ def conditions(repo, st, commit, remote, base, base_sha, pr_head):
     if path:
         return f"touches {path}, which the owner merges", None
     return None, {"reviewer": meta["reviewer"], "mode": mode.mode}
+
+
+def reread_pr(repo, remote, number):
+    return gitops.pr_state(repo, remote, number)
+
+
+def _message(p):
+    return ((p.stderr or "").strip() or (p.stdout or "").strip() or f"exit {p.returncode}")
+
+
+def merge_and_push(repo, remote, number, branch, pr_head, base, base_sha):
+    """R10 steps 1, 2, 5, 6: the merge commit of the checked head onto the checked base commit, in a temporary
+    detached worktree with local hooks off; the PR read once more; then the push, leased on the checked base commit.
+    Returns the merge commit's SHA or raises Refused with nothing merged."""
+    owner = remote.split("/")[0]
+    temp = tempfile.mkdtemp(prefix="relay-d1-")
+    work = os.path.join(temp, "work")
+    added = False
+    try:
+        p = gitops.hookless(repo, "worktree", "add", "--detach", work, base_sha)
+        if p.returncode:
+            raise refuse(f"could not prepare the merge: {_message(p)}")
+        added = True
+        p = gitops.hookless(work, "merge", "--no-ff", "--no-edit", "-m", f"Merge pull request #{number} from "
+                            f"{owner}/{branch}", "-m", "Delegated-merge: D1", pr_head)
+        if p.returncode:
+            out = (p.stdout or "") + (p.stderr or "")
+            if "CONFLICT" in out or "Automatic merge failed" in out:
+                raise refuse(f"the PR does not merge cleanly into {base}")
+            raise refuse(f"could not create the merge commit: {_message(p)}")
+        line = gitops.hookless(work, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()
+        if len(line) != 3 or line[1:] != [base_sha, pr_head]:  # a head already in the base merges nothing
+            raise refuse(f"{base} already holds the PR head; nothing to merge")
+        merge_sha = line[0]
+        try:
+            info = reread_pr(repo, remote, number)
+        except RelayError as e:
+            raise refuse(f"GitHub could not be read: {e}")
+        if (info.get("state") != "OPEN" or info.get("isDraft") or info.get("baseRefName") != base
+                or info.get("headRefOid") != pr_head):
+            raise refuse("the PR changed while it was checked")
+        p = gitops.hookless(work, "push", "origin", f"{merge_sha}:refs/heads/{base}",
+                            f"--force-with-lease=refs/heads/{base}:{base_sha}", network=True)
+        if p.returncode:
+            raise refuse(f"GitHub refused the push to {base}: {_message(p)}")
+        return merge_sha
+    finally:
+        if added:
+            gitops.hookless(repo, "worktree", "remove", "--force", work)
+        shutil.rmtree(temp, True)
