@@ -2,9 +2,12 @@
 merge commit relay pushes to the checked base, and the bounded wait for GitHub to mark the PR merged. The
 conditions live here in one function (R9) so a test can drive each alone; owneractions.merge_delegated
 orchestrates them."""
+import os
+
 from . import cimode, gitops, state
 from .errors import RelayError
 
+PROTECTED_NAMES = {"agents.md", "claude.md", "workflow.md"}
 PREFIX = "not delegated (D1): "
 CONTROL_PLANE = {"hordle", "relay-go", "upstreampartners"}  # matched on the GitHub repository name, ignoring case
 
@@ -66,3 +69,15 @@ def not_production(base, listed):
 def ci_reason(mode):
     """R7: `none` never qualifies; `pr` and `local` do (their pass is merge_readiness's business)."""
     return "ci = none never qualifies for D1" if mode.mode == "none" else None
+
+
+def protected_path(repo, base_sha, pr_head):
+    """R8: the first changed path the owner merges (AGENTS.md, CLAUDE.md, WORKFLOW.md anywhere, the relay config,
+    anything under .github/), or None. `--no-renames` shows a rename as a delete and an add, so both sides count."""
+    out = gitops.git(repo, "diff", "--name-only", "--no-renames", "-z", f"{base_sha}...{pr_head}").stdout
+    for path in sorted(p for p in out.split("\0") if p):
+        low = path.lower()
+        if (os.path.basename(low) in PROTECTED_NAMES or low == f"{state.RELAY_DIR}/config.toml"
+                or low.startswith(".github/")):
+            return path
+    return None

@@ -21,6 +21,28 @@ class DelegatedBase(test_commands.CommandsTest):
         p.start()
         self.addCleanup(p.stop)
 
+    def other_clone(self):
+        self.n += 1
+        other = helpers.clone(self.origin, os.path.join(self.tmp, f"other-{self.n}"))
+        helpers.sh(other, "git", "switch", "-q", "develop")
+        return other
+
+    def push_branch(self, branch, files=None, renames=(), base="origin/develop"):
+        """A branch off `base` changing files ({path: text}) and renaming (old, new) pairs, pushed from another
+        clone; returns its head (fetched into the work repo)."""
+        other = self.other_clone()
+        helpers.sh(other, "git", "switch", "-q", "-c", branch, base)
+        for old, new in renames:
+            os.makedirs(os.path.dirname(os.path.join(other, new)) or other, exist_ok=True)
+            helpers.sh(other, "git", "mv", old, new)
+        for path, text in (files or {}).items():
+            helpers.write(os.path.join(other, path), text)
+        helpers.sh(other, "git", "add", "-A")
+        helpers.sh(other, "git", "commit", "-q", "-m", f"change on {branch}")
+        helpers.sh(other, "git", "push", "-q", "origin", branch)
+        helpers.sh(self.work, "git", "fetch", "-q", "origin")
+        return helpers.sh(other, "git", "rev-parse", "HEAD").strip()
+
     def base_sha(self, base="develop"):
         return helpers.sh(self.work, "git", "rev-parse", f"origin/{base}").strip()
 
@@ -98,6 +120,54 @@ class OptInTest(DelegatedBase):  # R3, R4, R5, R7
         self.assertIsNone(delegated.ci_reason(cimode.settings(self.work, "develop")))
         self.assertEqual(cimode.settings(self.work, "main").mode, "pr")
         self.assertIsNone(delegated.ci_reason(cimode.settings(self.work, "main")))
+
+
+class ProtectedPathTest(DelegatedBase):  # R8
+    def protected(self, files=None, renames=(), seed=None):
+        if seed:  # files that already exist on the base
+            other = self.other_clone()
+            for path, text in seed.items():
+                helpers.write(os.path.join(other, path), text)
+            helpers.sh(other, "git", "add", "-A")
+            helpers.sh(other, "git", "commit", "-q", "-m", "seed")
+            helpers.sh(other, "git", "push", "-q", "origin", "develop")
+            helpers.sh(self.work, "git", "fetch", "-q", "origin")
+        self.n += 1
+        head = self.push_branch(f"pr{self.n}", files, renames)
+        return delegated.protected_path(self.work, self.base_sha(), head)
+
+    def test_agents_claude_and_workflow_md_in_any_folder(self):
+        for path in ("AGENTS.md", "sub/CLAUDE.md", "a/b/workflow.md"):
+            with self.subTest(path):
+                self.assertEqual(self.protected({path: "x\n"}), path)
+
+    def test_relay_config_and_github_folder(self):
+        for path in ("docs/relay/config.toml", ".github/workflows/test.yml"):
+            with self.subTest(path):
+                self.assertEqual(self.protected({path: "x\n"}), path)
+
+    def test_a_rename_counts_both_sides(self):
+        self.assertEqual(self.protected(renames=[("AGENTS.md", "notes.md")], seed={"AGENTS.md": "a\n"}), "AGENTS.md")
+        self.assertEqual(self.protected(renames=[("notes2.md", "sub/AGENTS.md")], seed={"notes2.md": "b\n"}),
+                         "sub/AGENTS.md")
+
+    def test_other_paths_pass(self):
+        for path in ("app.py", "docs/relay/demo/spec.md", "docs/other.md", "docs/relay/config.toml.bak"):
+            with self.subTest(path):
+                self.assertIsNone(self.protected({path: "x\n"}))
+
+    def test_diff_is_from_the_merge_base(self):
+        head = self.push_branch("early", {"app.py": "1\n"})
+        other = self.other_clone()  # AGENTS.md changes on the base after the PR branched
+        helpers.write(os.path.join(other, "AGENTS.md"), "later\n")
+        helpers.sh(other, "git", "add", "-A")
+        helpers.sh(other, "git", "commit", "-q", "-m", "base moves")
+        helpers.sh(other, "git", "push", "-q", "origin", "develop")
+        helpers.sh(self.work, "git", "fetch", "-q", "origin")
+        self.assertIsNone(delegated.protected_path(self.work, self.base_sha(), head))
+
+    def test_the_first_path_in_order_is_named(self):
+        self.assertEqual(self.protected({"b/CLAUDE.md": "x\n", ".github/a.yml": "y\n"}), ".github/a.yml")
 
 
 def _only_own_tests():
