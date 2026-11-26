@@ -185,6 +185,15 @@ class MergeCommandTest(test_commands.CommandsTest):  # merge-and-tidy D1 to D5, 
             with open(os.path.join(root, "docs", "relay", "delegated-merge", name)) as f:
                 self.assertIsNone(re.search("[\u2013\u2014]", f.read()), name)
 
+    def test_the_acceptance_ledger_exists_and_has_no_dashes(self):  # R17
+        import re
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "docs", "relay", "delegated-merge", "acceptance.md")) as f:
+            text = f.read()
+        self.assertIsNone(re.search("[\u2013\u2014]", text))
+        for fragment in ("release", "opt-in PR", "real delegated merge", "decision 8"):
+            self.assertIn(fragment, text)
+
     # R1: who is merging
     def args(self, **kw):
         import argparse
