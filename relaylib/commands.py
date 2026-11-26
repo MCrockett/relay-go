@@ -920,8 +920,6 @@ def cmd_merge(args):
             me = None  # a detection failure means no cause
     cause = me and (me["provider"], me["session_id"])
     events.set_cause(cause)
-    if kind == "delegated":
-        raise RelayError("delegated merge is not built yet")
     repo = merge_repo(args.repo)
     gitops.fetch(repo)
     if args.target.isdigit():
@@ -932,14 +930,20 @@ def cmd_merge(args):
             owneractions.published(repo, slug)
         except RelayError:
             raise RelayError(f"no relay feature {slug} on origin")
-    done = owneractions.merge(repo, slug, owneractions.fingerprint(repo, slug, fetch=False), relayed_by,
-                              source="session", cwd=os.getcwd())
-    print(f"relay: {done['message']}")
+    seen = owneractions.fingerprint(repo, slug, fetch=False)
+    if kind == "delegated":
+        done = owneractions.merge_delegated(repo, slug, seen, cause=cause, cwd=os.getcwd())
+    else:
+        done = owneractions.merge(repo, slug, seen, relayed_by, source="session", cwd=os.getcwd())
+    if done.get("error"):  # a delegated merge that landed but did not end cleanly (R10)
+        print(f"relay: {done['error']}", file=sys.stderr)
+    else:
+        print(f"relay: {done['message']}")
     for line in done.get("tidy", []):
         print(f"relay: {line}")
     if done.get("warning"):
         print(f"relay: warning: {done['warning']}", file=sys.stderr)
-    return 0
+    return done.get("exit", 0)
 
 
 def _hub_session(env, by):

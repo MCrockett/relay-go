@@ -281,6 +281,17 @@ def merge_readiness(repo, st, seen):
 RELAYED_FROM = {"hub": " from the relay hub", "session": " in its conversation with the owner", "dashboard": ""}
 
 
+def _comment(remote, number, body):
+    """Post a PR comment from a folder outside any checkout; None when it was posted, else why not."""
+    with tempfile.TemporaryDirectory(prefix="relay-merge-") as outside:
+        try:
+            note = gitops.run([os.environ.get("RELAY_GH_BIN", "gh"), "pr", "comment", str(number), "-R", remote,
+                               "--body", body], outside, check=False, timeout=gitops.GH_TIMEOUT_S)
+        except (RelayError, OSError) as e:
+            return str(e)
+    return ((note.stderr or "").strip() or f"exit {note.returncode}") if note.returncode else None
+
+
 def merge(repo, slug, seen, relayed_by=None, source="hub", cause=None, cwd=None):
     """Merge a ready PR, then tidy this machine (merge-and-tidy D4 to D7). With relayed_by, a PR comment records
     who passed the decision on: the merge deletes the branch, so the feature's state cannot (mobile-hub D6). The
@@ -297,14 +308,8 @@ def merge(repo, slug, seen, relayed_by=None, source="hub", cause=None, cwd=None)
             done = {"message": (result.stdout or result.stderr).strip() or f"Merged PR #{info['number']}"}
             warnings = []
             if relayed_by:
-                try:
-                    note = gitops.run([os.environ.get("RELAY_GH_BIN", "gh"), "pr", "comment", str(info["number"]),
-                                       "-R", remote, "--body",
-                                       f"Merged by the owner, relayed by {relayed_by}{RELAYED_FROM.get(source, '')}"],
-                                      outside, check=False, timeout=gitops.GH_TIMEOUT_S)
-                    why = ((note.stderr or "").strip() or f"exit {note.returncode}") if note.returncode else None
-                except (RelayError, OSError) as e:
-                    why = str(e)
+                why = _comment(remote, info["number"],
+                               f"Merged by the owner, relayed by {relayed_by}{RELAYED_FROM.get(source, '')}")
                 if why:
                     warnings.append(f"PR #{info['number']} is merged, but the comment recording who relayed "
                                     f"it could not be posted: {why}")
@@ -322,3 +327,28 @@ def merge(repo, slug, seen, relayed_by=None, source="hub", cause=None, cwd=None)
         if warnings:
             done["warning"] = "; ".join(warnings)
         return done
+
+
+def merge_delegated(repo, slug, seen, cause=None, cwd=None):
+    """A delegated merge (D1): the hordle release role's `relay merge`. Every check the owner's merge runs, then R3 to
+    R8, all inside the action lock; any refusal reads `not delegated (D1): <reason>` and nothing is merged."""
+    from . import delegated
+    with action_lock():
+        try:
+            fresh, st = _validate(repo, slug, "merge", seen)  # the owner's stale-state refusals
+            remote = github_repo(repo)
+            base = gitops.pr_info(repo, st.get("pr"))["baseRefName"]
+            base_sha = delegated.rev(repo, f"origin/{base}")  # the base commit relay checks, pinned
+            info = merge_readiness(repo, st, fresh)
+        except Conflict as e:
+            raise Conflict(delegated.PREFIX + str(e), e.fresh)
+        except RelayError as e:
+            raise delegated.refuse(str(e))
+        if info["baseRefName"] != base or delegated.rev(repo, f"origin/{base}") != base_sha:
+            raise delegated.refuse("the PR changed while it was checked")
+        if info.get("isDraft"):
+            raise delegated.refuse("the PR is a draft")
+        reason, facts = delegated.conditions(repo, st, fresh["commit"], remote, base, base_sha, fresh["pr_head"])
+        if reason:
+            raise delegated.refuse(reason)
+        raise delegated.refuse("the delegated merge is not built yet")

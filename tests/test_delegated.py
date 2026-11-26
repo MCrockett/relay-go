@@ -2,7 +2,7 @@ import json
 import os
 from unittest import mock
 
-from relaylib import cimode, config, delegated, gitops, owneractions, reviewtables
+from relaylib import cimode, config, delegated, freshness, gitops, owneractions, reviewtables
 from relaylib.errors import RelayError
 from tests import helpers
 from tests import test_commands
@@ -614,6 +614,131 @@ class WaitTest(DelegatedBase):  # R10 step 4
         self.assertEqual(d("closed"), ("merged into develop, but PR #7 was closed without GitHub marking it merged: "
                                        "tell the owner", 1))
         self.assertEqual(d("read-failed", "gh down"), ("GitHub could not be read to confirm PR #7: gh down", 1))
+
+
+class DelegatedCommandTest(DelegatedBase):  # R2, R9: the release role's `relay merge`, up to the conditions
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.dict(os.environ, {"HORDLE_ROLE": "release"})
+        p.start()
+        self.addCleanup(p.stop)
+        self.ready_small_feature()
+        self.pr()
+        self.set_base(OPT_IN)
+        self.before = self.origin_develop()
+
+    def origin_develop(self):
+        return helpers.sh(self.origin, "git", "rev-parse", "develop").strip()
+
+    def gh_calls(self, prefix):
+        if not os.path.exists(self.gh_log):
+            return []
+        with open(self.gh_log) as f:
+            return [l for l in f if l.startswith(prefix)]
+
+    def refused(self, reason):
+        self.before = self.origin_develop()
+        self.assertEqual(self.relay("merge", "7"), 1, self.last_out)
+        self.assertIn(f"relay: not delegated (D1): {reason}", self.last_err)
+        self.assertEqual(self.gh_calls("pr merge"), [])
+        self.assertEqual(self.origin_develop(), self.before)
+
+    def test_each_condition_refuses_through_the_command_with_nothing_merged(self):
+        with mock.patch.object(delegated, "merge_and_push") as pushed:
+            self.set_base('[build]\nci = "pr"\n')
+            self.refused("project has not opted in: no [merge] production_branches on develop")  # R3
+            self.set_base(OPT_IN)
+            with mock.patch("relaylib.owneractions.github_repo", return_value="owner/hordle"):
+                self.refused("hordle is control plane; the owner merges it")  # R4
+            self.set_base('[merge]\nproduction_branches = ["develop"]\n')
+            self.refused("develop is a production branch")  # R5
+            self.set_base(OPT_IN)
+            with mock.patch.object(delegated, "review_evidence", return_value=(None, delegated.NO_EVIDENCE)):
+                self.refused("no review evidence for the build GO")  # R6
+            with mock.patch.object(delegated, "protected_path", return_value="AGENTS.md"):
+                self.refused("touches AGENTS.md, which the owner merges")  # R8
+            self.set_base('[build]\nci = "none"\n' + OPT_IN)
+            self.refused("ci = none never qualifies for D1")  # R7
+            pushed.assert_not_called()
+
+    def test_readiness_failures_are_prefixed(self):
+        real = owneractions.state_at
+        cases = [
+            ("stale GO: develop moved", mock.patch.object(freshness, "check", return_value=(False, "develop moved"))),
+            ("a review is still running",
+             mock.patch.object(owneractions, "state_at", side_effect=lambda *a: {**real(*a), "confirming": True})),
+        ]
+        for reason, patch in cases:
+            with self.subTest(reason), patch:
+                self.refused(reason)
+        for reason, over in (("PR is not open", {"state": "CLOSED"}),
+                             ("CI is failing; wait for green", None),
+                             ("PR code differs from the published revision", {"headRefOid": "f" * 40})):
+            with self.subTest(reason):
+                if over is None:
+                    self.pr(runs=[{"status": "completed", "conclusion": "failure"}])
+                else:
+                    self.pr(**over)
+                self.refused(reason)
+        self.pr()
+
+    def test_a_state_that_changed_is_refused_with_the_prefix(self):
+        seen = owneractions.fingerprint(self.work, "tiny", fetch=False)
+        with self.assertRaises(owneractions.Conflict) as cm:
+            owneractions.merge_delegated(self.work, "tiny", dict(seen, commit="0" * 40))
+        self.assertTrue(str(cm.exception).startswith("not delegated (D1): changed since you looked"))
+        self.assertIsNotNone(cm.exception.fresh)
+
+    def test_a_draft_is_refused(self):
+        self.pr(isDraft=True)
+        self.refused("the PR is a draft")
+
+    def test_conditions_run_after_readiness_and_before_the_merge(self):
+        calls = []
+        readiness, conditions = owneractions.merge_readiness, delegated.conditions
+
+        def spy_readiness(*a, **k):
+            calls.append("readiness")
+            return readiness(*a, **k)
+
+        def spy_conditions(*a, **k):
+            calls.append("conditions")
+            return conditions(*a, **k)
+        with mock.patch.object(owneractions, "merge_readiness", side_effect=spy_readiness), \
+                mock.patch.object(delegated, "conditions", side_effect=spy_conditions):
+            self.relay("merge", "7")
+        self.assertEqual(calls, ["readiness", "conditions"])
+
+    def test_a_base_that_moves_while_checking_is_refused(self):
+        readiness = owneractions.merge_readiness
+
+        def moves(*a, **k):
+            info = readiness(*a, **k)
+            other = self.other_clone()
+            helpers.write(os.path.join(other, "later.txt"), "x\n")
+            helpers.sh(other, "git", "add", "-A")
+            helpers.sh(other, "git", "commit", "-q", "-m", "base moves")
+            helpers.sh(other, "git", "push", "-q", "origin", "develop")
+            helpers.sh(self.work, "git", "fetch", "-q", "origin")
+            return info
+        with mock.patch.object(owneractions, "merge_readiness", side_effect=moves):
+            self.assertEqual(self.relay("merge", "7"), 1)
+        self.assertIn("relay: not delegated (D1): the PR changed while it was checked", self.last_err)
+
+    def test_a_busy_action_lock_is_refused(self):
+        child = helpers.hold_action_lock()
+        try:
+            self.assertEqual(self.relay("merge", "7"), 1)
+        finally:
+            helpers.release(child)
+        self.assertIn("busy", self.last_err)
+        self.assertEqual(self.gh_calls("pr merge"), [])
+
+    def test_the_merge_is_not_built_before_the_record_is(self):
+        # task 13 stops after the conditions: no intermediate commit can push a merge without its record
+        self.assertEqual(self.relay("merge", "7"), 1)
+        self.assertIn("not delegated (D1): the delegated merge is not built yet", self.last_err)
+        self.assertEqual(self.origin_develop(), self.before)
 
 
 def _only_own_tests():
