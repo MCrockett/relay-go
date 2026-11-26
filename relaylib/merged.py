@@ -82,8 +82,35 @@ def mark_merged(repo_dir, pr):
         return False, f"PR #{pr} is merged, but relay could not record it locally: {e}; status will find it on GitHub"
 
 
+def _announced_path():
+    return os.path.join(relay_home(), "announced.json")
+
+
+def announce(repo_dir, pr, outcome):
+    """A delegated merge reported `outcome` for a PR GitHub has not marked merged: True for the call that records
+    it, False when that outcome is already recorded (delegated-merge R12). A separate file from merged.json, which
+    older relay reads as 'merged'. True when the cache cannot be written."""
+    key = _key(repo_dir, pr)
+    try:
+        with _locked():
+            if _read(_announced_path()).get(key) == outcome:
+                return False
+            _store(_announced_path(), key, outcome)
+            return True
+    except OSError:
+        return True
+
+
+def announced(repo_dir, pr):
+    """The outcome a delegated merge reported for the PR, or None."""
+    value = _read(_announced_path()).get(_key(repo_dir, pr))
+    return value if isinstance(value, str) else None
+
+
 def _queue_merge_event(repo_dir, st, base):
     from . import events
+    if announced(repo_dir, st["pr"]) == "timeout":
+        return  # a delegated merge already told of this merge, saying GitHub had not marked it yet
     _warn(events.queue("released" if base == "main" else "merged", st.get("repo") or gitops.repo_name(repo_dir),
                  st.get("feature"), "build", st["pr"],
                  events.merged_text(st.get("repo") or gitops.repo_name(repo_dir), st.get("feature"), st["pr"], base),
