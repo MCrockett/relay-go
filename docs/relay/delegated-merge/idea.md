@@ -54,12 +54,18 @@ hordle design `docs/superpowers/specs/2026-11-22-hordle-agent-team-design.md`, s
 `relaylib/owneractions.py` (`merge_readiness`, `merge`), `relaylib/commands.py` (`cmd_merge`,
 `owner_or_relayed`), `relaylib/cimode.py`, `relaylib/events.py`.
 
-## Open for the spec
+## Decided by the owner (2026-11-26, in conversation)
 
-- How a delegated merge says who made it: a new flag (`relay merge --delegated`), or the caller's
-  identity (`HORDLE_ROLE` set), and whether only a hordle role may use it or any agent session.
-- The config key names, and whether eligibility is one switch plus the production list or the
-  list alone.
-- The hub's proposal (not yet the owner's decision): relay also tells a feature's own session
-  when another session merges its PR, since today merged events go only to registered hub
-  sessions (`relaylib/events.py`). In this feature or a separate one.
+Asked after a walk through the flow; the owner answered "that works":
+
+- Only hordle's `release` role merges without the owner, known by `HORDLE_ROLE=release` on its
+  run. Every other session still needs the owner's word, as today.
+- A delegated merge keeps a feature's worktree while that feature's session is live in it, and
+  leaves the tidy to that session.
+- In this feature: when a session other than the feature's own merges its PR, relay tells the
+  feature's session (the hub's proposal).
+- `relay merge --repo <path>`, so `release` can merge from one working folder.
+
+## Left for the spec
+
+- The config key name, and whether the production list alone is the opt-in.
