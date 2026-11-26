@@ -40,7 +40,7 @@ inside `relay merge`.
 - hordle: the `release` role, and the change to its hook, which today refuses `relay merge` in
   every role run (hordle foundation spec R28). They follow in hordle, by PRs the owner merges.
 - Merges into production branches, and anything else the charter reserves.
-- Changing the owner's merge or the `--relayed` merge, beyond R13 and R15.
+- Changing the owner's merge or the `--relayed` merge, beyond R14 and R15.
 
 ## Requirements
 
@@ -68,11 +68,23 @@ inside `relay merge`.
 - **R4. Not control plane.** The repository name (decision 4) is not `hordle`, `relay-go` or
   `UpstreamPartners`: `<name> is control plane; the owner merges it`.
 - **R5. Not into production.** The PR's base is not in the list: `<base> is a production branch`.
-- **R6. A reviewed GO.** The feature's build GO came from a review, not from `relay override go`:
-  the newest build review file under `docs/relay/<slug>/reviews/` has verdict `GO` for the head
-  the GO covers, and its `reviewer` is in the owner's preference table for this author
-  (`config.review_preferences`). A same-provider or fallback GO from the table counts (owner rule
-  of 2026-10-06). Otherwise: `the build GO was not a review from the preference table`.
+- **R6. A reviewed GO.** The feature's build GO came from a review, not from `relay override go`,
+  and from a reviewer the owner listed:
+  - **Evidence** is read from what is published, never the caller's checkout: the review files
+    under `docs/relay/<slug>/reviews/` at the published revision `merge` already uses
+    (`seen["commit"]` on `origin/<feature branch>`), read with `git show`. The one used is the
+    newest `build-<round>.*.md` file. Its front matter must parse, have `verdict` `GO`, a
+    `reviewer` and a `model`, and a `head` equal to the head in the feature's build snapshot
+    (`st["reviewed"]["build"]`).
+  - **The table** is the owner's: `config.load(repo_root=None)`, which is the owner's relay config
+    and the owner's timed tables, never a repo's `config.toml` (a PR could edit that).
+    `config.review_preferences(cfg, author)` gives its entries for the feature's build author.
+  - **Matching** is on provider and model: the review's `reviewer` equals an entry's provider,
+    and its `model` equals that entry's model, or, for an entry that names no model, the model
+    `config.reviewer_model` gives that provider. Effort is not compared.
+  - A same-provider or fallback GO counts when it matches an entry (owner rule of 2026-10-06).
+  - Missing, unreadable or malformed evidence refuses: `no review evidence for the build GO`. A
+    review that does not match: `the build GO was not a review from the preference table`.
 - **R7. Tests that ran.** The resolved CI mode for the base is `pr` or `local`, with its pass as
   `merge_readiness` requires it. `none`: `ci = none never qualifies for D1`.
 - **R8. No protected path.** No file changed between the merge base of `origin/<base>` and the PR
@@ -83,8 +95,20 @@ inside `relay merge`.
 - **R9. One check, one place.** R3 to R8 live in one function that returns the first failure or
   none, so a test can drive each alone, and `relay merge` calls it inside the action lock, after
   `merge_readiness` and before `gh pr merge`.
-- **R10. Same head.** The merge still passes `--match-head-commit` with the head R2 to R8 checked,
-  as today, so a push between the checks and the merge makes GitHub refuse it.
+- **R10. Same head and same base.** The merge still passes `--match-head-commit` with the head
+  R2 to R8 checked, as today, so a push between the checks and the merge makes GitHub refuse it.
+  GitHub has no matching guard for the base, so relay narrows and then catches a retarget:
+  - Immediately before `gh pr merge`, relay reads the PR again; a base or head that differs from
+    the one checked refuses: `not delegated (D1): the PR changed while it was checked`.
+  - After the merge, relay reads the merged PR's base. When it is not the base checked, relay
+    exits 1 with `D1 merge landed on <base>, not the checked <checked base>: tell the owner`,
+    sends a desktop notification as relay's other alerts do, and writes the event with
+    `delegated: true` and `landed_on` so the hub shows it.
+  - The accepted limit: a retarget in the moment between that last read and GitHub's merge is
+    caught after the fact, not prevented. Only someone with write access to the repo can
+    retarget, and they could merge with `gh` directly; GitHub's own protection on production
+    branches is what stops that, and the acceptance ledger asks the owner to check it on each
+    repo that opts in (R17).
 
 ### The record
 
@@ -94,7 +118,10 @@ inside `relay merge`.
   the relayed comment's is today.
 - **R12. In relay's log.** The merged or released event (`events.queue`) carries `delegated:
   true` and its text says `delegated under D1`. The hub log line holds the same field. The
-  feature's `owner_actions` cannot record it (the merge deletes the branch, as today).
+  feature's `owner_actions` cannot record it (the merge deletes the branch, as today). When
+  another resolver saw the merge first (`mark_merged` returns not claimed, so no event is queued,
+  as today), relay still appends one hub log line with `delegated: true` for this PR. The PR
+  comment (R11) is the durable record either way.
 
 ### Tidy and notices
 
@@ -102,10 +129,13 @@ inside `relay merge`.
   path is the feature's `owner.worktree` while the session in `owner` is live (the same test
   `events._inbox` uses: its record is valid and its shown state is neither `ended` nor `stopped`).
   The line reads `kept worktree <path>: <provider> session <id> is working in it; it removes it
-  when it next runs`. Every other tidy step runs as today. The owner's and relayed merges are
-  unchanged.
+  when it next runs`. When the live session's folder is the main checkout, tidy also leaves the
+  main checkout on its branch and keeps the local branch, saying so. Every other tidy step runs
+  as today. The owner's and relayed merges are unchanged. Which folder the session is in comes
+  from the feature's `owner.worktree` matched against `git worktree list`, as the plan settles.
 - **R14. Telling the feature's session.** After any merge, relay sends the merged or released
-  event's text to the feature's `owner` session through `notes.send`, unless that session caused
+  event's text to the feature's `owner` session through `notes.send` with relay's event prefix
+  (`events.PREFIX`, so it reads as relay's, not the owner's), unless that session caused
   the merge (the event's cause) or is a registered hub session (it already gets the event). For a
   delegated merge whose worktree was kept, the note adds `Remove the worktree: git worktree
   remove <path>`. A send that fails is a warning, never a failed merge.
@@ -119,8 +149,9 @@ inside `relay merge`.
   each condition and its refusal, the record, R13 and R14. `README.md` names it in one line. The
   `relay merge` help line says the release role may merge an opted-in repo's PR without the owner.
 - **R17.** `docs/relay/delegated-merge/acceptance.md` holds what waits on the owner or on later
-  features: hordle's hook change and `release` role; the first repo's opt-in PR; and one real
-  delegated merge seen end to end in that repo.
+  features: hordle's hook change and `release` role; the first repo's opt-in PR, with the owner
+  checking that GitHub protects each production branch it lists (R10); and one real delegated
+  merge seen end to end in that repo.
 
 ## Failure paths
 
@@ -128,6 +159,9 @@ inside `relay merge`.
 - **A control-plane repo, a production base, a protected path, `ci = none`, an override GO:** each
   refused alone, naming it (R4 to R8).
 - **A push after the checks:** GitHub refuses the merge by the head match (R10).
+- **A retarget during the checks:** refused by the read just before the merge; one in the last
+  moment is reported after the merge, exit 1, with a notification (R10).
+- **Review evidence missing or not from the owner's table:** refused (R6).
 - **The comment, the hub log line or a note fails:** the merge stands; each is a warning (R11, R12,
   R14).
 - **The feature's session ended:** tidy removes the worktree as today, and the note is queued for
@@ -143,7 +177,10 @@ inside `relay merge`.
 `gh` from `tests/helpers.py`. At least: each caller of R1, including the two refusals; a delegated
 merge that meets every condition, merged and recorded (R2, R11, R12); each of R3 to R8 failing
 alone, with nothing merged; the opt-in read from the base, not the PR branch, with a PR that adds
-the list itself refused by R8; the owner's and relayed merges unchanged; R13 with a live and an
+the list itself refused by R8; R6 with an override GO, a review whose model is not in the
+owner's table, a repo `config.toml` that adds the reviewer (still refused), and a missing or
+malformed review file; R10 with a fake `gh` that changes the base between the checks and the
+merge, and one that reports a different base after it; the owner's and relayed merges unchanged; R13 with a live and an
 ended owner session; R14's note sent, not sent to the cause, not sent to a hub session; `--repo`
 from another folder and with a bad path (R15). No test calls real Claude, Codex or GitHub.
 
