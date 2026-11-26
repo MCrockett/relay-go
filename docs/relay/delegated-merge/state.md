@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/delegated-merge",
   "extra_rounds": {},
   "feature": "delegated-merge",
@@ -29,9 +31,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-11-26T15:14:10-05:00",
+  "updated": "2026-11-26T15:15:00-05:00",
   "verdicts": {}
 }
 ---
