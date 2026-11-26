@@ -983,6 +983,126 @@ class MergedOutcomeTest(MergedRun):  # R10 merged, R11, R12, R13, R14
         self.assertIn("pruned worktrees", printed[0])
 
 
+class OtherOutcomeTest(MergedRun):  # R10 outcomes after the push, R12, R14
+    def merge_with(self, entries, expect=0):
+        """Run the merge with GitHub's later answers `entries`; the owner's own session s1 is live and told (caller s2)."""
+        self.sequence(entries)
+        self.as_session("s2")
+        helpers.live_session("claude", "s1", cwd=self.work)
+        self.notified = self.notifications()
+        self.assertEqual(self.relay("merge", "7"), expect, self.last_err)
+
+    def alerted(self):
+        return self.notifications() != self.notified
+
+    def recorded_once(self, outcome):
+        self.assertEqual(len(self.gh_calls("pr comment")), 1)
+        (ev,) = self.final_events()
+        self.assertEqual((ev["delegated"], ev["outcome"]), (True, outcome))
+        return ev
+
+    def untidied(self):
+        self.assertIn("fix/tiny", self.remote_branches())
+        self.assertEqual(helpers.sh(self.work, "git", "branch", "--show-current").strip(), "fix/tiny")
+        self.assertNotIn("pruned worktrees", self.last_out)
+        self.assertFalse(merged.recorded(self.work, {"pr": 7}))
+
+    def test_open_for_a_few_reads_then_merged_is_a_normal_merge(self):
+        self.merge_with([{"state": "OPEN"}] * 3 + [{"state": "MERGED"}])
+        self.assertEqual(self.remote_branches(), "")
+        self.assertIn("pruned worktrees", self.last_out)
+        self.assertTrue(merged.recorded(self.work, {"pr": 7}))
+        self.assertEqual(self.clock.sleeps, [2, 2, 2])
+        self.assertEqual(self.last_err, "")
+        self.recorded_once("merged")
+
+    def test_still_open_after_60_seconds_exits_0_with_a_warning(self):
+        self.merge_with([{"state": "OPEN"}])
+        self.assertIn("warning: merged into develop; GitHub has not marked PR #7 merged yet", self.last_err)
+        self.untidied()
+        ev = self.recorded_once("timeout")
+        self.assertIn("Not tidied: remote branch fix/tiny; worktree", ev["text"])
+        self.assertEqual(len(self.notes_for("s1")), 1)
+        self.assertFalse(self.alerted())
+
+    def test_a_later_status_adds_no_second_event_after_a_timeout(self):
+        self.merge_with([{"state": "OPEN"}])
+        self.sequence([{"state": "MERGED"}])
+        st = {"repo": "project", "feature": "tiny", "status": "ready-to-merge", "pr": 7,
+              "owner": {"provider": "claude", "session": "s1", "worktree": "work"}}
+        self.assertEqual(merged.resolve(self.work, st), ("merged", None))
+        self.assertTrue(merged.recorded(self.work, st))
+        told = [e for e in self.hub_events() if e["event"] == "merged" and e["pr"] == 7 and e.get("outcome") != "pending"]
+        self.assertEqual(len(told), 1)
+
+    def test_retargeted_after_the_push(self):
+        self.merge_with([{"baseRefName": "other"}], expect=1)
+        self.assertIn("relay: pushed the merge to develop; PR #7 now targets other and stays open: tell the owner",
+                      self.last_err)
+        self.assertTrue(self.alerted())
+        self.untidied()
+        ev = self.recorded_once("retargeted")
+        self.assertIn("now targets other", ev["text"])
+        self.assertEqual(len(self.notes_for("s1")), 1)
+        self.assertEqual(helpers.sh(self.origin, "git", "branch", "--list", "other").strip(), "")
+        self.assertNotEqual(self.origin_develop(), self.before)
+
+    def test_head_moved_after_the_push(self):
+        self.merge_with([{"headRefOid": "b" * 40}], expect=1)
+        self.assertIn("merged the checked head", self.last_err)
+        self.assertIn("has later commits that are not merged and stays open: tell the owner", self.last_err)
+        self.assertTrue(self.alerted())
+        self.untidied()
+        self.recorded_once("head-moved")
+
+    def test_closed_after_the_push(self):
+        self.merge_with([{"state": "CLOSED"}], expect=1)
+        self.assertIn("relay: merged into develop, but PR #7 was closed without GitHub marking it merged: tell the "
+                      "owner", self.last_err)
+        self.assertTrue(self.alerted())
+        self.untidied()
+        self.recorded_once("closed")
+        self.assertEqual(len(self.notes_for("s1")), 1)
+
+    def test_a_read_failing_to_the_end(self):
+        self.merge_with([{"__rc": 1, "__err": "gh: down"}], expect=1)
+        self.assertIn("relay: GitHub could not be read to confirm PR #7: ", self.last_err)
+        self.assertIn("gh: down", self.last_err)
+        self.assertTrue(self.alerted())
+        self.untidied()
+        self.recorded_once("read-failed")
+
+    def test_a_single_failed_read_does_not_alert(self):
+        self.merge_with([{"__rc": 1}, {"state": "MERGED"}])
+        self.assertFalse(self.alerted())
+        self.assertEqual(self.remote_branches(), "")
+
+    def test_a_second_announcement_of_the_same_outcome_still_writes_a_log_line(self):
+        merged.announce(self.work, 7, "timeout")  # a first attempt already announced the timeout
+        self.merge_with([{"state": "OPEN"}])
+        ev = self.recorded_once("timeout")  # log_only: the line is there, no second note to anyone
+        self.assertIn("GitHub has not marked PR #7 merged yet", ev["text"])
+        self.assertEqual(self.notes_for("s1"), [])
+
+    def test_a_push_refused_by_a_rule_merges_nothing(self):
+        helpers.reject_pushes(self.origin, "protected branch: only pull requests")
+        before = helpers.sh(self.work, "git", "worktree", "list")
+        self.assertEqual(self.relay("merge", "7"), 1)
+        self.assertIn("relay: not delegated (D1): GitHub refused the push to develop", self.last_err)
+        self.assertIn("protected branch: only pull requests", self.last_err)
+        self.assertEqual(self.gh_calls("pr comment"), [])
+        self.assertEqual(self.delegated_events(), [])
+        self.assertFalse(os.path.exists(self.marker))
+        self.assertEqual(helpers.sh(self.work, "git", "worktree", "list"), before)
+        self.assertEqual(self.origin_develop(), self.before)
+
+    def test_a_spoofed_role_gets_no_shortcut(self):
+        with mock.patch("relaylib.owneractions.github_repo", return_value="owner/hordle"):
+            self.assertEqual(self.relay("merge", "7"), 1)
+        self.assertIn("relay: not delegated (D1): hordle is control plane; the owner merges it", self.last_err)
+        self.assertEqual(self.origin_develop(), self.before)
+
+
 def _only_own_tests():
     """Run only this file's tests, not the CommandsTest ones the classes inherit."""
     for cls in [c for c in globals().values() if isinstance(c, type) and issubclass(c, test_commands.CommandsTest)]:
