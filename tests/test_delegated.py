@@ -740,12 +740,6 @@ class DelegatedCommandTest(RoleBase):  # R2, R9: the release role's `relay merge
         self.assertIn("busy", self.last_err)
         self.assertEqual(self.gh_calls("pr merge"), [])
 
-    def test_the_merge_is_not_built_before_the_record_is(self):
-        # task 13 stops after the conditions: no intermediate commit can push a merge without its record
-        self.assertEqual(self.relay("merge", "7"), 1)
-        self.assertIn("not delegated (D1): the delegated merge is not built yet", self.last_err)
-        self.assertEqual(self.origin_develop(), self.before)
-
 
 class MergedRun(RoleBase):
     """A delegated merge end to end with GitHub's answers after the push scripted (FAKE_GH_AFTER_PUSH is the PATH of a
