@@ -283,6 +283,21 @@ def owner_or_relayed(args, what):
     return f"{me.provider} session {me.session}"
 
 
+ROLE_REFUSAL = ("only the release role merges without the owner (D1); a role run cannot pass on the owner's "
+                "word")
+
+
+def merge_caller(args, env):
+    """('owner'|'relayed'|'delegated', relayed_by) for `relay merge`; refuses anything else before other work."""
+    role = (env.get("HORDLE_ROLE") or "").strip()
+    if role:
+        if args.relayed or role != "release":
+            raise RelayError(ROLE_REFUSAL)
+        return "delegated", None
+    relayed_by = owner_or_relayed(args, "relay merge")
+    return ("relayed" if relayed_by else "owner"), relayed_by
+
+
 def _review_author(key):
     author = key.split(".", 1)[1] if key.startswith("review.") else ""
     if author not in reviewtables.AUTHORS:
@@ -881,9 +896,19 @@ def cmd_merge(args):
     """Merge a relay feature's PR and tidy this machine (merge-and-tidy D1 to D5). The owner runs it in their own
     terminal; an agent only with --relayed, after the owner said to merge in its conversation."""
     from . import owneractions
-    relayed_by = owner_or_relayed(args, "relay merge")
-    me = _hub_session(dict(os.environ), args.by) if relayed_by else None
-    events.set_cause(me and (me["provider"], me["session_id"]))
+    kind, relayed_by = merge_caller(args, dict(os.environ))
+    me = None
+    if kind == "relayed":
+        me = _hub_session(dict(os.environ), args.by)
+    elif kind == "delegated":
+        try:
+            me = _hub_session(dict(os.environ), args.by)
+        except RelayError:
+            me = None  # a detection failure means no cause
+    cause = me and (me["provider"], me["session_id"])
+    events.set_cause(cause)
+    if kind == "delegated":
+        raise RelayError("delegated merge is not built yet")
     repo = gitops.repo_root(os.getcwd())
     gitops.fetch(repo)
     if args.target.isdigit():
@@ -1427,7 +1452,7 @@ def build_parser():
     mg.add_argument("target", help="the PR number or the feature's name")
     mg.add_argument("--relayed", action="store_true",
                     help="agents only: the owner told you to merge in this conversation (recorded as relayed)")
-    mg.add_argument("--by", help="claude or codex, when detection is ambiguous (with --relayed)")
+    mg.add_argument("--by", help="claude or codex, when detection is ambiguous")
     ow = add("owner", cmd_owner, "owner decisions collected by another tool; JSON output")
     osub = ow.add_subparsers(dest="owner_cmd", required=True)
     fp = osub.add_parser("fingerprint")

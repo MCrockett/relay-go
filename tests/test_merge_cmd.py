@@ -3,7 +3,7 @@ import os
 import sys
 from unittest import mock
 
-from relaylib import events, freshness, identity, merged
+from relaylib import commands, events, freshness, identity, merged
 from tests import helpers
 from tests import test_commands
 
@@ -102,6 +102,46 @@ class MergeCommandTest(test_commands.CommandsTest):  # merge-and-tidy D1 to D5, 
         self.assertEqual(self.branch(), "develop")
         self.assertNotIn("fix/tiny", helpers.sh(self.work, "git", "branch"))
         self.assertIn("the folder you ran this from was removed; continue in", self.last_out)
+
+    # R1: who is merging
+    def args(self, **kw):
+        import argparse
+        return argparse.Namespace(**{"relayed": False, "by": None, **kw})
+
+    def role(self, role, **env):
+        return mock.patch.dict(os.environ, {"HORDLE_ROLE": role, **env})
+
+    def test_owner_terminal_merges_as_today(self):
+        with mock.patch.dict(os.environ, dict.fromkeys(identity.AGENT_MARKERS, "")):
+            self.assertEqual(commands.merge_caller(self.args(), dict(os.environ)), ("owner", None))
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertEqual(len(self.merged_calls()), 1)
+
+    def test_relayed_agent_merges_as_today(self):
+        self.assertEqual(commands.merge_caller(self.args(relayed=True), dict(os.environ)),
+                         ("relayed", "claude session s1"))
+
+    def test_release_role_without_relayed_is_delegated(self):
+        self.assertEqual(commands.merge_caller(self.args(), {"HORDLE_ROLE": "release"}), ("delegated", None))
+
+    ROLE_TEXT = ("only the release role merges without the owner (D1); a role run cannot pass on the owner's word")
+
+    def test_another_role_is_refused(self):
+        with self.role("builder"):
+            self.assertEqual(self.relay("merge", "7"), 1)
+        self.assertIn(self.ROLE_TEXT, self.last_err)
+        self.assertEqual(self.merged_calls(), [])
+
+    def test_role_with_relayed_is_refused(self):
+        for role in ("release", "builder"):
+            with self.role(role):
+                self.assertEqual(self.relay("merge", "7", "--relayed"), 1)
+            self.assertIn(self.ROLE_TEXT, self.last_err)
+        self.assertEqual(self.merged_calls(), [])
+
+    def test_blank_role_is_no_role(self):
+        with mock.patch.dict(os.environ, {"HORDLE_ROLE": " ", **dict.fromkeys(identity.AGENT_MARKERS, "")}):
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
 
 
 for _name in dir(test_commands.CommandsTest):  # run only this file's tests, not the inherited ones
