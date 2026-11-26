@@ -30,6 +30,17 @@
         },
         "round": 2,
         "verdict": "NO-GO"
+      },
+      {
+        "blocking_ids": [
+          "R3-1"
+        ],
+        "head": "19609ff91ebf9cdc83f54ea1e3a1566952ca7cf0",
+        "prior": {
+          "R1-1": "resolved"
+        },
+        "round": 3,
+        "verdict": "NO-GO"
       }
     ]
   },
@@ -53,7 +64,9 @@
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
-  "review_notes": {},
+  "review_notes": {
+    "spec": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra hit its usage limit during the review, same provider as the author"
+  },
   "reviewed": {
     "build": null,
     "plan": null,
@@ -65,8 +78,8 @@
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "in-review",
-  "updated": "2026-11-26T16:41:16-05:00",
+  "status": "changes-requested",
+  "updated": "2026-11-26T16:42:56-05:00",
   "verdicts": {
     "spec": "NO-GO"
   }
