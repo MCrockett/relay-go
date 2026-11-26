@@ -2,7 +2,7 @@ import json
 import os
 from unittest import mock
 
-from relaylib import cimode, delegated, gitops
+from relaylib import cimode, config, delegated, gitops, owneractions, reviewtables
 from relaylib.errors import RelayError
 from tests import helpers
 from tests import test_commands
@@ -168,6 +168,164 @@ class ProtectedPathTest(DelegatedBase):  # R8
 
     def test_the_first_path_in_order_is_named(self):
         self.assertEqual(self.protected({"b/CLAUDE.md": "x\n", ".github/a.yml": "y\n"}), ".github/a.yml")
+
+
+class ReviewEvidenceTest(DelegatedBase):  # R6
+    def setUp(self):
+        super().setUp()
+        self.ready_small_feature()
+        self.pr()
+        self.seen = owneractions.fingerprint(self.work, "tiny", fetch=False)
+        self.commit = self.seen["commit"]
+        self.reviews = "docs/relay/tiny/reviews"
+
+    def st_at(self, commit=None):
+        return owneractions.state_at(self.work, "tiny", commit or self.commit)
+
+    def real_review(self):
+        text = helpers.sh(self.work, "git", "show", f"{self.commit}:{self.reviews}/build-1.codex.md")
+        meta = json.loads(text.split("---\n")[1])
+        return meta, text
+
+    def edit(self, files):
+        """Publish changes to the feature branch ({path: text, or None to delete}); the new published commit."""
+        other = self.other_clone()
+        helpers.sh(other, "git", "switch", "-q", "fix/tiny")
+        for path, text in files.items():
+            if text is None:
+                helpers.sh(other, "git", "rm", "-q", path)
+            else:
+                helpers.write(os.path.join(other, path), text)
+        helpers.sh(other, "git", "add", "-A")
+        helpers.sh(other, "git", "commit", "-q", "-m", "evidence")
+        helpers.sh(other, "git", "push", "-q", "origin", "fix/tiny")
+        helpers.sh(self.work, "git", "fetch", "-q", "origin")
+        return helpers.sh(other, "git", "rev-parse", "HEAD").strip()
+
+    def md(self, **over):
+        meta, _ = self.real_review()
+        meta = {**meta, **over}
+        meta = {k: v for k, v in meta.items() if v is not None}
+        return "---\n" + json.dumps(meta, indent=2, sort_keys=True) + "\n---\n\nReview.\n"
+
+    def evidence(self, commit=None):
+        commit = commit or self.commit
+        return delegated.review_evidence(self.work, self.st_at(commit), commit)
+
+    def table(self, meta, author="claude"):
+        st = dict(self.st_at(), authors={"build": author})
+        return delegated.table_reason(st, meta)
+
+    REASON = "no review evidence for the build GO"
+    NOT_IN_TABLE = "the build GO was not a review from the preference table"
+
+    def test_a_codex_go_in_the_table_passes(self):
+        meta, why = self.evidence()
+        self.assertIsNone(why)
+        self.assertEqual(meta["reviewer"], "codex")
+        self.assertIsNone(delegated.table_reason(self.st_at(), meta))
+
+    def test_same_provider_fallback_go_passes(self):
+        self.assertIsNone(self.table({"reviewer": "claude", "model": "claude-fable-5-2"}))
+
+    def test_a_model_not_in_the_table_is_refused(self):
+        self.assertEqual(self.table({"reviewer": "codex", "model": "gpt-4"}), self.NOT_IN_TABLE)
+
+    def test_a_provider_that_does_not_match_its_model_is_refused(self):
+        self.assertEqual(self.table({"reviewer": "claude", "model": "gpt-6-astra"}), self.NOT_IN_TABLE)
+
+    def test_effort_is_not_compared(self):
+        meta, _ = self.evidence()
+        self.assertIsNone(self.table(dict(meta, effort="low")))
+
+    def test_a_repo_config_that_adds_the_reviewer_is_still_refused(self):
+        self.base_config('[review.prefer]\nclaude = ["codex:gpt-4"]\n')
+        self.assertEqual(self.table({"reviewer": "codex", "model": "gpt-4"}), self.NOT_IN_TABLE)
+
+    def test_the_owner_timed_table_is_used(self):
+        timed = ({"claude": {"entries": ["codex:gpt-4"]}}, None)
+        with mock.patch.object(reviewtables, "read", return_value=timed):
+            self.assertIsNone(self.table({"reviewer": "codex", "model": "gpt-4"}))
+
+    def test_an_unreadable_owner_config_is_the_reason(self):
+        helpers.write(self.cfg, "[limits\n")
+        self.assertIn(self.cfg, self.table({"reviewer": "codex", "model": "gpt-6-astra"}))
+
+    def test_a_model_less_entry_is_not_in_the_table(self):
+        # config.parse_model_spec refuses an entry with no model, so R6's model-less branch cannot be reached
+        with self.assertRaises(RelayError):
+            config.parse_model_spec("codex")
+
+    def test_a_reviews_folder_with_no_build_file_has_no_evidence(self):
+        commit = self.edit({f"{self.reviews}/build-1.codex.md": None})
+        self.assertEqual(self.evidence(commit), (None, self.REASON))
+
+    def test_head_must_match_the_build_snapshot(self):
+        commit = self.edit({f"{self.reviews}/build-1.codex.md": self.md(head="0" * 40)})
+        self.assertEqual(self.evidence(commit), (None, self.REASON))
+
+    def test_the_highest_round_is_used(self):
+        nogo = self.md(verdict="NO-GO", round=2)
+        commit = self.edit({f"{self.reviews}/build-2.codex.md": nogo})
+        self.assertEqual(self.evidence(commit), (None, self.REASON))
+        commit = self.edit({f"{self.reviews}/build-2.codex.md": self.md(round=2),
+                            f"{self.reviews}/build-1.codex.md": self.md(verdict="NO-GO")})
+        self.assertIsNone(self.evidence(commit)[1])
+
+    def test_a_tie_is_broken_by_at_and_an_equal_or_bad_at_is_malformed(self):
+        meta, _ = self.real_review()
+        later = "2099-01-01T00:00:00-05:00"
+        commit = self.edit({f"{self.reviews}/build-1r.codex.md": self.md(at=later, verdict="NO-GO")})
+        self.assertEqual(self.evidence(commit), (None, self.REASON))  # the later NO-GO wins the tie
+        commit = self.edit({f"{self.reviews}/build-1r.codex.md": self.md(at=later)})
+        self.assertIsNone(self.evidence(commit)[1])  # the later GO wins it
+        commit = self.edit({f"{self.reviews}/build-1r.codex.md": self.md(at=meta["at"])})
+        self.assertEqual(self.evidence(commit), (None, self.REASON))  # an equal at is malformed
+        commit = self.edit({f"{self.reviews}/build-1r.codex.md": self.md(at="soon")})
+        self.assertEqual(self.evidence(commit), (None, self.REASON))
+
+    def test_error_files_and_other_names_are_ignored(self):
+        commit = self.edit({f"{self.reviews}/build-3.codex.error.md": self.md(verdict="error"),
+                            f"{self.reviews}/build-stuck.md": "stuck\n"})
+        self.assertIsNone(self.evidence(commit)[1])
+
+    def test_a_suffixed_second_file_counts(self):
+        commit = self.edit({f"{self.reviews}/build-1.codex-2.md": self.md(at="2099-01-01T00:00:00-05:00",
+                                                                         verdict="NO-GO")})
+        self.assertEqual(self.evidence(commit), (None, self.REASON))
+
+    def test_missing_and_malformed_front_matter_refuse(self):
+        meta, _ = self.real_review()
+        bad = {"no fence": "just text\n", "bad json": "---\n{nope\n---\n\nx\n", "a list": "---\n[1]\n---\n\nx\n",
+               "no verdict": self.md(verdict=None), "no model": self.md(model=None),
+               "no reviewer": self.md(reviewer=None)}
+        for name, text in bad.items():
+            with self.subTest(name):
+                commit = self.edit({f"{self.reviews}/build-1.codex.md": text})
+                self.assertEqual(self.evidence(commit), (None, self.REASON))
+
+    def test_evidence_is_read_from_the_published_commit_not_the_checkout(self):
+        helpers.write(os.path.join(self.work, self.reviews, "build-1.codex.md"), self.md(verdict="NO-GO"))
+        self.assertIsNone(self.evidence()[1])
+
+
+class OverrideEvidenceTest(DelegatedBase):  # R6: an override GO has no review behind it
+    def test_override_go_has_no_evidence(self):
+        self.small_change()
+        self.pr()
+        self.open_prs("fix/tiny")
+        self.enqueue_codex("NO-GO", ["a - x"])
+        self.assertEqual(self.relay("submit"), 0, self.last_err)
+        self.enqueue_codex("NO-GO", ["id: R1-1 a - x"], [("R1-1", "unresolved")])
+        self.relay("submit")
+        self.assertEqual(self.st("tiny")["status"], "waiting-owner")  # an override needs a stall or a review error
+        self.pr()
+        self.assertEqual(self.relay("override", "go", "--relayed"), 0, self.last_err)
+        seen = owneractions.fingerprint(self.work, "tiny", fetch=False)
+        st = owneractions.state_at(self.work, "tiny", seen["commit"])
+        self.assertEqual(st["status"], "ready-to-merge")
+        self.assertEqual(delegated.review_evidence(self.work, st, seen["commit"]),
+                         (None, "no review evidence for the build GO"))
 
 
 def _only_own_tests():
