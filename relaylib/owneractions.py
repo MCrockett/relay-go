@@ -351,4 +351,88 @@ def merge_delegated(repo, slug, seen, cause=None, cwd=None):
         reason, facts = delegated.conditions(repo, st, fresh["commit"], remote, base, base_sha, fresh["pr_head"])
         if reason:
             raise delegated.refuse(reason)
-        raise delegated.refuse("the delegated merge is not built yet")
+        merge_sha = delegated.merge_and_push(repo, remote, info["number"], fresh["branch"], fresh["pr_head"], base,
+                                             base_sha)
+    # The merge stands from here, so nothing below may fail it. The lock is released: the wait is up to 60 seconds,
+    # and another owner action must not be refused as busy for that long (the tidy takes it again).
+    return _delegated_record(repo, slug, st, fresh, info, remote, base, facts, merge_sha, cause, cwd)
+
+
+def _delegated_record(repo, slug, st, fresh, info, remote, base, facts, merge_sha, cause, cwd):
+    """After a delegated push (R10 steps 3 and 4, R11 to R14): the PR comment, the hub log line, the bounded wait, then
+    per outcome the branch delete, claim, tidy and the one event. The event is queued in a `finally`, so a wait that
+    fails or is interrupted still leaves it; anything unexpected exits 1 naming the merge as standing."""
+    from . import delegated, events, notify, tidy
+    number, branch, pr_head = info["number"], fresh["branch"], fresh["pr_head"]
+    name = st.get("repo") or gitops.repo_name(repo)
+    kind = "released" if base == "main" else "merged"
+    owner = events.owner_of(st)
+    done = {"message": f"Merged PR #{number} into {base}, delegated under D1", "tidy": [], "exit": 0}
+    warnings, recorded, failure, outcome = [], [], None, None
+
+    def record(text, outcome_name, **extra):  # the one event of this merge, delivered after the command reports
+        recorded.append(outcome_name)
+        warnings.extend(events.queue(kind, name, slug, "build", number, text, cause, owner=owner,
+                                     fields={"delegated": True, "outcome": outcome_name}, **extra))
+    try:
+        why = _comment(remote, number, f"Merged by relay under D1 (delegated), run by the hordle release role. "
+                       f"Checked: {base}, not production; {facts['mode']} tests green; GO from "
+                       f"{facts['reviewer']}; no protected path.")
+        if why:
+            warnings.append(f"PR #{number} is merged, but the comment recording the delegated merge could not be "
+                            f"posted: {why}")
+        warnings.extend(events.deliver(events.event(  # R10 step 3: the record does not wait on GitHub
+            kind, name, slug, "build", number,
+            events.delegated_text(name, slug, number, f"pushed the merge to {base}; waiting for GitHub to mark it "
+                                  "merged"), cause, fields={"delegated": True, "outcome": "pending"}, log_only=True)))
+        outcome = delegated.wait_for_merge(repo, remote, number, base, pr_head)
+        message, code = delegated.describe(outcome, base, number, pr_head)
+        if outcome.name == "merged":
+            claimed, warning = merged.mark_merged(repo, number)  # the claim first: the branch delete is slow
+            if warning:
+                warnings.append(warning)
+            warning = delegated.delete_branch(repo, branch, pr_head)
+            if warning:
+                warnings.append(warning)
+            keep = tidy.find_keep(repo, st.get("owner"), branch)
+            try:
+                with action_lock(wait=30):
+                    tidied = tidy.run(repo, branch, base, pr_head, cwd, keep=keep)
+            except Conflict:
+                tidied = tidy.Result()
+                tidied.lines.append("did not tidy: another owner action held the lock for 30 seconds")
+                tidied.left = tidy.leftovers(repo, branch) or ["tidy"]
+            done["tidy"] = tidied.lines
+            extra = ""
+            if keep:
+                extra = (f"Switch this checkout to {base}, pull, and delete the local branch {branch}" if keep["main"]
+                         else f"Remove the worktree: git worktree remove {keep['path']}")
+            text = events.merged_text(name, slug, number, base, tidied.left, tidied=True, delegated=True)
+            # a resolver that saw the merge first already told the hub sessions: log the line, tell the owner only
+            record(text, "merged", note_extra=extra, **({} if claimed or warning else {"owner_only": True}))
+        else:
+            announced = merged.announce(repo, number, outcome.name)
+            left = tidy.leftovers(repo, branch) if outcome.name == "timeout" else []
+            record(events.delegated_text(name, slug, number, message, left), outcome.name,
+                   **({} if announced else {"log_only": True}))
+            if code:
+                done.update(message=message, error=message, exit=1)
+            else:
+                warnings.append(message)
+    except Exception as e:  # the merge stands: report it as such (exit 1), never as a failed merge
+        failure = e
+        done.update(error=f"merged into {base} (the merge stands) but relay could not finish: {e}; PR #{number} is "
+                          "not confirmed merged: tell the owner", exit=1)
+    finally:
+        if not recorded:  # failed or interrupted before the outcome was recorded
+            record(events.delegated_text(name, slug, number, f"merged into {base}, but relay stopped before it "
+                                         f"confirmed PR #{number} merged" + (f" ({failure})" if failure else "")),
+                   "unconfirmed")
+    if done["exit"]:
+        try:
+            notify.send(config.load(), f"relay: {name} merge needs you", done["error"])
+        except Exception:
+            pass
+    if warnings:
+        done["warning"] = "; ".join(w for w in warnings if w)
+    return done

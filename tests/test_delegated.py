@@ -1,8 +1,10 @@
 import json
 import os
+import sys
 from unittest import mock
 
-from relaylib import cimode, config, delegated, freshness, gitops, owneractions, reviewtables
+from relaylib import (cimode, config, delegated, events, freshness, gitops, hub, merged, notes, owneractions,
+                      reviewtables)
 from relaylib.errors import RelayError
 from tests import helpers
 from tests import test_commands
@@ -616,7 +618,9 @@ class WaitTest(DelegatedBase):  # R10 step 4
         self.assertEqual(d("read-failed", "gh down"), ("GitHub could not be read to confirm PR #7: gh down", 1))
 
 
-class DelegatedCommandTest(DelegatedBase):  # R2, R9: the release role's `relay merge`, up to the conditions
+class RoleBase(DelegatedBase):
+    """The hordle release role (HORDLE_ROLE=release) with a ready feature in a repo that opted in."""
+
     def setUp(self):
         super().setUp()
         p = mock.patch.dict(os.environ, {"HORDLE_ROLE": "release"})
@@ -636,6 +640,8 @@ class DelegatedCommandTest(DelegatedBase):  # R2, R9: the release role's `relay 
         with open(self.gh_log) as f:
             return [l for l in f if l.startswith(prefix)]
 
+
+class DelegatedCommandTest(RoleBase):  # R2, R9: the release role's `relay merge`, up to the conditions
     def refused(self, reason):
         self.before = self.origin_develop()
         self.assertEqual(self.relay("merge", "7"), 1, self.last_out)
@@ -739,6 +745,242 @@ class DelegatedCommandTest(DelegatedBase):  # R2, R9: the release role's `relay 
         self.assertEqual(self.relay("merge", "7"), 1)
         self.assertIn("not delegated (D1): the delegated merge is not built yet", self.last_err)
         self.assertEqual(self.origin_develop(), self.before)
+
+
+class MergedRun(RoleBase):
+    """A delegated merge end to end with GitHub's answers after the push scripted (FAKE_GH_AFTER_PUSH is the PATH of a
+    JSON file holding a list of `pr view` overrides, served once a push has reached the bare origin)."""
+
+    def setUp(self):
+        super().setUp()
+        self.clock = helpers.FakeClock()
+        for target, value in (("clock", self.clock.monotonic), ("sleep", self.clock.sleep)):
+            p = mock.patch.object(delegated, target, value)
+            p.start()
+            self.addCleanup(p.stop)
+        self.marker = os.path.join(self.tmp, "pushed")
+        helpers.mark_pushes(self.origin, self.marker)
+        self.after = os.path.join(self.tmp, "after-push.json")
+        self.sequence([{"state": "MERGED"}])
+        p = mock.patch.dict(os.environ, {"FAKE_GH_AFTER_PUSH": self.after, "FAKE_GH_PUSHED": self.marker})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def sequence(self, entries):
+        helpers.write(self.after, json.dumps(entries))
+
+    def set_base(self, text, base="develop"):
+        super().set_base(text, base)
+        marker = getattr(self, "marker", None)  # not set yet while setUp itself pushes the base
+        if marker and os.path.exists(marker):
+            os.remove(marker)  # that push was the test's own, not the merge's
+
+    def delegated_events(self):
+        return [e for e in self.hub_events() if e.get("delegated")]
+
+    def final_events(self):
+        return [e for e in self.delegated_events() if e["outcome"] != "pending"]
+
+    def pending_events(self):
+        return [e for e in self.delegated_events() if e["outcome"] == "pending"]
+
+    def notes_for(self, sid="s1", provider="claude"):
+        return notes._load(notes.log_path(provider, sid))
+
+    def as_session(self, sid="s2"):
+        p = mock.patch.dict(os.environ, {"RELAY_SESSION": sid})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def push_to_feature_branch(self):
+        other = self.other_clone()
+        helpers.sh(other, "git", "switch", "-q", "fix/tiny")
+        helpers.write(os.path.join(other, "after.txt"), "x\n")
+        helpers.sh(other, "git", "add", "-A")
+        helpers.sh(other, "git", "commit", "-q", "-m", "pushed after the merge")
+        helpers.sh(other, "git", "push", "-q", "origin", "fix/tiny")
+
+    def remote_branches(self):
+        return helpers.sh(self.origin, "git", "branch", "--list", "fix/tiny").strip()
+
+
+class MergedOutcomeTest(MergedRun):  # R10 merged, R11, R12, R13, R14
+    def test_a_delegated_merge_that_meets_every_condition_merges_and_records(self):
+        self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertNotEqual(self.origin_develop(), self.before)
+        self.assertIn("Delegated-merge: D1", helpers.sh(self.origin, "git", "log", "-1", "--format=%B", "develop"))
+        self.assertEqual(self.gh_calls("pr merge"), [])
+        (comment,) = self.gh_calls("pr comment")
+        self.assertIn("Merged by relay under D1 (delegated), run by the hordle release role. Checked: develop, not "
+                      "production; pr tests green; GO from codex; no protected path.", comment)
+        self.assertTrue(merged.recorded(self.work, {"pr": 7}))
+        self.assertEqual(self.remote_branches(), "")
+        (ev,) = self.final_events()
+        self.assertEqual((ev["event"], ev["delegated"], ev["outcome"], ev["pr"]), ("merged", True, "merged", 7))
+        self.assertIn("delegated under D1", ev["text"])
+        self.assertIn("relay: Merged PR #7 into develop, delegated under D1", self.last_out)
+        self.assertEqual(self.last_err, "")
+
+    def test_the_hub_log_line_is_written_before_the_wait(self):
+        seen = []
+
+        def spy(*args):
+            seen.append([e["outcome"] for e in self.delegated_events()])
+            return delegated.Outcome("merged")
+        with mock.patch.object(delegated, "wait_for_merge", side_effect=spy):
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertEqual(seen, [["pending"]])
+        self.assertEqual(self.pending_events()[0]["delegated"], True)
+        self.assertEqual(len(self.final_events()), 1)
+
+    def test_the_action_lock_is_free_during_the_wait(self):
+        def spy(*args):
+            with owneractions.action_lock():  # not busy: relay released it after the push
+                pass
+            return delegated.Outcome("merged")
+        with mock.patch.object(delegated, "wait_for_merge", side_effect=spy):
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+
+    def test_an_interrupted_wait_still_queues_the_event(self):
+        with mock.patch.object(delegated, "wait_for_merge", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.relay("merge", "7")
+        (ev,) = self.final_events()
+        self.assertEqual((ev["delegated"], ev["outcome"]), (True, "unconfirmed"))
+        self.assertIn("merged into develop", ev["text"])
+        self.assertFalse(merged.recorded(self.work, {"pr": 7}))
+
+    def test_anything_unexpected_after_the_push_exits_1_naming_the_merge_as_standing(self):
+        with mock.patch.object(merged, "mark_merged", side_effect=RuntimeError("disk full")):
+            self.assertEqual(self.relay("merge", "7"), 1)
+        self.assertIn("merged into develop (the merge stands)", self.last_err)
+        self.assertIn("disk full", self.last_err)
+        self.assertIn("tell the owner", self.last_err)
+        (ev,) = self.final_events()
+        self.assertEqual(ev["outcome"], "unconfirmed")
+        self.assertIn("merge needs you", self.notifications())
+
+    def test_the_remote_branch_delete_uses_a_lease_on_the_checked_head(self):
+        def late_push(*args):
+            self.push_to_feature_branch()
+            return delegated.Outcome("merged")
+        with mock.patch.object(delegated, "wait_for_merge", side_effect=late_push):
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertIn("fix/tiny", self.remote_branches())
+        self.assertIn("kept remote branch fix/tiny", self.last_err)
+
+    def test_a_branch_already_gone_is_silent(self):
+        def gone(*args):
+            helpers.sh(self.work, "git", "push", "-q", "origin", "--delete", "fix/tiny")
+            return delegated.Outcome("merged")
+        with mock.patch.object(delegated, "wait_for_merge", side_effect=gone):
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertNotIn("kept remote branch", self.last_err)
+
+    def test_release_repo_merges_with_a_local_pass(self):
+        self.set_base('[build]\nci = "release"\ntest_command = "true"\n' + OPT_IN)
+        with mock.patch.object(owneractions, "_require_local_pass"):
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        (comment,) = self.gh_calls("pr comment")
+        self.assertIn("local tests green", comment)
+
+    def test_the_comment_failing_is_a_warning(self):
+        api = os.path.join(self.tmp, "api.json")
+        helpers.write(api, json.dumps({"pr comment": {"__rc": 1}}))
+        with mock.patch.dict(os.environ, {"FAKE_GH_API": api}):
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertIn("PR #7 is merged, but the comment recording the delegated merge could not be posted",
+                      self.last_err)
+        self.assertEqual(len(self.final_events()), 1)
+
+    def test_the_hub_log_failing_is_a_warning(self):
+        with mock.patch.object(hub, "log", return_value="could not write the hub log: full"):
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertIn("could not write the hub log", self.last_err)
+
+    def test_another_resolver_that_saw_the_merge_first_adds_one_log_line_and_no_hub_note(self):
+        merged.mark_merged(self.work, 7)
+        os.makedirs(hub.folder(), exist_ok=True)
+        hub._write_json(hub._sessions_path(), [{"provider": "codex", "session_id": "h9", "at": 1}])
+        self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        (ev,) = self.final_events()
+        self.assertEqual((ev["delegated"], ev["outcome"]), (True, "merged"))
+        self.assertEqual(self.notes_for("h9", "codex"), [])
+
+    def test_the_owner_session_gets_the_r14_note_even_when_the_claim_was_lost(self):
+        self.as_session("s2")
+        helpers.live_session("claude", "s1")
+        merged.mark_merged(self.work, 7)
+        self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        (note,) = self.notes_for("s1")
+        self.assertIn("Switch this checkout to develop, pull, and delete the local branch fix/tiny", note["text"])
+
+    def test_a_live_feature_session_keeps_its_worktree(self):
+        self.as_session("s2")
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        linked = os.path.join(os.path.realpath(self.tmp), "elsewhere", "work")  # the feature's owner.worktree is the folder name "work"
+        os.makedirs(os.path.dirname(linked))
+        helpers.sh(self.work, "git", "worktree", "add", "-q", linked, "fix/tiny")
+        helpers.live_session("claude", "s1", cwd=linked)
+        self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertTrue(os.path.isdir(linked))
+        self.assertIn(f"relay: kept worktree {linked}: claude session s1 is working in it; it removes it when it "
+                      "next runs", self.last_out)
+        (note,) = self.notes_for("s1")
+        self.assertEqual(note["prefix"], "relay event:")
+        self.assertTrue(note["text"].endswith(f"Remove the worktree: git worktree remove {linked}"), note["text"])
+
+    def test_a_live_session_in_the_main_checkout_keeps_its_branch(self):
+        self.as_session("s2")
+        helpers.live_session("claude", "s1", cwd=self.work)
+        self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertEqual(helpers.sh(self.work, "git", "branch", "--show-current").strip(), "fix/tiny")
+        self.assertIn("fix/tiny", helpers.sh(self.work, "git", "branch"))
+        (note,) = self.notes_for("s1")
+        self.assertTrue(note["text"].endswith("Switch this checkout to develop, pull, and delete the local branch "
+                                              "fix/tiny"), note["text"])
+
+    def test_an_ended_feature_session_is_tidied_and_noted(self):
+        self.as_session("s2")
+        helpers.live_session("claude", "s1", state="ended")
+        self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertEqual(helpers.sh(self.work, "git", "branch", "--show-current").strip(), "develop")
+        (note,) = self.notes_for("s1")
+        self.assertNotIn("Remove the worktree", note["text"])
+        self.assertNotIn("Switch this checkout", note["text"])
+
+    def test_the_caller_session_is_not_told_its_own_event(self):
+        helpers.live_session("claude", "s1")  # the caller (RELAY_SESSION=s1) is also the feature's session
+        self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertEqual(self.notes_for("s1"), [])
+
+    def test_a_hub_session_that_owns_the_feature_gets_one_note(self):
+        self.as_session("s2")
+        os.makedirs(hub.folder(), exist_ok=True)
+        hub._write_json(hub._sessions_path(), [{"provider": "claude", "session_id": "s1", "at": 1}])
+        self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertEqual(len(self.notes_for("s1")), 1)
+
+    def test_the_cwd_line_uses_the_real_working_folder_with_repo(self):
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        wt = os.path.join(self.tmp, "wt-tiny")
+        helpers.sh(self.work, "git", "worktree", "add", "-q", wt, "fix/tiny")
+        os.chdir(wt)
+        self.assertEqual(self.relay("merge", "7", "--repo", self.work), 0, self.last_err)
+        os.chdir(self.work)
+        self.assertIn("the folder you ran this from was removed; continue in", self.last_out)
+
+    def test_the_event_is_delivered_after_the_result_is_printed(self):
+        printed, deliver = [], events.deliver
+
+        def spy(ev):
+            if (ev.get("fields") or {}).get("outcome") != "pending":
+                printed.append(sys.stdout.getvalue())
+            return deliver(ev)
+        with mock.patch.object(events, "deliver", side_effect=spy):
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertEqual(len(printed), 1)
+        self.assertIn("pruned worktrees", printed[0])
 
 
 def _only_own_tests():

@@ -297,3 +297,17 @@ def describe(outcome, base, number, pr_head):
         return (f"merged into {base}, but PR #{number} was closed without GitHub marking it merged: "
                 "tell the owner"), 1
     return f"GitHub could not be read to confirm PR #{number}: {outcome.detail}", 1
+
+
+def delete_branch(repo, branch, pr_head):
+    """Delete the remote feature branch after GitHub marked the PR merged, leased on the checked head so a commit
+    pushed since is not lost. A warning, or None (also None when the branch is already gone)."""
+    try:
+        listed = gitops.network_git(repo, "ls-remote", "--heads", "origin", f"refs/heads/{branch}")
+        if listed.returncode == 0 and not listed.stdout.strip():
+            return None
+        p = gitops.network_git(repo, "push", "origin", f"--force-with-lease=refs/heads/{branch}:{pr_head}",
+                               f":refs/heads/{branch}")
+    except RelayError as e:
+        return f"kept remote branch {branch}: {e}"
+    return f"kept remote branch {branch}: {_message(p)}" if p.returncode else None
