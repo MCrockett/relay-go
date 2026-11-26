@@ -8,10 +8,13 @@ import os
 import re
 import shutil
 import tempfile
+import time
 
 from . import cimode, config, gitops, state
 from .errors import RelayError
 
+clock, sleep = time.monotonic, time.sleep  # read at call time, so a test can replace them
+WAIT_S, EVERY_S = 60, 2
 PROTECTED_NAMES = {"agents.md", "claude.md", "workflow.md"}
 PREFIX = "not delegated (D1): "
 CONTROL_PLANE = {"hordle", "relay-go", "upstreampartners"}  # matched on the GitHub repository name, ignoring case
@@ -243,3 +246,54 @@ def merge_and_push(repo, remote, number, branch, pr_head, base, base_sha):
         if added:
             gitops.hookless(repo, "worktree", "remove", "--force", work)
         shutil.rmtree(temp, True)
+
+
+class Outcome:
+    """How a delegated merge ended once its merge commit was on the base: merged, timeout, retargeted, head-moved,
+    closed or read-failed. `detail` is the other base, the other head or the read error."""
+
+    def __init__(self, name, detail=None):
+        self.name, self.detail = name, detail
+
+
+def wait_for_merge(repo, remote, number, base, pr_head):
+    """R10 step 4: read the PR every EVERY_S seconds for at most WAIT_S until its state is not OPEN or its base or
+    head differs from the checked one. A failed read is retried; one still standing at the end is `read-failed`."""
+    deadline, error = clock() + WAIT_S, None
+    while True:
+        try:
+            info = gitops.pr_state(repo, remote, number)
+            error = None
+            if info["state"] == "MERGED":
+                return Outcome("merged")
+            if info["state"] == "CLOSED":
+                return Outcome("closed")
+            if info["state"] == "OPEN":
+                if info["baseRefName"] != base:
+                    return Outcome("retargeted", info["baseRefName"])
+                if info["headRefOid"] != pr_head:
+                    return Outcome("head-moved", info["headRefOid"])
+        except (RelayError, KeyError, TypeError) as e:
+            error = e
+        if clock() >= deadline:
+            return Outcome("read-failed", str(error)) if error else Outcome("timeout")
+        sleep(EVERY_S)
+
+
+def describe(outcome, base, number, pr_head):
+    """(message, exit code) for an outcome: the spec's R10 wording."""
+    n = outcome.name
+    if n == "merged":
+        return f"merged into {base}", 0
+    if n == "timeout":
+        return f"merged into {base}; GitHub has not marked PR #{number} merged yet", 0
+    if n == "retargeted":
+        return (f"pushed the merge to {base}; PR #{number} now targets {outcome.detail} and stays open: "
+                "tell the owner"), 1
+    if n == "head-moved":
+        return (f"merged the checked head {pr_head[:7]} into {base}; PR #{number} has later commits that are not "
+                "merged and stays open: tell the owner"), 1
+    if n == "closed":
+        return (f"merged into {base}, but PR #{number} was closed without GitHub marking it merged: "
+                "tell the owner"), 1
+    return f"GitHub could not be read to confirm PR #{number}: {outcome.detail}", 1

@@ -547,6 +547,75 @@ class MergeAndPushTest(DelegatedBase):  # R10 steps 1, 2, 5, 6
         self.assertIn(f"{sha}:refs/heads/develop", argv)
 
 
+class WaitTest(DelegatedBase):  # R10 step 4
+    HEAD = "a" * 40
+
+    def wait(self, reads):
+        """wait_for_merge with pr_state answering `reads` in turn (the last repeats); a RelayError instance raises."""
+        clock = helpers.FakeClock()
+        queue = list(reads)
+
+        def pr_state(*args):
+            item = queue.pop(0) if len(queue) > 1 else queue[0]
+            if isinstance(item, Exception):
+                raise item
+            return {"baseRefName": "develop", "headRefOid": self.HEAD, "isDraft": False, **item}
+        with mock.patch.object(delegated, "clock", clock.monotonic), mock.patch.object(delegated, "sleep", clock.sleep), \
+                mock.patch.object(gitops, "pr_state", side_effect=pr_state):
+            outcome = delegated.wait_for_merge(self.work, "owner/project", 7, "develop", self.HEAD)
+        self.clock = clock
+        return outcome
+
+    def test_merged_on_the_first_read_does_not_sleep(self):
+        self.assertEqual(self.wait([{"state": "MERGED"}]).name, "merged")
+        self.assertEqual(self.clock.sleeps, [])
+
+    def test_open_for_a_few_reads_then_merged(self):
+        outcome = self.wait([{"state": "OPEN"}] * 3 + [{"state": "MERGED"}])
+        self.assertEqual(outcome.name, "merged")
+        self.assertEqual(self.clock.sleeps, [2, 2, 2])
+
+    def test_still_open_when_the_time_ends_is_a_timeout(self):
+        self.assertEqual(self.wait([{"state": "OPEN"}]).name, "timeout")
+        self.assertGreaterEqual(self.clock.now, 60)
+        self.assertLess(self.clock.now, 63)
+
+    def test_closed_is_reported(self):
+        self.assertEqual(self.wait([{"state": "CLOSED"}]).name, "closed")
+
+    def test_a_different_base_is_retargeted(self):
+        outcome = self.wait([{"state": "OPEN", "baseRefName": "other"}])
+        self.assertEqual((outcome.name, outcome.detail), ("retargeted", "other"))
+
+    def test_a_different_head_is_head_moved(self):
+        outcome = self.wait([{"state": "OPEN", "headRefOid": "b" * 40}])
+        self.assertEqual((outcome.name, outcome.detail), ("head-moved", "b" * 40))
+
+    def test_a_failed_read_is_retried_and_a_later_good_read_wins(self):
+        self.assertEqual(self.wait([RelayError("gh down"), {"state": "OPEN"}, {"state": "MERGED"}]).name, "merged")
+
+    def test_a_read_still_failing_at_the_end_is_read_failed(self):
+        outcome = self.wait([RelayError("gh down")])
+        self.assertEqual((outcome.name, outcome.detail), ("read-failed", "gh down"))
+
+    def test_a_failure_then_a_good_open_read_that_stays_open_is_a_timeout(self):
+        self.assertEqual(self.wait([RelayError("gh down"), {"state": "OPEN"}]).name, "timeout")
+
+    def test_describe_texts_and_exit_codes(self):
+        def d(name, detail=None):
+            return delegated.describe(delegated.Outcome(name, detail), "develop", 7, "abcdef0123")
+        self.assertEqual(d("merged"), ("merged into develop", 0))
+        self.assertEqual(d("timeout"), ("merged into develop; GitHub has not marked PR #7 merged yet", 0))
+        self.assertEqual(d("retargeted", "other"),
+                         ("pushed the merge to develop; PR #7 now targets other and stays open: tell the owner", 1))
+        self.assertEqual(d("head-moved", "b" * 40),
+                         ("merged the checked head abcdef0 into develop; PR #7 has later commits that are not "
+                          "merged and stays open: tell the owner", 1))
+        self.assertEqual(d("closed"), ("merged into develop, but PR #7 was closed without GitHub marking it merged: "
+                                       "tell the owner", 1))
+        self.assertEqual(d("read-failed", "gh down"), ("GitHub could not be read to confirm PR #7: gh down", 1))
+
+
 def _only_own_tests():
     """Run only this file's tests, not the CommandsTest ones the classes inherit."""
     for cls in [c for c in globals().values() if isinstance(c, type) and issubclass(c, test_commands.CommandsTest)]:
