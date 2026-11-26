@@ -3,7 +3,7 @@ import os
 import sys
 from unittest import mock
 
-from relaylib import commands, events, freshness, identity, merged
+from relaylib import commands, events, freshness, identity, merged, notes
 from tests import helpers
 from tests import test_commands
 
@@ -102,6 +102,20 @@ class MergeCommandTest(test_commands.CommandsTest):  # merge-and-tidy D1 to D5, 
         self.assertEqual(self.branch(), "develop")
         self.assertNotIn("fix/tiny", helpers.sh(self.work, "git", "branch"))
         self.assertIn("the folder you ran this from was removed; continue in", self.last_out)
+
+    def owner_notes(self, sid="s1"):
+        return notes._load(notes.log_path("claude", sid))
+
+    def test_owner_merge_tells_the_feature_session(self):  # R14: the feature's owner is claude s1
+        with mock.patch.dict(os.environ, dict.fromkeys(identity.AGENT_MARKERS, "")):
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        (note,) = self.owner_notes()
+        self.assertEqual(note["prefix"], "relay event:")
+        self.assertIn("is merged into develop", note["text"])
+
+    def test_relayed_merge_does_not_tell_its_own_session(self):
+        self.assertEqual(self.relay("merge", "7", "--relayed"), 0, self.last_err)
+        self.assertEqual(self.owner_notes(), [])
 
     # R1: who is merging
     def args(self, **kw):

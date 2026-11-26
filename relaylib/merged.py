@@ -86,7 +86,8 @@ def _queue_merge_event(repo_dir, st, base):
     from . import events
     _warn(events.queue("released" if base == "main" else "merged", st.get("repo") or gitops.repo_name(repo_dir),
                  st.get("feature"), "build", st["pr"],
-                 events.merged_text(st.get("repo") or gitops.repo_name(repo_dir), st.get("feature"), st["pr"], base)))
+                 events.merged_text(st.get("repo") or gitops.repo_name(repo_dir), st.get("feature"), st["pr"], base),
+                 owner=events.owner_of(st)))
 
 
 def _warn(warnings):

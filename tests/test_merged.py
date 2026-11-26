@@ -189,6 +189,15 @@ class ResolveTest(unittest.TestCase):
         (ev,) = self.hub_events()
         self.assertEqual((ev["event"], ev["slug"], ev["pr"]), ("merged", "clip-studio", 57))
 
+    def test_resolver_event_also_tells_the_owner_session(self):
+        from relaylib import notes
+        helpers.write(self.data, '{"state": "MERGED", "baseRefName": "develop"}')
+        st = dict(self.st, owner={"provider": "claude", "session": "s9", "worktree": "x"})
+        merged.resolve(self.repo, st)
+        (note,) = notes._load(notes.log_path("claude", "s9"))
+        self.assertEqual(note["prefix"], "relay event:")
+        self.assertIn("is merged into develop", note["text"])
+
     def test_release_label_from_the_same_answer(self):
         helpers.write(self.data, '{"state": "MERGED", "baseRefName": "main"}')
         merged.resolve(self.repo, self.st)

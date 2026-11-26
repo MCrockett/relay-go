@@ -317,7 +317,8 @@ def merge(repo, slug, seen, relayed_by=None, source="hub", cause=None, cwd=None)
             name = st.get("repo") or gitops.repo_name(repo)
             events.queue("released" if info["baseRefName"] == "main" else "merged", name, slug, "build",
                          info["number"], events.merged_text(name, slug, info["number"], info["baseRefName"],
-                                                            tidied.left, tidied=True), cause)
+                                                            tidied.left, tidied=True), cause,
+                         owner=events.owner_of(st))
         if warnings:
             done["warning"] = "; ".join(warnings)
         return done

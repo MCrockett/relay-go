@@ -45,24 +45,39 @@ def set_cause(cause):
         batch.cause = cause
 
 
-def event(kind, repo, slug, stage, pr, text, cause=None):
+def owner_of(st):
+    """(provider, session) of the feature's owner session, or None (delegated-merge R14)."""
+    owner = st.get("owner") if isinstance(st, dict) else None
+    if (isinstance(owner, dict) and isinstance(owner.get("session"), str) and owner["session"]
+            and owner.get("provider") in ("claude", "codex")):
+        return owner["provider"], owner["session"]
+    return None
+
+
+def event(kind, repo, slug, stage, pr, text, cause=None, *, owner=None, note_extra="", fields=None,
+          log_only=False, owner_only=False):
+    """`owner`: the feature's session, told of a merge (R14) with `note_extra` added to its note. `fields` join the
+    hub log line. `log_only`: the log line and no note at all; `owner_only`: the log line and the owner's note,
+    not the hub sessions' (they already had the event from the resolver that saw the merge first)."""
     if kind not in KINDS:
         raise ValueError(f"unknown event {kind}")
-    return {"kind": kind, "repo": repo, "slug": slug, "stage": stage, "pr": pr, "text": text, "cause": cause}
+    return {"kind": kind, "repo": repo, "slug": slug, "stage": stage, "pr": pr, "text": text, "cause": cause,
+            "owner": owner, "note_extra": note_extra, "fields": fields, "log_only": log_only,
+            "owner_only": owner_only}
 
 
-def queue(kind, repo, slug, stage, pr, text, cause=None):
+def queue(kind, repo, slug, stage, pr, text, cause=None, **extra):
     """Hold an event until the current operation flushes; delivered at once outside any collect()."""
     batch = _BATCH.get()
-    ev = event(kind, repo, slug, stage, pr, text, cause or (batch.cause if batch else None))
+    ev = event(kind, repo, slug, stage, pr, text, cause or (batch.cause if batch else None), **extra)
     if batch is None:
         return deliver(ev)
     batch.events.append(ev)
     return []
 
 
-def _inbox(provider, session_id):
-    """The session's inbox socket while it is running, else None (the note is queued for its next hook event)."""
+def session_live(provider, session_id):
+    """The session's record while it is running (valid, shown state neither ended nor stopped), else None."""
     from . import leftoff, sessions
     try:
         with open(sessions.record_path(provider, session_id)) as f:
@@ -72,29 +87,49 @@ def _inbox(provider, session_id):
         alive = sessions.alive(sessions.read_records())
         if leftoff._shown_state(record, alive) in ("ended", "stopped"):
             return None
-        return record.get("inbox")
+        return record
     except Exception:
         return None
 
 
+def _inbox(provider, session_id):
+    """The session's inbox socket while it is running, else None (the note is queued for its next hook event)."""
+    return (session_live(provider, session_id) or {}).get("inbox")
+
+
+def _send(provider, sid, text, warnings):
+    from . import notes
+    try:
+        _, message = notes.send(provider, sid, text, _inbox(provider, sid), prefix=PREFIX)
+        if message:
+            warnings.append(f"event note to {provider} session {sid}: {message}")
+    except Exception as e:
+        warnings.append(f"could not send the event to {provider} session {sid}: {e}")
+
+
 def deliver(ev):
-    """The hub log line, then a note to every hub session but the cause; warnings, never an exception."""
-    from . import hub, notes
+    """The hub log line, then a note to every hub session but the cause, then one to the feature's own session
+    (R14); warnings, never an exception."""
+    from . import hub
     warnings = []
     try:
         warning = hub.log({"command": "event", "event": ev["kind"], "repo": ev["repo"], "slug": ev["slug"],
-                           "pr": ev["pr"], "text": ev["text"]})
+                           "pr": ev["pr"], "text": ev["text"], **(ev.get("fields") or {})})
         if warning:
             warnings.append(warning)
-        for provider, sid in sorted(hub.registered()):
-            if ev.get("cause") == (provider, sid):
-                continue
-            try:
-                _, message = notes.send(provider, sid, ev["text"], _inbox(provider, sid), prefix=PREFIX)
-                if message:
-                    warnings.append(f"event note to {provider} session {sid}: {message}")
-            except Exception as e:
-                warnings.append(f"could not send the event to {provider} session {sid}: {e}")
+        if ev.get("log_only"):
+            return warnings
+        registered = hub.registered()
+        if not ev.get("owner_only"):
+            for provider, sid in sorted(registered):
+                if ev.get("cause") == (provider, sid):
+                    continue
+                _send(provider, sid, ev["text"], warnings)
+        owner = ev.get("owner")
+        if (owner and tuple(owner) != ev.get("cause") and tuple(owner) not in registered
+                and ev["kind"] in ("merged", "released")):
+            extra = ev.get("note_extra")
+            _send(owner[0], owner[1], ev["text"] + (" " + extra if extra else ""), warnings)
     except Exception as e:
         warnings.append(f"could not deliver the event: {e}")
     return warnings
@@ -113,10 +148,17 @@ def waiting_text(repo, slug, stage, pr, reason, error=False):
     return f"relay: {pr_label(repo, slug, pr)} {stage} {what}: {reason}; waiting on the owner."
 
 
-def merged_text(repo, slug, pr, base, left=(), tidied=False):
+def merged_text(repo, slug, pr, base, left=(), tidied=False, delegated=False):
     """`tidied`: relay merged it here and tidied this machine; otherwise the merge was found on GitHub."""
-    head = (f"relay: {pr_label(repo, slug, pr)} is released to main." if base == "main"
-            else f"relay: {pr_label(repo, slug, pr)} is merged into {base or 'its base'}.")
+    tail = ", delegated under D1." if delegated else "."
+    head = (f"relay: {pr_label(repo, slug, pr)} is released to main{tail}" if base == "main"
+            else f"relay: {pr_label(repo, slug, pr)} is merged into {base or 'its base'}{tail}")
     if left:
         return head + " Left to tidy: " + "; ".join(left) + "."
     return head + (" Worktree removed, repo free." if tidied else "")
+
+
+def delegated_text(repo, slug, pr, message, left=()):
+    """A delegated merge that did not end as a plain merge (R10): what happened, and what is left to tidy."""
+    return (f"relay: {pr_label(repo, slug, pr)}: {message}; delegated under D1."
+            + (" Not tidied: " + "; ".join(left) + "." if left else ""))
