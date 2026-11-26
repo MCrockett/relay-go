@@ -143,6 +143,34 @@ class MergeCommandTest(test_commands.CommandsTest):  # merge-and-tidy D1 to D5, 
         with mock.patch.dict(os.environ, {"HORDLE_ROLE": " ", **dict.fromkeys(identity.AGENT_MARKERS, "")}):
             self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
 
+    # R15: --repo
+    def test_repo_flag_merges_from_another_folder(self):
+        os.chdir(self.tmp)
+        self.assertEqual(self.relay("merge", "7", "--relayed", "--repo", self.work), 0, self.last_err)
+        self.assertEqual(len(self.merged_calls()), 1)
+
+    def test_repo_flag_with_a_missing_path_is_refused(self):
+        gone = os.path.join(self.tmp, "gone")
+        self.assertEqual(self.relay("merge", "7", "--relayed", "--repo", gone), 1)
+        self.assertIn(f"{gone} is not a git checkout", self.last_err)
+        self.assertEqual(self.merged_calls(), [])
+
+    def test_repo_flag_with_a_plain_folder_is_refused(self):
+        plain = os.path.join(self.tmp, "plain")
+        os.makedirs(plain)
+        self.assertEqual(self.relay("merge", "7", "--relayed", "--repo", plain), 1)
+        self.assertIn(f"{plain} is not a git checkout", self.last_err)
+        self.assertEqual(self.merged_calls(), [])
+
+    def test_repo_flag_tidy_uses_the_real_working_folder(self):
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        wt = os.path.join(self.tmp, "wt-tiny")
+        helpers.sh(self.work, "git", "worktree", "add", "-q", wt, "fix/tiny")
+        os.chdir(wt)
+        self.assertEqual(self.relay("merge", "7", "--relayed", "--repo", self.work), 0, self.last_err)
+        os.chdir(self.work)
+        self.assertIn("the folder you ran this from was removed; continue in", self.last_out)
+
 
 for _name in dir(test_commands.CommandsTest):  # run only this file's tests, not the inherited ones
     if _name.startswith("test_") and _name not in MergeCommandTest.__dict__:

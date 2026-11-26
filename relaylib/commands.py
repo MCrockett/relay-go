@@ -283,6 +283,19 @@ def owner_or_relayed(args, what):
     return f"{me.provider} session {me.session}"
 
 
+def merge_repo(path):
+    """The checkout `relay merge` works in: the current folder's, or the one --repo names (R15)."""
+    if path is None:
+        return gitops.repo_root(os.getcwd())
+    real = os.path.expanduser(path)
+    if not os.path.isdir(real):
+        raise RelayError(f"{path} is not a git checkout")
+    try:
+        return gitops.repo_root(real)
+    except RelayError:
+        raise RelayError(f"{path} is not a git checkout")
+
+
 ROLE_REFUSAL = ("only the release role merges without the owner (D1); a role run cannot pass on the owner's "
                 "word")
 
@@ -909,7 +922,7 @@ def cmd_merge(args):
     events.set_cause(cause)
     if kind == "delegated":
         raise RelayError("delegated merge is not built yet")
-    repo = gitops.repo_root(os.getcwd())
+    repo = merge_repo(args.repo)
     gitops.fetch(repo)
     if args.target.isdigit():
         slug = owneractions.find_by_pr(repo, int(args.target))
@@ -1452,6 +1465,7 @@ def build_parser():
     mg.add_argument("target", help="the PR number or the feature's name")
     mg.add_argument("--relayed", action="store_true",
                     help="agents only: the owner told you to merge in this conversation (recorded as relayed)")
+    mg.add_argument("--repo", help="merge in this checkout instead of the current folder")
     mg.add_argument("--by", help="claude or codex, when detection is ambiguous")
     ow = add("owner", cmd_owner, "owner decisions collected by another tool; JSON output")
     osub = ow.add_subparsers(dest="owner_cmd", required=True)
