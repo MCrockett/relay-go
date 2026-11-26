@@ -400,6 +400,16 @@ class MergeAndTidyTest(OwnerFixture):  # merge-and-tidy D3 to D7
         self.assertIn("pr comment 7 -R owner/project --body Merged by the owner, relayed by claude session s9 in "
                       "its conversation with the owner", open(self.log).read())
 
+    # delegated-merge: the owner's merge is unchanged by the D1 path
+    def test_the_owner_merge_never_reads_the_opt_in_or_the_control_plane_names(self):
+        from relaylib import delegated
+        with mock.patch.object(delegated, "conditions") as conditions, \
+                mock.patch("relaylib.owneractions.github_repo", return_value="owner/hordle"), \
+                mock.patch("relaylib.gitops.ci_for_code", return_value="green"):
+            owneractions.merge(self.work, "demo", self.seen())
+        conditions.assert_not_called()
+        self.assertIn("pr merge 7 -R owner/hordle --merge --match-head-commit", open(self.log).read())
+
 
 class HubActTest(OwnerFixture):  # mobile-hub D5, D6, R9 to R12
     HUB = {"provider": "claude", "session_id": "hub1"}

@@ -117,6 +117,45 @@ class MergeCommandTest(test_commands.CommandsTest):  # merge-and-tidy D1 to D5, 
         self.assertEqual(self.relay("merge", "7", "--relayed"), 0, self.last_err)
         self.assertEqual(self.owner_notes(), [])
 
+    # the owner's and the relayed merge are unchanged by delegated merges
+    def owner_terminal(self):
+        return mock.patch.dict(os.environ, dict.fromkeys(identity.AGENT_MARKERS, ""))
+
+    def test_owner_merge_still_uses_gh_pr_merge_with_match_head_and_delete_branch(self):
+        head = self.head()  # tidy moves the checkout afterwards
+        with self.owner_terminal():
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        (line,) = self.merged_calls()
+        self.assertEqual(line.strip(), f"pr merge 7 -R owner/project --merge --match-head-commit {head} "
+                                       "--delete-branch")
+
+    def test_owner_merge_ignores_a_repo_without_an_opt_in_and_a_control_plane_name(self):
+        with mock.patch("relaylib.owneractions.github_repo", return_value="owner/hordle"):
+            with self.owner_terminal():
+                self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertEqual(len(self.merged_calls()), 1)
+
+    def test_relayed_merge_ignores_a_control_plane_name(self):
+        with mock.patch("relaylib.owneractions.github_repo", return_value="owner/relay-go"):
+            self.assertEqual(self.relay("merge", "7", "--relayed"), 0, self.last_err)
+        self.assertEqual(len(self.merged_calls()), 1)
+
+    def test_owner_merge_tidies_a_live_session_worktree(self):  # decision 5: only delegated merges keep it
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        linked = os.path.join(os.path.realpath(self.tmp), "elsewhere", "work")
+        os.makedirs(os.path.dirname(linked))
+        helpers.sh(self.work, "git", "worktree", "add", "-q", linked, "fix/tiny")
+        helpers.live_session("claude", "s1", cwd=linked)
+        with self.owner_terminal():
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertFalse(os.path.exists(linked))
+
+    def test_relayed_comment_text_is_unchanged(self):
+        self.assertEqual(self.relay("merge", "7", "--relayed"), 0, self.last_err)
+        with open(self.gh_log) as f:
+            self.assertIn("Merged by the owner, relayed by claude session s1 in its conversation with the owner",
+                          f.read())
+
     # R1: who is merging
     def args(self, **kw):
         import argparse
