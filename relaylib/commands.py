@@ -1465,7 +1465,8 @@ def build_parser():
     o.add_argument("--feature")
     o.add_argument("--relayed", action="store_true",
                    help="agents only: pass on a decision the owner made in this conversation (recorded as relayed)")
-    mg = add("merge", cmd_merge, "merge a feature's PR once it is ready, then tidy this machine; agents need --relayed")
+    mg = add("merge", cmd_merge, "merge a feature's PR once it is ready, then tidy this machine; agents need --relayed; "
+                 "the hordle release role may merge an opted-in repo's PR without the owner (D1)")
     mg.add_argument("target", help="the PR number or the feature's name")
     mg.add_argument("--relayed", action="store_true",
                     help="agents only: the owner told you to merge in this conversation (recorded as relayed)")

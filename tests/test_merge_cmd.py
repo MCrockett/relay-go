@@ -156,6 +156,35 @@ class MergeCommandTest(test_commands.CommandsTest):  # merge-and-tidy D1 to D5, 
             self.assertIn("Merged by the owner, relayed by claude session s1 in its conversation with the owner",
                           f.read())
 
+    # R16: docs and help
+    def test_merge_help_names_the_release_role(self):
+        sub = commands.build_parser()._subparsers._group_actions[0]
+        (text,) = [a.help for a in sub._choices_actions if a.dest == "merge"]
+        self.assertIn("release role may merge an opted-in repo's PR without the owner", text)
+
+    def test_docs_have_the_delegated_section_and_no_dashes(self):
+        import re
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "docs", "reference.md")) as f:
+            reference = f.read()
+        self.assertIn("### Delegated merges (D1)", reference)
+        section = reference.split("### Delegated merges (D1)", 1)[1].split("\n### ", 1)[0]
+        flat = " ".join(section.split())
+        for fragment in ("has not opted in: no [merge] production_branches on <base>",
+                         "must list at least one branch", "is control plane; the owner merges it",
+                         "is a production branch", "no review evidence for the build GO",
+                         "the build GO was not a review from the preference table",
+                         "ci = none never qualifies for D1", "touches <path>, which the owner merges",
+                         "not delegated (D1):", "same-provider GO that fell back to the default reviewer model",
+                         "reset", "--repo <path>"):
+            self.assertIn(fragment, flat)
+        with open(os.path.join(root, "README.md")) as f:
+            self.assertIn("Delegated merges (D1)", f.read())
+        self.assertIsNone(re.search("[\u2013\u2014]", section))
+        for name in ("spec.md", "plan.md", "idea.md"):
+            with open(os.path.join(root, "docs", "relay", "delegated-merge", name)) as f:
+                self.assertIsNone(re.search("[\u2013\u2014]", f.read()), name)
+
     # R1: who is merging
     def args(self, **kw):
         import argparse
