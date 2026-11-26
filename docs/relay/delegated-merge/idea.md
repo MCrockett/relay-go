@@ -49,7 +49,7 @@ The merge is recorded on the PR, in relay's event log and in the hub as delegate
 
 ## Sources
 
-hordle design `docs/superpowers/specs/2026-11-22-hordle-agent-team-design.md`, sections 6 (D1),
+the hordle agent team design, sections 6 (D1),
 12 (Phase 1) and 14 items 1 and 6; hordle `TODO.md`, "Next: the build order", item 2;
 `relaylib/owneractions.py` (`merge_readiness`, `merge`), `relaylib/commands.py` (`cmd_merge`,
 `owner_or_relayed`), `relaylib/cimode.py`, `relaylib/events.py`.
