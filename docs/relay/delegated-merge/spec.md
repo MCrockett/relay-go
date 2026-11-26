@@ -33,6 +33,11 @@ inside `relay merge`.
    today merge events go only to registered hub sessions.
 7. **`relay merge --repo <path>`** (owner, 2026-11-26), so `release` can merge in any repo from
    its one working folder. It works for every caller.
+8. **A delegated merge pushes its own merge commit to the checked base** (owner, 2026-11-26, asked
+   after the spec review's round 2: "Push the merge"). It is the only way to bind the merge to
+   the base relay checked, since GitHub cannot tell relay from the owner. The cost: a repo whose
+   non-production base accepts only pull requests cannot use D1 until the owner relaxes that
+   rule.
 
 ## Non-goals
 
@@ -73,7 +78,9 @@ inside `relay merge`.
   - **Evidence** is read from what is published, never the caller's checkout: the review files
     under `docs/relay/<slug>/reviews/` at the published revision `merge` already uses
     (`seen["commit"]` on `origin/<feature branch>`), read with `git show`. The one used is the
-    newest `build-<round>.*.md` file. Its front matter must parse, have `verdict` `GO`, a
+    `build-<round>.*.md` file with the highest round; when several share it, the one whose
+    front matter `at` is latest; when that ties too, or an `at` does not parse, the evidence is
+    malformed. Its front matter must parse, have `verdict` `GO`, a
     `reviewer` and a `model`, and a `head` equal to the head in the feature's build snapshot
     (`st["reviewed"]["build"]`).
   - **The table** is the owner's: `config.load(repo_root=None)`, which is the owner's relay config
@@ -94,21 +101,32 @@ inside `relay merge`.
   merges`.
 - **R9. One check, one place.** R3 to R8 live in one function that returns the first failure or
   none, so a test can drive each alone, and `relay merge` calls it inside the action lock, after
-  `merge_readiness` and before `gh pr merge`.
-- **R10. Same head and same base.** The merge still passes `--match-head-commit` with the head
-  R2 to R8 checked, as today, so a push between the checks and the merge makes GitHub refuse it.
-  GitHub has no matching guard for the base, so relay narrows and then catches a retarget:
-  - Immediately before `gh pr merge`, relay reads the PR again; a base or head that differs from
-    the one checked refuses: `not delegated (D1): the PR changed while it was checked`.
-  - After the merge, relay reads the merged PR's base. When it is not the base checked, relay
-    exits 1 with `D1 merge landed on <base>, not the checked <checked base>: tell the owner`,
-    sends a desktop notification as relay's other alerts do, and writes the event with
-    `delegated: true` and `landed_on` so the hub shows it.
-  - The accepted limit: a retarget in the moment between that last read and GitHub's merge is
-    caught after the fact, not prevented. Only someone with write access to the repo can
-    retarget, and they could merge with `gh` directly; GitHub's own protection on production
-    branches is what stops that, and the acceptance ledger asks the owner to check it on each
-    repo that opts in (R17).
+  `merge_readiness` and before the merge of R10.
+- **R10. The merge lands on the checked base, by construction** (owner, 2026-11-26: "Push the
+  merge"). `gh pr merge` cannot be bound to a base: a PR retargeted between relay's last read and
+  GitHub's merge would land wherever it then points, and GitHub cannot tell relay from the owner
+  because both use the owner's login. So a delegated merge does not call `gh pr merge`. Instead,
+  in a temporary detached worktree of `origin/<checked base>` at the base commit relay checked:
+  1. `git merge --no-ff --no-edit` of the checked PR head, with the message `Merge pull request
+     #<n> from <owner>/<branch>` and a trailer `Delegated-merge: D1`. A conflict refuses: `not
+     delegated (D1): the PR does not merge cleanly into <base>`.
+  2. `git push origin <merge commit>:refs/heads/<checked base>
+     --force-with-lease=refs/heads/<checked base>:<checked base commit>`. The lease and the
+     fast-forward together refuse the push when the base moved. A refused push, for that or for
+     a GitHub rule (a base that accepts only pull requests), refuses with the push's own message:
+     `not delegated (D1): GitHub refused the push to <base>: <message>`. Nothing has merged.
+  3. relay then reads the PR. GitHub marks it merged once its head is in its base. When it shows
+     `MERGED`, relay deletes the remote feature branch (`git push origin --delete <branch>`, a
+     warning if refused) and goes on to R11 to R14. When it is still open, because it was
+     retargeted after the checks, relay exits 1: `pushed the merge to <checked base>; PR #<n> now
+     targets <its base> and stays open: tell the owner`, with a desktop notification as relay's
+     other alerts send. Nothing reached the other branch.
+  4. When that read fails, the push has landed and stands: relay exits 1 with `merged into
+     <checked base>, but GitHub could not be read to confirm the PR: <error>`, records the event
+     and hub log line with `delegated: true` and `confirmed: false`, sends the notification, and
+     skips tidy (R13), so the next `relay status` or resolver finds the merge as it does today.
+  The temporary worktree is removed whatever happens. The owner's and relayed merges still use
+  `gh pr merge`, unchanged.
 
 ### The record
 
@@ -138,7 +156,8 @@ inside `relay merge`.
   (`events.PREFIX`, so it reads as relay's, not the owner's), unless that session caused
   the merge (the event's cause) or is a registered hub session (it already gets the event). For a
   delegated merge whose worktree was kept, the note adds `Remove the worktree: git worktree
-  remove <path>`. A send that fails is a warning, never a failed merge.
+  remove <path>`; when the kept folder is the main checkout, it adds instead `Switch this
+  checkout to <base>, pull, and delete the local branch <branch>`. A send that fails is a warning, never a failed merge.
 - **R15. `--repo <path>`.** `relay merge --repo <path> <target>` works as if run from `<path>`:
   the repo root is found from it. A path that is not inside a git checkout is refused: `<path> is
   not a git checkout`. Tidy's "the folder you ran this from" line uses the real working folder.
@@ -150,7 +169,8 @@ inside `relay merge`.
   `relay merge` help line says the release role may merge an opted-in repo's PR without the owner.
 - **R17.** `docs/relay/delegated-merge/acceptance.md` holds what waits on the owner or on later
   features: hordle's hook change and `release` role; the first repo's opt-in PR, with the owner
-  checking that GitHub protects each production branch it lists (R10); and one real delegated
+  checking that its non-production bases accept the owner's push (no pull-request-only rule)
+  and that its production branches keep their protection (R10); and one real delegated
   merge seen end to end in that repo.
 
 ## Failure paths
@@ -158,9 +178,14 @@ inside `relay merge`.
 - **A repo with no list, an empty list or a bad file:** refused before anything merges (R3).
 - **A control-plane repo, a production base, a protected path, `ci = none`, an override GO:** each
   refused alone, naming it (R4 to R8).
-- **A push after the checks:** GitHub refuses the merge by the head match (R10).
-- **A retarget during the checks:** refused by the read just before the merge; one in the last
-  moment is reported after the merge, exit 1, with a notification (R10).
+- **A push to the PR or the base after the checks:** the merge commit holds the checked head, and
+  the lease refuses a moved base (R10).
+- **A retarget after the checks:** the merge lands only on the checked base; the PR stays open and
+  relay reports it, exit 1 (R10).
+- **A base that accepts only pull requests:** the push is refused and nothing merges; the repo
+  cannot use D1 until the owner changes that rule (R10, R17).
+- **GitHub unreadable after the push:** the merge stands, exit 1, recorded unconfirmed, no tidy
+  (R10).
 - **Review evidence missing or not from the owner's table:** refused (R6).
 - **The comment, the hub log line or a note fails:** the merge stands; each is a warning (R11, R12,
   R14).
@@ -179,8 +204,9 @@ merge that meets every condition, merged and recorded (R2, R11, R12); each of R3
 alone, with nothing merged; the opt-in read from the base, not the PR branch, with a PR that adds
 the list itself refused by R8; R6 with an override GO, a review whose model is not in the
 owner's table, a repo `config.toml` that adds the reviewer (still refused), and a missing or
-malformed review file; R10 with a fake `gh` that changes the base between the checks and the
-merge, and one that reports a different base after it; the owner's and relayed merges unchanged; R13 with a live and an
+malformed review file; R10 with a base moved after the checks (push refused, nothing
+merged), a PR retargeted after the checks (merge only on the checked base, PR open, exit 1), a
+conflict, a push refused by a rule, and a failed read after the push; the owner's and relayed merges unchanged; R13 with a live and an
 ended owner session; R14's note sent, not sent to the cause, not sent to a hub session; `--repo`
 from another folder and with a bad path (R15). No test calls real Claude, Codex or GitHub.
 
