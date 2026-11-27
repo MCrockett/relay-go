@@ -7,7 +7,20 @@
   "branch": "feat/dispatch",
   "extra_rounds": {},
   "feature": "dispatch",
-  "history": {},
+  "history": {
+    "spec": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2"
+        ],
+        "head": "0fca48741a46a3c441bc3ea3390a67bf1c1b1d2f",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ]
+  },
   "owner": {
     "provider": "claude",
     "session": "533a6442-fe90-46df-9213-a7a0e9b4b92f",
@@ -28,6 +41,7 @@
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
+  "review_notes": {},
   "reviewed": {
     "build": null,
     "plan": null,
@@ -39,9 +53,11 @@
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "in-review",
-  "updated": "2026-11-27T08:14:37-05:00",
-  "verdicts": {}
+  "status": "changes-requested",
+  "updated": "2026-11-27T08:15:27-05:00",
+  "verdicts": {
+    "spec": "NO-GO"
+  }
 }
 ---
 
