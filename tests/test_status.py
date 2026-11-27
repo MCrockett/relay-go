@@ -1,7 +1,7 @@
 import argparse, io, json, os, shutil, tempfile, time, unittest
 from contextlib import redirect_stdout
 from unittest import mock
-from relaylib import commands, freshness, gitops, sessions, state, status, waiting
+from relaylib import commands, freshness, gitops, localtests, sessions, state, status, waiting
 from tests import helpers
 
 
@@ -107,11 +107,15 @@ class StatusTest(StatusFixture):
     def test_checkouts_skip_test_runs(self):  # R14
         root = self.repo("alpha", {}, commit=True)
         helpers.sh(root, "git", "worktree", "add", "-q", "--detach", os.path.join(self.tmp, "real-wt"))
-        run = os.path.join(root, ".git", "relay", "test-runs", "abc-1")
+        run = os.path.join(localtests.runs_dir(root), "abc-1")
+        os.makedirs(os.path.dirname(run), exist_ok=True)
         helpers.sh(root, "git", "worktree", "add", "-q", "--detach", run)
+        legacy = os.path.join(root, ".git", "relay", "test-runs", "abc-2")
+        helpers.sh(root, "git", "worktree", "add", "-q", "--detach", legacy)
         found = [os.path.realpath(p) for p in status.checkouts(self.projects)]
         self.assertIn(os.path.realpath(os.path.join(self.tmp, "real-wt")), found)
         self.assertNotIn(os.path.realpath(run), found)
+        self.assertNotIn(os.path.realpath(legacy), found)
 
     def test_running_tests_leave_the_row_not_waiting_on_the_owner(self):  # N5
         row = {"repo": "r", "feature": "f", "stage": "build", "status": "ready-to-merge", "pr": 5,

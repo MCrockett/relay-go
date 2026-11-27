@@ -56,7 +56,7 @@ A PR's gate reads its settings from the global config plus `docs/relay/config.to
 How a local run works:
 
 - `relay submit` (and every build review, including `relay review` after a GO goes stale) makes sure a run exists for the PR head's code: it starts one in the background unless a pass or a live run is already there, and the review goes on at once. Nothing waits for the tests.
-- The run uses a clean detached checkout of the commit, made under `<git common dir>/relay/test-runs/`, so you can keep editing. It has no gitignored files: the command does its own setup, such as installing dependencies. Output goes to a log. A run past `test_timeout_min` is ended and recorded as a failure.
+- The run uses a clean detached checkout of the commit, made under `~/.relay/test-runs/<repo>-<id>/` (outside the git dir, since tools such as Vite refuse to load files under `.git/`), so you can keep editing. Cleanup also removes leftover runs from the old place, `<git common dir>/relay/test-runs/`. It has no gitignored files: the command does its own setup, such as installing dependencies. Output goes to a log. A run past `test_timeout_min` is ended and recorded as a failure.
 - A result is keyed by the code (relay's own bookkeeping commits do not count) and the exact `test_command`. Records and logs live in `<git common dir>/relay/tests/` on this machine only; merging from another machine says to run `relay test` there. relay keeps the newest 20 logs and never removes the record of a feature that is still open.
 - Starting a run for new code stops the feature's older run. A run that is killed or whose machine restarts reads as `stopped`, never as running or passed.
 
