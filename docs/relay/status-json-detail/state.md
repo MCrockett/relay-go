@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/status-json-detail",
   "extra_rounds": {},
   "feature": "status-json-detail",
@@ -24,9 +26,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-11-27T18:56:19-05:00",
+  "updated": "2026-11-27T18:56:49-05:00",
   "verdicts": {}
 }
 ---
