@@ -1,6 +1,7 @@
 """Local test runs for ci = "local" (ci-modes D4 to D11): keys, records, liveness locks, the detached runner,
 cleanup and the status flag text. A run uses a clean detached worktree of the commit under test. A record is
-local to the machine and lives in <git common dir>/relay/tests/."""
+local to the machine and lives in <git common dir>/relay/tests/; run worktrees live under relay's own folder
+(runs_dir), outside the git dir."""
 import fcntl
 import hashlib
 import json
@@ -30,7 +31,18 @@ def _tests_dir(repo):
     return os.path.join(gitops.common_dir(repo), "relay", "tests")
 
 
-def _runs_dir(repo):
+def runs_dir(repo):
+    """Where this repo's run worktrees go: under relay's own folder, never inside the git dir, because tools such
+    as Vite deny every path under .git/ and cannot load tests from there. One folder per repo, the same from any
+    of its worktrees."""
+    common = os.path.realpath(gitops.common_dir(repo))
+    main = os.path.dirname(common) if os.path.basename(common) == ".git" else common
+    rid = hashlib.sha256(common.encode()).hexdigest()[:12]
+    return os.path.join(config.relay_home(), "test-runs", f"{os.path.basename(main)}-{rid}")
+
+
+def legacy_runs_dir(repo):
+    """Where run worktrees went before they moved out of the git dir; cleanup still empties it."""
     return os.path.join(gitops.common_dir(repo), "relay", "test-runs")
 
 
@@ -132,11 +144,11 @@ def run(repo, commit, code, command, timeout_min, slug, branch):
     stop = []
     previous = signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
     proc = None
-    work = os.path.join(_runs_dir(repo), f"{kid}-{os.getpid()}")
+    work = os.path.join(runs_dir(repo), f"{kid}-{os.getpid()}")
     try:
         write(repo, rec)
         with open(p["log"], "wb") as log:
-            os.makedirs(_runs_dir(repo), exist_ok=True)
+            os.makedirs(runs_dir(repo), exist_ok=True)
             add = subprocess.run(["git", "worktree", "add", "--detach", work, commit], cwd=repo,
                                  stdout=log, stderr=subprocess.STDOUT)
             if add.returncode != 0:
@@ -243,10 +255,10 @@ def _feature_done(repo, rec):
 
 def cleanup(repo):
     """R13. Remove run worktrees no live run holds, prune, and keep the newest KEEP_LOGS logs."""
-    runs = _runs_dir(repo)
-    for name in sorted(os.listdir(runs)) if os.path.isdir(runs) else []:
-        if not live(repo, name.split("-", 1)[0]):
-            _remove_worktree(repo, os.path.join(runs, name))
+    for runs in (runs_dir(repo), legacy_runs_dir(repo)):
+        for name in sorted(os.listdir(runs)) if os.path.isdir(runs) else []:
+            if not live(repo, name.split("-", 1)[0]):
+                _remove_worktree(repo, os.path.join(runs, name))
     subprocess.run(["git", "worktree", "prune"], cwd=repo, capture_output=True)
     recs = sorted(records(repo), key=lambda r: r.get("started") or 0, reverse=True)
     protected, seen = set(), set()

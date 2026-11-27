@@ -33,12 +33,13 @@ def _checkouts(root_dir):
         except RelayError:
             trees = []
         try:
-            runs = os.path.realpath(os.path.join(gitops.common_dir(repo_dir), "relay", "test-runs")) + os.sep
+            runs = [os.path.realpath(d) + os.sep for d in (localtests.runs_dir(repo_dir),
+                                                           localtests.legacy_runs_dir(repo_dir))]
         except RelayError:
-            runs = None
+            runs = []
         for path in [repo_dir] + trees:
             real = os.path.realpath(path)
-            if runs and (real + os.sep).startswith(runs):
+            if any((real + os.sep).startswith(r) for r in runs):
                 continue  # a local test run's own worktree (ci-modes R14)
             if real not in seen and os.path.isdir(path):
                 seen.add(real)

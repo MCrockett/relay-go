@@ -63,9 +63,33 @@ class LocalTestsTest(unittest.TestCase):
         rec = self.run_cmd("exit 3")
         self.assertEqual((rec["status"], rec["exit"]), ("fail", 3))
         self.assertEqual(localtests.read(self.repo, self.code, "exit 3")["status"], "fail")
-        runs = os.path.join(gitops.common_dir(self.repo), "relay", "test-runs")
+        runs = localtests.runs_dir(self.repo)
         self.assertEqual(os.listdir(runs), [])
         self.assertNotIn("test-runs", sh(self.repo, "git", "worktree", "list"))
+
+    def test_run_worktree_is_outside_the_git_dir(self):
+        # Vite denies **/.git/** by default, so a run inside the git dir cannot load jsdom tests
+        rec = self.run_cmd('case "$(pwd -P)" in */.git/*) exit 7;; esac')
+        self.assertEqual((rec["status"], rec["exit"]), ("pass", 0))
+        runs = os.path.realpath(localtests.runs_dir(self.repo))
+        self.assertTrue(runs.startswith(os.path.realpath(os.path.join(self.tmp, "home", "test-runs")) + os.sep))
+        self.assertNotIn(os.sep + ".git" + os.sep, runs + os.sep)
+
+    def test_runs_dir_is_per_repo_and_same_from_a_worktree(self):
+        wt = os.path.join(self.tmp, "wt")
+        sh(self.repo, "git", "worktree", "add", "-q", "--detach", wt)
+        self.assertEqual(localtests.runs_dir(wt), localtests.runs_dir(self.repo))
+        other = os.path.join(self.tmp, "other")
+        os.makedirs(other)
+        sh(other, "git", "init", "-q")
+        self.assertNotEqual(localtests.runs_dir(other), localtests.runs_dir(self.repo))
+
+    def test_cleanup_removes_leftovers_in_the_old_git_dir_location(self):
+        old = os.path.join(gitops.common_dir(self.repo), "relay", "test-runs", "deadbeefdeadbeef-1")
+        sh(self.repo, "git", "worktree", "add", "--detach", old, self.commit)
+        localtests.cleanup(self.repo)
+        self.assertFalse(os.path.exists(old))
+        self.assertNotIn("deadbeefdeadbeef", sh(self.repo, "git", "worktree", "list"))
 
     def test_run_uses_clean_checkout_of_commit(self):
         write(os.path.join(self.repo, "untracked_file"), "u\n")
@@ -114,8 +138,9 @@ class LocalTestsTest(unittest.TestCase):
         self.assertEqual(localtests.ensure(self.repo, self.commit, self.code, "true", 5, "feat", "feat/x"), "pass")
 
     def test_leftover_worktree_removed_and_live_record_survives(self):
-        runs = os.path.join(gitops.common_dir(self.repo), "relay", "test-runs")
+        runs = localtests.runs_dir(self.repo)
         left = os.path.join(runs, "deadbeefdeadbeef-1")
+        os.makedirs(runs, exist_ok=True)
         sh(self.repo, "git", "worktree", "add", "--detach", left, self.commit)
         localtests.start(self.repo, self.commit, self.code, "sleep 30", 5, "feat", "feat/x")
         localtests.cleanup(self.repo)
