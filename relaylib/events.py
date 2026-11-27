@@ -80,17 +80,19 @@ def request_fields(st, kind):
 
 
 def event(kind, repo, slug, stage, pr, text, cause=None, *, owner=None, note_extra="", fields=None,
-          log_only=False, owner_only=False, requesters=(), request_id=None):
+          log_only=False, owner_only=False, requesters=(), request_id=None, requesters_only=False):
     """`owner`: the feature's session, told of a merge (R14) with `note_extra` added to its note. `fields` join the
     hub log line. `log_only`: the log line and no note at all; `owner_only`: the log line and the owner's note,
     not the hub sessions' (they already had the event from the resolver that saw the merge first).
     `request_id` and `requesters`: the feature came from a dispatch request (R20); a merged or released note to a
-    requester ends with "This was your request <id>." (to every hub when `requesters` is empty)."""
+    requester ends with "This was your request <id>." (to every hub when `requesters` is empty).
+    `requesters_only`: only the requesters' notes, with no hub log line, for a merge the hubs already heard of."""
     if kind not in KINDS:
         raise ValueError(f"unknown event {kind}")
     return {"kind": kind, "repo": repo, "slug": slug, "stage": stage, "pr": pr, "text": text, "cause": cause,
             "owner": owner, "note_extra": note_extra, "fields": fields, "log_only": log_only,
-            "owner_only": owner_only, "requesters": [tuple(r) for r in requesters], "request_id": request_id}
+            "owner_only": owner_only, "requesters": [tuple(r) for r in requesters], "request_id": request_id,
+            "requesters_only": requesters_only}
 
 
 def queue(kind, repo, slug, stage, pr, text, cause=None, **extra):
@@ -140,6 +142,12 @@ def deliver(ev):
     from . import hub
     warnings = []
     try:
+        if ev.get("requesters_only"):
+            add = f" This was your request {ev['request_id']}." if ev.get("request_id") else ""
+            for provider, sid in ev.get("requesters") or []:
+                if (provider, sid) != ev.get("cause"):
+                    _send(provider, sid, ev["text"] + add, warnings)
+            return warnings
         warning = hub.log({"command": "event", "event": ev["kind"], "repo": ev["repo"], "slug": ev["slug"],
                            "pr": ev["pr"], "text": ev["text"], **(ev.get("fields") or {})})
         if warning:

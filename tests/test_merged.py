@@ -237,6 +237,20 @@ class ResolveTest(unittest.TestCase):
         self.assertTrue(merged.recorded(self.repo, self.st))
         self.assertEqual(self.hub_events(), [])
 
+    def test_a_merge_found_after_a_timeout_tells_only_the_requesters(self):  # dispatch R20
+        from relaylib import dispatch, notes
+        merged.announce(self.repo, 57, "timeout")
+        helpers.write(self.data, '{"state": "MERGED", "baseRefName": "develop"}')
+        rec = dispatch.create({"repo": {"name": "r", "path": self.repo}, "request": "x", "owner_said": None,
+                               "slug": None, "requested_by": "owner", "asked_by": None, "relayed_by": None}, now=1.0)
+        st = dict(self.st, request={"id": rec["id"], "requested_by": "owner", "relayed_by": None, "at": 1.0,
+                                    "asked_by": {"provider": "claude", "session_id": "ask1", "repo": "o"}})
+        merged.resolve(self.repo, st)
+        self.assertEqual(dispatch.read(rec["id"])["status"], "merged")
+        (note,) = notes._load(notes.log_path("claude", "ask1"))
+        self.assertTrue(note["text"].endswith(f"This was your request {rec['id']}."), note["text"])
+        self.assertEqual(self.hub_events(), [])  # the hubs already had the delegated event
+
     def test_resolver_still_announces_a_real_merge_after_another_outcome(self):
         merged.announce(self.repo, 57, "head-moved")
         helpers.write(self.data, '{"state": "MERGED", "baseRefName": "develop"}')
