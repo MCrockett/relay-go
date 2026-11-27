@@ -1,6 +1,7 @@
 ---
 {
   "authors": {
+    "build": "claude",
     "idea": "claude",
     "plan": "claude",
     "spec": "claude"
@@ -61,7 +62,7 @@
       "at": "2026-11-26T16:33:23-05:00"
     }
   ],
-  "pr": null,
+  "pr": 41,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -84,14 +85,15 @@
     }
   },
   "rounds": {
+    "build": 1,
     "plan": 1,
     "spec": 4
   },
   "skipped": [],
   "small": false,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-11-26T17:38:41-05:00",
+  "status": "in-review",
+  "updated": "2026-11-26T19:26:16-05:00",
   "verdicts": {
     "plan": "GO",
     "spec": "GO"
