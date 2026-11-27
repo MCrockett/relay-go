@@ -68,9 +68,8 @@ forms `--cancel ID`, `--list [--json]`, `--show ID`.
   print the id and the two start commands. Hub log line `{"command": "dispatch", "id", "repo", "result"}`
   via `hub.log` (warning on failure). With `--for`, send the asker the R7 note through `events._send`
   (queued when not open; a warning on failure). No hub event.
-- `--cancel`: the R2 rule, then under the lock: refuse when not waiting, refuse a live claim, refuse a
-  publishing claim unless Task 6's `reconcile_dead` clears it, else status `cancelled` and the claim removed.
-  Hub log line.
+- `--cancel`: the R2 rule, then under the lock: refuse when not waiting, else status `cancelled`. Hub log
+  line. (Claims do not exist yet; Task 5 adds the claim rules to cancel.)
 - `--list [--json]`: waiting and started records, oldest first, with any unreadable-file warning on stderr.
 - `--show`: the whole record as text (request, owner's words, who asked, asker, status, claim, started).
   Reconcile comes in Task 6.
@@ -79,21 +78,29 @@ Test `tests/test_dispatch_cmd.py` (subprocess-free, calling `commands.main` with
 `tests/test_note_cmd.py` does): a registered hub dispatches and the file holds every field; an unregistered
 agent, `--relayed` from the owner's terminal and a missing `--relayed` are refused; `--owner-said` is required
 when relayed; the asker gets one queued note; the hub log line is written; cancel of a waiting request works
-and of a started one is refused with its status; list order and JSON; show prints everything.
+and of a started one is refused with its status; list order and JSON; show prints everything. Failure paths:
+an unwritable dispatch folder exits 1 with the error and leaves no file; a failed hub log write is a warning and
+the request stands; a failed note to the asker is a warning and the request stands.
 
 Covers: R1, R2, R3, R7, R8, R13.
 
 ## Task 4: finding a request's feature on any branch
 
+Files: `relaylib/dispatch.py`, `relaylib/gitops.py`.
+
 `relaylib/dispatch.py`: `features_with(root, id)` returns `[(slug, ref, where)]` where `where` is `origin` or
 `local`. It fetches (`gitops.fetch`), then reads `docs/relay/*/state.md` with `gitops.ls_files` and
 `gitops.show` on every `refs/remotes/origin/*` branch and every `refs/heads/*` branch (a new
 `gitops.local_branches(root)` using `for-each-ref`), checked out or not, and the working copy of each worktree
-(uncommitted state counts as local). A copy whose `branch` field names another branch is skipped, as
-`ownership.collect` skips inherited copies. A fetch failure raises `DispatchError` with git's message.
+(uncommitted state counts as local). Unlike `ownership.collect`, a copy whose `branch` field names another
+branch is kept: a feature merged into develop after its own branch was deleted may be the only evidence left.
+Results are deduplicated by slug, an origin copy winning over a local one (with its own branch preferred over
+an inherited or merged copy for `ref`). A fetch failure raises `DispatchError` with git's message.
 
 Test `tests/test_dispatch.py` with temp repos: found on origin; found only on a local branch that is not checked
-out; found in a worktree; an inherited copy on a stacked branch is ignored; nothing found; fetch failure.
+out; found in a worktree; found only on origin's develop after the feature merged and its branch was deleted;
+a feature on its own branch and on a stacked branch is reported once, with its own branch; nothing found;
+fetch failure.
 
 Covers: R18 step 1.
 
@@ -106,20 +113,31 @@ Covers: R18 step 1.
   `claim: {provider, session_id, slug, branch, at, publishing: false}`. Refusals as spec R18 step 2.
 - `enter_publishing(id, me)`: record still `waiting` and claim still `me`, sets `publishing: true`; else
   `DispatchError` (`was cancelled`, `was taken over by ...`).
-- `published(id, me, feature)`: status `started`, `started` filled, claim removed.
+- `mark_started(id, feature)`: the one started transition, used by every path (Task 6's reconcile before a
+  start, `published`, `reconcile_dead`). Under the lock it sets status `started`, fills `started`, removes the
+  claim, and reports whether the status changed. Only when it changed does it then (outside the lock) send the
+  R19 note to each requester (`requesters(record)`: the hub when `requested_by` is a session, and the asker,
+  through `events._send`) and write the hub log line `{"command": "event", "event": "started", ...}`. So each
+  requester hears once, whichever path found the feature. Failed notes or log lines are returned as warnings.
+- `published(id, me, feature)`: `mark_started` after a successful push.
 - `push_failed(id, me)`: `publishing: false`, claim kept.
 - `drop_claim(id, me)`: removes this session's claim (failure before the commit).
 - `reconcile_dead(id, now)`: for a publishing claim whose session is not live: `features_with` on the
-  recorded repo; on origin, mark `started` from it and return it; not found, clear `publishing`; fetch fails,
+  recorded repo; on origin, `mark_started` from it and return it; not found, clear `publishing`; fetch fails,
   leave it and raise with the error. A live publisher is left alone.
 
 Test `tests/test_dispatch.py` with `FakeClock` and `helpers.live_session`: a second live session is refused; a
 gone session's claim and a 31-minute-old claim can be taken over; a publishing claim cannot be taken over or
 cancelled at any age; `enter_publishing` fails after a cancel and after a takeover; `push_failed` keeps the
 claim; `reconcile_dead` marks started when origin has the feature, clears publishing when not, and leaves a
-live publisher.
+live publisher; `mark_started` called twice (by `reconcile_dead` and then by a start, and by `--show` then
+`--cancel`) sends each requester exactly one note and one log line; a failed note is a warning.
 
-Covers: R8, R18 steps 2 to 5.
+Cancel gains the claim rules here (`commands.py` `--cancel`): refuse a live claim; for a publishing claim, call
+`reconcile_dead` first and refuse if it marked the request started (`was started as <slug> in <repo>`) or the
+publisher is live; a claim that may be taken over is removed by the cancel. Tests: each of these cancel cases.
+
+Covers: R8, R18 steps 2 to 5, R19.
 
 ## Task 6: `relay new --request` and `relay take --request`
 
@@ -131,18 +149,18 @@ Covers: R8, R18 steps 2 to 5.
   R15 without one. `relay take` without `--request` is unchanged.
 - In `start_feature`, before `ownership.check_can_write`: read the record (R16 refusals: missing, cancelled,
   started, other repo by `main_checkout(root)` against the recorded path), then `features_with` (Task 4):
-  on origin, mark started (with the R19 notes if it was not already) and refuse; local only, refuse with the
-  push-or-delete message. Then `claim`. Any refusal of `relay new`'s own checks after this point calls
+  on origin, `mark_started` (which sends the R19 notes only if the record was not already started) and
+  refuse; local only, refuse with the push-or-delete message. Then, when the record holds a publishing claim
+  whose session is gone, `reconcile_dead` (so a start attempt alone clears a dead publisher's claim after a
+  successful fetch finds nothing). Then `claim`. Any refusal of `relay new`'s own checks after this point calls
   `drop_claim` (a `try/except RelayError` around the checks and the commit).
 - The idea text (R14) from a pure `idea_text(record, slug, now)`; `state.md` gets `request` (R17) and the
   owner action via `record_owner_action(st, "owner asked for this through relay dispatch", relayed_by)`, with
   `relayed_by` from the record (`None` for the owner).
 - Before `ciskip.push`: `enter_publishing`; on refusal, `git switch` back to the start branch and raise with the
   local branch and `git branch -D <branch>`. After the push: `published`; a failed push calls `push_failed`
-  and re-raises. A failed `published` write is a warning (the next start or show reconciles it).
-- After publishing, the R19 note to each requester (`requesters(record)`: the hub when `requested_by` is a
-  session, and the asker), through `events._send` with the `relay event:` prefix, and a hub log line
-  `{"command": "event", "event": "started", ...}`. Other hubs get nothing.
+  and re-raises. A failed `published` write is a warning (the next start or show reconciles it). The R19
+  notes come from `mark_started` (Task 5); other hubs get nothing.
 - `--show` (Task 3) calls `reconcile_dead` for a publishing claim, or `features_with` when a claimed or waiting
   record is shown from inside its repo, and prints the stored record with a warning when either fails.
 
@@ -153,7 +171,10 @@ refuses without one; R16 refusals change nothing (branch unchanged, no claim); a
 marks the record started and refuses; a local-only branch refuses with the push hint; an open-PR refusal
 drops the claim; a cancel between commit and push (patched hook) stops before the push and names the branch;
 a rejected push (`helpers.reject_pushes`) leaves the claim with `publishing: false`; `--show` reconciles a dead
-publisher and warns when fetch fails.
+publisher and warns when fetch fails; a dead publisher whose local branch was deleted is cleared by a plain
+retry of `relay take --request` with no show or cancel first, and the retry starts the feature; a failure to
+write `started` after a successful push is a warning, and the next `relay new --request` finds the feature on
+origin, marks it started and refuses, with the requesters told once.
 
 Covers: R14, R15, R16, R17, R18 (all steps), R19, R13.
 
@@ -173,6 +194,9 @@ Covers: R12.
 
 ## Task 8: hub, hub page and status
 
+Files: `relaylib/hub.py`, `relaylib/hubpage.py`, `relaylib/status.py`, `relaylib/commands.py` (`cmd_status`
+passes the records).
+
 - `relaylib/hub.py` `items`: add `_request_item(record)` for each waiting record (`kind: "request"`, repo,
   path, id, `wait_since: created_at`, first line, `actions: ["cancel"]`), sorted with the rest by `_order`
   (extend its name key for requests). `_item_lines` renders R9's text and the start command. `counts` ignores
@@ -191,6 +215,9 @@ Covers: R9, R10, R11, R23.
 
 ## Task 9: requesters hear of the merge
 
+Files: `relaylib/events.py`, `relaylib/merged.py`, `relaylib/owneractions.py`, `relaylib/dispatch.py`
+(`mark_landed`).
+
 - `relaylib/events.py`: `event()` gains `requesters` (list of `(provider, session_id)`) and `request_id`.
   In `deliver`, for `merged` and `released`: the addition ` This was your request <id>.` goes into the note of
   each registered hub that is a requester; each requester that is not a registered hub, is not the cause, and
@@ -205,9 +232,13 @@ Covers: R9, R10, R11, R23.
 
 Test `tests/test_events.py`: a hub requester gets one note with the addition; a non-hub asker gets its own
 queued note; an asker that is also the feature owner gets one; the cause is not told; an owner-dispatched
-request adds the line for every hub; a feature without `request` delivers exactly as before.
+request adds the line for every hub; a feature without `request` delivers exactly as before; a `released`
+event behaves like `merged`; with `owner_only` the hub notes are skipped but a non-hub requester still gets
+its note; with `log_only` no note goes to anyone, requesters included, and the record is still marked.
 `tests/test_merged.py` and `tests/test_owneractions.py`: a found merge and an owner merge pass the requesters
-and mark the record; a missing record still sends the notes.
+and mark the record; a missing record still sends the notes; a delegated merge (the `owneractions.py`
+line 402 record event and the final event) passes the requesters once, not twice; a merge whose requester is
+the cause marks the record `merged` though no note is sent.
 
 Covers: R20, R21.
 
