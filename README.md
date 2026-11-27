@@ -60,6 +60,8 @@ Then, in that repo:
     relay status          what is waiting on you, across every project
     relay merge <pr>      merge a feature that has a fresh GO and passing tests
 
+In a repo that opts in, hordle's release role can merge a reviewed, tested PR without the owner (see "Delegated merges (D1)" in docs/reference.md).
+
 A Docker image with everything installed is described in the reference.
 
 ## Documentation

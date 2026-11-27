@@ -283,6 +283,34 @@ def owner_or_relayed(args, what):
     return f"{me.provider} session {me.session}"
 
 
+def merge_repo(path):
+    """The checkout `relay merge` works in: the current folder's, or the one --repo names (R15)."""
+    if path is None:
+        return gitops.repo_root(os.getcwd())
+    real = os.path.expanduser(path)
+    if not os.path.isdir(real):
+        raise RelayError(f"{path} is not a git checkout")
+    try:
+        return gitops.repo_root(real)
+    except RelayError:
+        raise RelayError(f"{path} is not a git checkout")
+
+
+ROLE_REFUSAL = ("only the release role merges without the owner (D1); a role run cannot pass on the owner's "
+                "word")
+
+
+def merge_caller(args, env):
+    """('owner'|'relayed'|'delegated', relayed_by) for `relay merge`; refuses anything else before other work."""
+    role = (env.get("HORDLE_ROLE") or "").strip()
+    if role:
+        if args.relayed or role != "release":
+            raise RelayError(ROLE_REFUSAL)
+        return "delegated", None
+    relayed_by = owner_or_relayed(args, "relay merge")
+    return ("relayed" if relayed_by else "owner"), relayed_by
+
+
 def _review_author(key):
     author = key.split(".", 1)[1] if key.startswith("review.") else ""
     if author not in reviewtables.AUTHORS:
@@ -881,10 +909,18 @@ def cmd_merge(args):
     """Merge a relay feature's PR and tidy this machine (merge-and-tidy D1 to D5). The owner runs it in their own
     terminal; an agent only with --relayed, after the owner said to merge in its conversation."""
     from . import owneractions
-    relayed_by = owner_or_relayed(args, "relay merge")
-    me = _hub_session(dict(os.environ), args.by) if relayed_by else None
-    events.set_cause(me and (me["provider"], me["session_id"]))
-    repo = gitops.repo_root(os.getcwd())
+    kind, relayed_by = merge_caller(args, dict(os.environ))
+    me = None
+    if kind == "relayed":
+        me = _hub_session(dict(os.environ), args.by)
+    elif kind == "delegated":
+        try:
+            me = _hub_session(dict(os.environ), args.by)
+        except RelayError:
+            me = None  # a detection failure means no cause
+    cause = me and (me["provider"], me["session_id"])
+    events.set_cause(cause)
+    repo = merge_repo(args.repo)
     gitops.fetch(repo)
     if args.target.isdigit():
         slug = owneractions.find_by_pr(repo, int(args.target))
@@ -894,14 +930,20 @@ def cmd_merge(args):
             owneractions.published(repo, slug)
         except RelayError:
             raise RelayError(f"no relay feature {slug} on origin")
-    done = owneractions.merge(repo, slug, owneractions.fingerprint(repo, slug, fetch=False), relayed_by,
-                              source="session", cwd=os.getcwd())
-    print(f"relay: {done['message']}")
+    seen = owneractions.fingerprint(repo, slug, fetch=False)
+    if kind == "delegated":
+        done = owneractions.merge_delegated(repo, slug, seen, cause=cause, cwd=os.getcwd())
+    else:
+        done = owneractions.merge(repo, slug, seen, relayed_by, source="session", cwd=os.getcwd())
+    if done.get("error"):  # a delegated merge that landed but did not end cleanly (R10)
+        print(f"relay: {done['error']}", file=sys.stderr)
+    else:
+        print(f"relay: {done['message']}")
     for line in done.get("tidy", []):
         print(f"relay: {line}")
     if done.get("warning"):
         print(f"relay: warning: {done['warning']}", file=sys.stderr)
-    return 0
+    return done.get("exit", 0)
 
 
 def _hub_session(env, by):
@@ -1423,11 +1465,13 @@ def build_parser():
     o.add_argument("--feature")
     o.add_argument("--relayed", action="store_true",
                    help="agents only: pass on a decision the owner made in this conversation (recorded as relayed)")
-    mg = add("merge", cmd_merge, "merge a feature's PR once it is ready, then tidy this machine; agents need --relayed")
+    mg = add("merge", cmd_merge, "merge a feature's PR once it is ready, then tidy this machine; agents need --relayed; "
+                 "the hordle release role may merge an opted-in repo's PR without the owner (D1)")
     mg.add_argument("target", help="the PR number or the feature's name")
     mg.add_argument("--relayed", action="store_true",
                     help="agents only: the owner told you to merge in this conversation (recorded as relayed)")
-    mg.add_argument("--by", help="claude or codex, when detection is ambiguous (with --relayed)")
+    mg.add_argument("--repo", help="merge in this checkout instead of the current folder")
+    mg.add_argument("--by", help="claude or codex, when detection is ambiguous")
     ow = add("owner", cmd_owner, "owner decisions collected by another tool; JSON output")
     osub = ow.add_subparsers(dest="owner_cmd", required=True)
     fp = osub.add_parser("fingerprint")

@@ -189,6 +189,45 @@ class ResolveTest(unittest.TestCase):
         (ev,) = self.hub_events()
         self.assertEqual((ev["event"], ev["slug"], ev["pr"]), ("merged", "clip-studio", 57))
 
+    def test_resolver_event_also_tells_the_owner_session(self):
+        from relaylib import notes
+        helpers.write(self.data, '{"state": "MERGED", "baseRefName": "develop"}')
+        st = dict(self.st, owner={"provider": "claude", "session": "s9", "worktree": "x"})
+        merged.resolve(self.repo, st)
+        (note,) = notes._load(notes.log_path("claude", "s9"))
+        self.assertEqual(note["prefix"], "relay event:")
+        self.assertIn("is merged into develop", note["text"])
+
+    # delegated-merge R12: one event per PR when a delegated merge was announced before GitHub marked it merged
+    def test_announce_claims_once_per_outcome_and_never_touches_merged_json(self):
+        self.assertTrue(merged.announce(self.repo, 57, "timeout"))
+        self.assertFalse(merged.announce(self.repo, 57, "timeout"))
+        self.assertTrue(merged.announce(self.repo, 57, "closed"))  # a different outcome is news
+        self.assertEqual(merged.announced(self.repo, 57), "closed")
+        self.assertEqual(merged._load(), {})
+
+    def test_announce_is_true_when_the_cache_cannot_be_written(self):
+        with mock.patch.object(merged, "_store", side_effect=OSError("read-only")):
+            self.assertTrue(merged.announce(self.repo, 58, "timeout"))
+
+    def test_resolver_does_not_announce_a_pr_announced_as_timeout(self):
+        merged.announce(self.repo, 57, "timeout")
+        helpers.write(self.data, '{"state": "MERGED", "baseRefName": "develop"}')
+        self.assertEqual(merged.resolve(self.repo, self.st), ("merged", None))
+        self.assertTrue(merged.recorded(self.repo, self.st))
+        self.assertEqual(self.hub_events(), [])
+
+    def test_resolver_still_announces_a_real_merge_after_another_outcome(self):
+        merged.announce(self.repo, 57, "head-moved")
+        helpers.write(self.data, '{"state": "MERGED", "baseRefName": "develop"}')
+        merged.resolve(self.repo, self.st)
+        self.assertEqual(len(self.hub_events()), 1)
+
+    def test_resolver_still_announces_an_unannounced_pr(self):
+        helpers.write(self.data, '{"state": "MERGED", "baseRefName": "develop"}')
+        merged.resolve(self.repo, self.st)
+        self.assertEqual(len(self.hub_events()), 1)
+
     def test_release_label_from_the_same_answer(self):
         helpers.write(self.data, '{"state": "MERGED", "baseRefName": "main"}')
         merged.resolve(self.repo, self.st)

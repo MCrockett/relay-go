@@ -98,6 +98,19 @@ if args.startswith("pr ready") and os.path.exists(os.environ.get("FAKE_GH_JSON")
         info["isDraft"] = "--undo" in args
         open(os.environ["FAKE_GH_JSON"], "w").write(json.dumps(info))
     sys.exit(0)
+seq = os.environ.get("FAKE_GH_AFTER_PUSH")  # a PATH to a JSON file: a list of overrides for `pr view` once the marker exists
+if args.startswith("pr view") and seq and os.path.exists(os.environ.get("FAKE_GH_PUSHED") or ""):
+    states, counter = json.load(open(seq)), seq + ".n"
+    n = int(open(counter).read()) if os.path.exists(counter) else 0
+    open(counter, "w").write(str(n + 1))
+    entry = states[min(n, len(states) - 1)]  # the last entry repeats
+    if entry.get("__rc"):
+        sys.stderr.write(entry.get("__err", "gh: could not reach GitHub") + "\\n")
+        sys.exit(entry["__rc"])
+    info = json.load(open(os.environ["FAKE_GH_JSON"]))
+    info.update(entry)
+    sys.stdout.write(json.dumps(info))
+    sys.exit(0)
 if args.startswith("pr list"):
     if os.environ.get("FAKE_GH_PR_LIST_FAILS"):
         sys.stderr.write("gh: could not reach GitHub\\n")
@@ -185,3 +198,48 @@ def name_test_repos(test):
     patch = mock.patch.object(owneractions, "github_repo", side_effect=named)
     patch.start()
     test.addCleanup(patch.stop)
+
+
+class FakeClock:
+    """A clock and sleep for the bounded wait (delegated-merge R10): sleeping only moves the clock."""
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+        self.sleeps.append(seconds)
+
+
+def hook(origin, name, body):
+    """A hook in a bare origin."""
+    path = os.path.join(origin, "hooks", name)
+    write(path, "#!/bin/sh\n" + body)
+    os.chmod(path, 0o755)
+    return path
+
+
+def mark_pushes(origin, marker):
+    """A post-receive hook that touches `marker` once a push has landed."""
+    return hook(origin, "post-receive", f'touch "{marker}"\n')
+
+
+def reject_pushes(origin, text):
+    """A pre-receive hook that refuses every push with `text`."""
+    return hook(origin, "pre-receive", f"echo '{text}' >&2\nexit 1\n")
+
+
+def live_session(provider, sid, cwd=None, state="working"):
+    """A valid session record (no process, so never "gone") in the sessions folder."""
+    import time
+    from relaylib import sessions
+    now = time.time()
+    record = {"provider": provider, "session_id": sid, "state": state, "since": now - 50, "at": now - 5,
+              "event": "Stop", "pending": [], "cwd": cwd}
+    os.makedirs(sessions.folder(), exist_ok=True)
+    with open(sessions.record_path(provider, sid), "w") as f:
+        json.dump(record, f)
+    return record

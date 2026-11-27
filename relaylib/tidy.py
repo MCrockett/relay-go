@@ -87,17 +87,18 @@ def _inside(path, folder):
     return path == folder or path.startswith(folder + os.sep)
 
 
-def run(repo, branch, base, pr_head, cwd=None):
-    """Tidy after the PR for `branch` merged into `base` at `pr_head`. Never raises for a step."""
+def run(repo, branch, base, pr_head, cwd=None, keep=None):
+    """Tidy after the PR for `branch` merged into `base` at `pr_head`. Never raises for a step. `keep` (a delegated
+    merge, R13) is {path, provider, session, main}: the folder a live session is working in, left alone."""
     r = Result()
     try:
-        _run(r, repo, branch, base, pr_head, cwd)
+        _run(r, repo, branch, base, pr_head, cwd, keep)
     except Exception as e:  # a step's own failure is reported by the step; this is anything unexpected
         r.skipped(f"tidy stopped: {e}", "tidy stopped early")
     return r
 
 
-def _run(r, repo, branch, base, pr_head, cwd):
+def _run(r, repo, branch, base, pr_head, cwd, keep=None):
     p = gitops.network_git(repo, "fetch", "--prune", "origin")
     if p.returncode:
         r.skipped(f"fetch failed ({p.stderr.strip()}); run: git fetch --prune origin", "fetch")
@@ -105,6 +106,10 @@ def _run(r, repo, branch, base, pr_head, cwd):
     main, removed = trees[0]["path"], []  # every step after this runs from main, which is never removed
     for wt in trees[1:]:
         if wt["branch"] != branch:
+            continue
+        if keep and os.path.realpath(wt["path"]) == os.path.realpath(keep["path"]):
+            r.skipped(f"kept worktree {wt['path']}: {keep['provider']} session {keep['session']} is working in it; "
+                      "it removes it when it next runs", f"worktree {wt['path']}")
             continue
         try:
             files = _changes(wt["path"], ignored=True)
@@ -122,7 +127,11 @@ def _run(r, repo, branch, base, pr_head, cwd):
             removed.append(wt["path"])
             r.done(f"removed worktree {wt['path']}")
     main_branch = trees[0]["branch"]
-    if main_branch == branch:
+    keep_main = bool(keep and keep.get("main") and main_branch == branch)
+    if keep_main:
+        r.skipped(f"left the main checkout on {branch} and kept local branch {branch}: {keep['provider']} session "
+                  f"{keep['session']} is working in it; it switches when it next runs", "main checkout")
+    elif main_branch == branch:
         main_branch = _switch(r, main, base, branch)
     if main_branch == base:
         _pull(r, main, base)
@@ -134,7 +143,8 @@ def _run(r, repo, branch, base, pr_head, cwd):
             r.done(f"fast-forwarded local {base} (the main checkout stays on {main_branch})")
     else:
         r.done(f"the main checkout stays on {main_branch}")
-    _delete_branch(r, main, branch, pr_head)  # from main: the folder relay ran in may be gone now
+    if not keep_main:
+        _delete_branch(r, main, branch, pr_head)  # from main: the folder relay ran in may be gone now
     _git(main, "worktree", "prune")
     r.done("pruned worktrees")
     if cwd and any(_inside(cwd, path) for path in removed):
@@ -211,3 +221,32 @@ def _delete_branch(r, repo, branch, pr_head):
         r.skipped(f"kept local branch {branch}: {p.stderr.strip()}", f"branch {branch}")
     else:
         r.done(f"deleted local branch {branch}")
+
+
+def leftovers(repo, branch):
+    """Short words for what a merge that did not tidy leaves: the remote branch, each worktree on the branch (the
+    main checkout counts) and the local branch."""
+    left = []
+    if gitops.network_git(repo, "ls-remote", "--heads", "origin", f"refs/heads/{branch}").stdout.strip():
+        left.append(f"remote branch {branch}")
+    left += [f"worktree {wt['path']}" for wt in worktrees(repo) if wt["branch"] == branch]
+    if _exists(repo, f"refs/heads/{branch}"):
+        left.append(f"local branch {branch}")
+    return left
+
+
+def find_keep(repo, owner, branch):
+    """The `keep` for tidy: the folder on `branch` whose name is the owner's recorded worktree while the owner's
+    session is live; None otherwise. owner.worktree is a folder name, so the branch narrows it to one folder."""
+    from . import events
+    if not isinstance(owner, dict) or not all(isinstance(owner.get(k), str) and owner[k]
+                                              for k in ("provider", "session", "worktree")):
+        return None
+    if not events.session_live(owner["provider"], owner["session"]):
+        return None
+    trees = worktrees(repo)
+    for index, wt in enumerate(trees):
+        if wt["branch"] == branch and os.path.basename(wt["path"].rstrip("/")) == owner["worktree"]:
+            return {"path": wt["path"], "provider": owner["provider"], "session": owner["session"],
+                    "main": index == 0}
+    return None

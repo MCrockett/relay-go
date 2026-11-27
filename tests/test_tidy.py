@@ -202,6 +202,71 @@ class TidyTest(unittest.TestCase):
         self.assertIn("fetch", r.left)
         self.assertIn("pruned worktrees", r.lines)
 
+    # delegated-merge R13: a live session keeps its worktree
+    def keep(self, path, main=False):
+        return {"path": path, "provider": "claude", "session": "s1", "main": main}
+
+    def test_keep_leaves_a_linked_worktree_and_says_why(self):
+        path = self.linked()
+        r = tidy.run(self.work, "feat/x", "develop", self.pr_head, keep=self.keep(path))
+        self.assertTrue(os.path.isdir(path))
+        self.assertIn(f"kept worktree {path}: claude session s1 is working in it; it removes it when it next runs",
+                      r.lines)
+        self.assertIn(f"worktree {path}", r.left)
+        self.assertIn("kept local branch feat/x: a worktree still has it checked out", r.lines)
+        self.assertEqual(self.branch(self.work), "develop")
+        self.assertEqual(self.rev(self.work, "develop"), self.rev(self.work, "origin/develop"))
+
+    def test_no_keep_removes_the_worktree_as_before(self):
+        path = self.linked()
+        tidy.run(self.work, "feat/x", "develop", self.pr_head, keep=None)
+        self.assertFalse(os.path.exists(path))
+
+    def test_keep_for_the_main_checkout_leaves_it_on_the_branch(self):
+        r = tidy.run(self.work, "feat/x", "develop", self.pr_head, keep=self.keep(self.work, main=True))
+        self.assertEqual(self.branch(self.work), "feat/x")
+        self.assertIn("feat/x", helpers.sh(self.work, "git", "branch"))
+        self.assertIn(f"left the main checkout on feat/x and kept local branch feat/x: claude session s1 is working "
+                      "in it; it switches when it next runs", r.lines)
+        self.assertEqual(self.rev(self.work, "develop"), self.rev(self.work, "origin/develop"))
+
+    def test_keep_for_another_path_does_not_apply(self):
+        path = self.linked()
+        tidy.run(self.work, "feat/x", "develop", self.pr_head, keep=self.keep(os.path.join(self.tmp, "elsewhere")))
+        self.assertFalse(os.path.exists(path))
+
+    def test_leftovers_lists_remote_branch_worktree_and_local_branch(self):
+        path = self.linked()
+        helpers.sh(self.work, "git", "push", "-q", "origin", "feat/x")  # the merge that did not tidy left it
+        left = tidy.leftovers(self.work, "feat/x")
+        self.assertEqual(left, ["remote branch feat/x", f"worktree {path}", "local branch feat/x"])
+
+    def test_leftovers_is_empty_when_all_gone(self):
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        helpers.sh(self.work, "git", "branch", "-q", "-D", "feat/x")
+        self.assertEqual(tidy.leftovers(self.work, "feat/x"), [])
+
+    def test_find_keep_needs_a_live_session_and_a_matching_folder(self):
+        import json, time
+        from unittest import mock
+        path = self.linked()
+        with mock.patch.dict(os.environ, {"RELAY_HOME": os.path.join(self.tmp, "relayhome")}):
+            owner = {"provider": "claude", "session": "s1", "worktree": os.path.basename(path)}
+            self.assertIsNone(tidy.find_keep(self.work, owner, "feat/x"))  # no session record
+            helpers.live_session("claude", "s1")
+            self.assertEqual(tidy.find_keep(self.work, owner, "feat/x"),
+                             {"path": path, "provider": "claude", "session": "s1", "main": False})
+            self.assertIsNone(tidy.find_keep(self.work, dict(owner, worktree="other"), "feat/x"))
+            self.assertIsNone(tidy.find_keep(self.work, {}, "feat/x"))
+            helpers.live_session("claude", "s1", state="ended")
+            self.assertIsNone(tidy.find_keep(self.work, owner, "feat/x"))
+            helpers.live_session("claude", "s1")
+            helpers.sh(self.work, "git", "worktree", "remove", path)
+            helpers.sh(self.work, "git", "switch", "-q", "feat/x")  # now the main checkout holds the branch
+            owner = dict(owner, worktree=os.path.basename(self.work))
+            got = tidy.find_keep(self.work, owner, "feat/x")
+            self.assertEqual((got["path"], got["main"]), (self.work, True))
+
 
 if __name__ == "__main__":
     unittest.main()

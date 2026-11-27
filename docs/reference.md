@@ -161,6 +161,99 @@ relay never forces a step. A step it skips is reported with the command that fin
 stands. Run it yourself, or tell the agent "merge 23": it runs `relay merge 23 --relayed`, and a PR comment
 records that it passed on your word. The dashboard's Merge button and the hub's merge run the same steps.
 
+### Delegated merges (D1)
+
+In a repo that opts in, the hordle `release` role can merge a reviewed, tested PR without you. Nothing else changes:
+your own merge, and a merge an agent runs for you with `--relayed`, work as above.
+
+**Who may.** `relay merge` decides who is merging first. You, in your own terminal: as today. An agent with
+`--relayed`: as today. Delegated: `HORDLE_ROLE=release` in the environment and no `--relayed`. Any other
+`HORDLE_ROLE` without `--relayed`, and any `HORDLE_ROLE` with `--relayed`, is refused: `only the release role merges
+without the owner (D1); a role run cannot pass on the owner's word`. The role name is a record, not the gate: an agent
+could type `HORDLE_ROLE=release` itself, and relay cannot tell. So nothing rests on it. The conditions below are what
+relay checks, for whoever runs the command, and a spoofed role merges only when every one holds.
+
+**The opt-in.** `[merge] production_branches = ["main"]` in `docs/relay/config.toml`, read only from the PR's base
+branch on origin (at the base commit relay checked), never from the PR's own branch and never from your global relay
+config. There is no second switch: a repo opts in by one PR that you merge, and that PR is itself refused if the role
+tries to merge it, because the file is protected (below).
+
+**The checks.** A delegated merge runs every check your own merge runs (no review running, GitHub known, the head
+unchanged, the PR open, a fresh build GO, the code the GO covered, tests by the base's CI mode), then these, in this
+order. The first that fails refuses with `not delegated (D1): <reason>`, exit 1, and nothing is merged. Refusals of
+the owner's checks carry the same prefix.
+
+| Check | Refusal |
+|---|---|
+| The opt-in (R3) | `<repo> has not opted in: no [merge] production_branches on <base>`, or `[merge] production_branches on <base> must list at least one branch`, or the TOML error naming the file |
+| Not a control-plane repo (R4): `hordle`, `relay-go` and `UpstreamPartners`, matched on the GitHub repository name, ignoring case; a repo cannot opt itself out | `<name> is control plane; the owner merges it` |
+| Not into production (R5): the base is not in the list | `<base> is a production branch` |
+| A reviewed GO (R6) | `no review evidence for the build GO`, or `the build GO was not a review from the preference table` |
+| Tests that ran (R7): the base's CI mode is `pr` or `local`, with its pass | `ci = none never qualifies for D1` |
+| No protected path (R8): no changed file is named `AGENTS.md`, `CLAUDE.md` or `WORKFLOW.md` in any folder, is `docs/relay/config.toml`, or lies under `.github/`; a rename counts on both sides | `touches <path>, which the owner merges` |
+
+A draft PR is refused too: `not delegated (D1): the PR is a draft`.
+
+**What R6 reads.** The review that the build GO came from, read from the published revision (never your checkout):
+the `build-<round>.*.md` file under the feature's `reviews/` folder with the highest round, and, when several share it,
+the one whose front matter `at` is latest. It must be a `GO` for the head the GO covers, from a reviewer and model that
+are an entry of your own review preference table for the build's author (your relay config and its temporary tables,
+never a repo's `config.toml`). Effort is not compared. So these are refused, because their evidence is not a reviewed GO
+from the table: a `relay override go` (no review behind it), a same-provider GO that fell back to the default reviewer
+model rather than a table entry, a GO from a reviewer you picked by hand who is not in the table, and a feature whose
+review rounds were reset when its newest review file is a NO-GO.
+
+**How it lands.** `gh pr merge` cannot be bound to the base relay checked, so a delegated merge does not use it. relay
+makes a merge commit of the checked PR head onto the checked base commit in a temporary detached worktree, with local
+git hooks off, reads the PR once more (it must still be open, not a draft, with the same base and head), and pushes
+that commit to the base with `--force-with-lease` on the checked base commit. A moved base, a conflict or a push
+refused by a GitHub rule (a base that accepts only pull requests) refuses with `not delegated (D1)` and nothing is
+merged. A repo whose non-production base accepts only pull requests cannot use D1 until you relax that rule. The merge
+commit's message ends with `Delegated-merge: D1`. When a push fails or times out, relay reads the base on origin
+before it answers, because the push may have landed with only its reply lost: a base that holds the merge commit
+(or has later commits built on it) counts as merged, and a base relay cannot read or check is reported as `unconfirmed` (exit 1, a notification to you, the
+commit named so you can check), never as a refusal.
+
+**The record.** Once the push has succeeded the merge is on the base, whatever GitHub shows next, so relay writes the
+record first: a PR comment (`Merged by relay under D1 (delegated), run by the hordle release role. Checked: <base>,
+not production; <mode> tests green; GO from <reviewer>; no protected path.`), and a hub log line with `delegated:
+true` and `outcome: pending`. A failed comment or log line is a warning. The final event, queued even when the wait
+fails or relay is interrupted, carries `delegated: true`, an `outcome` and the text `delegated under D1`.
+
+**The wait.** GitHub marks the PR merged some time after its head reaches the base, so relay reads the PR every 2
+seconds for at most 60 and acts on the first outcome. The action lock is released after the push, so other owner
+actions are not refused as busy during the wait (the tidy takes it again for a moment).
+
+| Outcome | What relay does | Exit |
+|---|---|---|
+| `merged` | claims the merge, deletes the remote branch (leased on the checked head; a warning if refused), tidies, queues the event | 0 |
+| `timeout`: still open after 60 seconds | `merged into <base>; GitHub has not marked PR #<n> merged yet`; keeps the branch, skips tidy; the next `relay status` finds the merge; the event lists what is left to tidy | 0, with the warning |
+| `retargeted`: the PR now targets another base | `pushed the merge to <base>; PR #<n> now targets <its base> and stays open: tell the owner`; a desktop notification | 1 |
+| `head-moved`: pushed to after the checks | `merged the checked head <sha> into <base>; PR #<n> has later commits that are not merged and stays open: tell the owner`; a notification | 1 |
+| `closed` | `merged into <base>, but PR #<n> was closed without GitHub marking it merged: tell the owner`; a notification | 1 |
+| `read-failed`: GitHub unreadable when the time ends (one failed read in between is retried) | `GitHub could not be read to confirm PR #<n>: <error>`; a notification | 1 |
+| anything unexpected after the push | `merged into <base> (the merge stands) but relay could not finish: <error>`; outcome `unconfirmed`; a notification | 1 |
+
+In every exit 1 case the code is on the base. The merge is not marked done locally, so `relay status` still shows the
+feature ready to merge, and you decide.
+
+**The live session keeps its worktree.** In a delegated merge, tidy keeps the worktree the feature's session
+(`owner` in `state.md`) is working in while that session is live, and says `kept worktree <path>: <provider> session
+<id> is working in it; it removes it when it next runs`. When that session works in the main checkout, tidy leaves
+the checkout on its branch and keeps the local branch. Every other tidy step runs. Your own merges tidy everything
+as before.
+
+**The feature's session is told.** After any merge (yours, a relayed one or a delegated one) relay sends the merged or
+released event to the feature's own session as a `relay event:` note, unless that session caused the merge or is a hub
+session (which already gets the event). For a delegated merge that kept a worktree the note adds `Remove the
+worktree: git worktree remove <path>`, or, for the main checkout, `Switch this checkout to <base>, pull, and delete
+the local branch <branch>`. The note is sent even when another resolver had already claimed the merge. A failed send
+is a warning.
+
+**`--repo <path>`.** `relay merge --repo <path> <pr|feature>` works as if run from `<path>`, for every caller, so
+the release role can merge in any repo from its one working folder. A path that is not inside a git checkout is
+refused: `<path> is not a git checkout`.
+
 ### Events for the hub
 
 relay writes a one-line event to the hub log (`~/.relay/hub/log.jsonl`) when a build gets a GO, when a feature

@@ -3,7 +3,7 @@ import os
 import sys
 from unittest import mock
 
-from relaylib import events, freshness, identity, merged
+from relaylib import commands, events, freshness, identity, merged, notes
 from tests import helpers
 from tests import test_commands
 
@@ -101,6 +101,165 @@ class MergeCommandTest(test_commands.CommandsTest):  # merge-and-tidy D1 to D5, 
         self.assertFalse(os.path.exists(wt))
         self.assertEqual(self.branch(), "develop")
         self.assertNotIn("fix/tiny", helpers.sh(self.work, "git", "branch"))
+        self.assertIn("the folder you ran this from was removed; continue in", self.last_out)
+
+    def owner_notes(self, sid="s1"):
+        return notes._load(notes.log_path("claude", sid))
+
+    def test_owner_merge_tells_the_feature_session(self):  # R14: the feature's owner is claude s1
+        with mock.patch.dict(os.environ, dict.fromkeys(identity.AGENT_MARKERS, "")):
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        (note,) = self.owner_notes()
+        self.assertEqual(note["prefix"], "relay event:")
+        self.assertIn("is merged into develop", note["text"])
+
+    def test_relayed_merge_does_not_tell_its_own_session(self):
+        self.assertEqual(self.relay("merge", "7", "--relayed"), 0, self.last_err)
+        self.assertEqual(self.owner_notes(), [])
+
+    # the owner's and the relayed merge are unchanged by delegated merges
+    def owner_terminal(self):
+        return mock.patch.dict(os.environ, dict.fromkeys(identity.AGENT_MARKERS, ""))
+
+    def test_owner_merge_still_uses_gh_pr_merge_with_match_head_and_delete_branch(self):
+        head = self.head()  # tidy moves the checkout afterwards
+        with self.owner_terminal():
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        (line,) = self.merged_calls()
+        self.assertEqual(line.strip(), f"pr merge 7 -R owner/project --merge --match-head-commit {head} "
+                                       "--delete-branch")
+
+    def test_owner_merge_ignores_a_repo_without_an_opt_in_and_a_control_plane_name(self):
+        with mock.patch("relaylib.owneractions.github_repo", return_value="owner/hordle"):
+            with self.owner_terminal():
+                self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertEqual(len(self.merged_calls()), 1)
+
+    def test_relayed_merge_ignores_a_control_plane_name(self):
+        with mock.patch("relaylib.owneractions.github_repo", return_value="owner/relay-go"):
+            self.assertEqual(self.relay("merge", "7", "--relayed"), 0, self.last_err)
+        self.assertEqual(len(self.merged_calls()), 1)
+
+    def test_owner_merge_tidies_a_live_session_worktree(self):  # decision 5: only delegated merges keep it
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        linked = os.path.join(os.path.realpath(self.tmp), "elsewhere", "work")
+        os.makedirs(os.path.dirname(linked))
+        helpers.sh(self.work, "git", "worktree", "add", "-q", linked, "fix/tiny")
+        helpers.live_session("claude", "s1", cwd=linked)
+        with self.owner_terminal():
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertFalse(os.path.exists(linked))
+
+    def test_relayed_comment_text_is_unchanged(self):
+        self.assertEqual(self.relay("merge", "7", "--relayed"), 0, self.last_err)
+        with open(self.gh_log) as f:
+            self.assertIn("Merged by the owner, relayed by claude session s1 in its conversation with the owner",
+                          f.read())
+
+    # R16: docs and help
+    def test_merge_help_names_the_release_role(self):
+        sub = commands.build_parser()._subparsers._group_actions[0]
+        (text,) = [a.help for a in sub._choices_actions if a.dest == "merge"]
+        self.assertIn("release role may merge an opted-in repo's PR without the owner", text)
+
+    def test_docs_have_the_delegated_section_and_no_dashes(self):
+        import re
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "docs", "reference.md")) as f:
+            reference = f.read()
+        self.assertIn("### Delegated merges (D1)", reference)
+        section = reference.split("### Delegated merges (D1)", 1)[1].split("\n### ", 1)[0]
+        flat = " ".join(section.split())
+        for fragment in ("has not opted in: no [merge] production_branches on <base>",
+                         "must list at least one branch", "is control plane; the owner merges it",
+                         "is a production branch", "no review evidence for the build GO",
+                         "the build GO was not a review from the preference table",
+                         "ci = none never qualifies for D1", "touches <path>, which the owner merges",
+                         "not delegated (D1):", "same-provider GO that fell back to the default reviewer model",
+                         "reset", "--repo <path>"):
+            self.assertIn(fragment, flat)
+        with open(os.path.join(root, "README.md")) as f:
+            self.assertIn("Delegated merges (D1)", f.read())
+        self.assertIsNone(re.search("[\u2013\u2014]", section))
+        for name in ("spec.md", "plan.md", "idea.md"):
+            with open(os.path.join(root, "docs", "relay", "delegated-merge", name)) as f:
+                self.assertIsNone(re.search("[\u2013\u2014]", f.read()), name)
+
+    def test_the_acceptance_ledger_exists_and_has_no_dashes(self):  # R17
+        import re
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "docs", "relay", "delegated-merge", "acceptance.md")) as f:
+            text = f.read()
+        self.assertIsNone(re.search("[\u2013\u2014]", text))
+        for fragment in ("release", "opt-in PR", "real delegated merge", "decision 8"):
+            self.assertIn(fragment, text)
+
+    # R1: who is merging
+    def args(self, **kw):
+        import argparse
+        return argparse.Namespace(**{"relayed": False, "by": None, **kw})
+
+    def role(self, role, **env):
+        return mock.patch.dict(os.environ, {"HORDLE_ROLE": role, **env})
+
+    def test_owner_terminal_merges_as_today(self):
+        with mock.patch.dict(os.environ, dict.fromkeys(identity.AGENT_MARKERS, "")):
+            self.assertEqual(commands.merge_caller(self.args(), dict(os.environ)), ("owner", None))
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertEqual(len(self.merged_calls()), 1)
+
+    def test_relayed_agent_merges_as_today(self):
+        self.assertEqual(commands.merge_caller(self.args(relayed=True), dict(os.environ)),
+                         ("relayed", "claude session s1"))
+
+    def test_release_role_without_relayed_is_delegated(self):
+        self.assertEqual(commands.merge_caller(self.args(), {"HORDLE_ROLE": "release"}), ("delegated", None))
+
+    ROLE_TEXT = ("only the release role merges without the owner (D1); a role run cannot pass on the owner's word")
+
+    def test_another_role_is_refused(self):
+        with self.role("builder"):
+            self.assertEqual(self.relay("merge", "7"), 1)
+        self.assertIn(self.ROLE_TEXT, self.last_err)
+        self.assertEqual(self.merged_calls(), [])
+
+    def test_role_with_relayed_is_refused(self):
+        for role in ("release", "builder"):
+            with self.role(role):
+                self.assertEqual(self.relay("merge", "7", "--relayed"), 1)
+            self.assertIn(self.ROLE_TEXT, self.last_err)
+        self.assertEqual(self.merged_calls(), [])
+
+    def test_blank_role_is_no_role(self):
+        with mock.patch.dict(os.environ, {"HORDLE_ROLE": " ", **dict.fromkeys(identity.AGENT_MARKERS, "")}):
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+
+    # R15: --repo
+    def test_repo_flag_merges_from_another_folder(self):
+        os.chdir(self.tmp)
+        self.assertEqual(self.relay("merge", "7", "--relayed", "--repo", self.work), 0, self.last_err)
+        self.assertEqual(len(self.merged_calls()), 1)
+
+    def test_repo_flag_with_a_missing_path_is_refused(self):
+        gone = os.path.join(self.tmp, "gone")
+        self.assertEqual(self.relay("merge", "7", "--relayed", "--repo", gone), 1)
+        self.assertIn(f"{gone} is not a git checkout", self.last_err)
+        self.assertEqual(self.merged_calls(), [])
+
+    def test_repo_flag_with_a_plain_folder_is_refused(self):
+        plain = os.path.join(self.tmp, "plain")
+        os.makedirs(plain)
+        self.assertEqual(self.relay("merge", "7", "--relayed", "--repo", plain), 1)
+        self.assertIn(f"{plain} is not a git checkout", self.last_err)
+        self.assertEqual(self.merged_calls(), [])
+
+    def test_repo_flag_tidy_uses_the_real_working_folder(self):
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        wt = os.path.join(self.tmp, "wt-tiny")
+        helpers.sh(self.work, "git", "worktree", "add", "-q", wt, "fix/tiny")
+        os.chdir(wt)
+        self.assertEqual(self.relay("merge", "7", "--relayed", "--repo", self.work), 0, self.last_err)
+        os.chdir(self.work)
         self.assertIn("the folder you ran this from was removed; continue in", self.last_out)
 
 
