@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "fix/test-runs-outside-git",
   "extra_rounds": {},
   "feature": "test-runs-outside-git",
@@ -12,7 +14,7 @@
     "worktree": "test-runs-outside-git"
   },
   "owner_actions": [],
-  "pr": null,
+  "pr": 42,
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
@@ -21,15 +23,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-11-27T08:37:52-05:00",
+  "status": "in-review",
+  "updated": "2026-11-27T09:06:04-05:00",
   "verdicts": {}
 }
 ---
