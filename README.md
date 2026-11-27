@@ -59,6 +59,7 @@ Then, in that repo:
     relay submit          hand in the current stage; the other provider reviews it
     relay status          what is waiting on you, across every project
     relay merge <pr>      merge a feature that has a fresh GO and passing tests
+    relay dispatch <repo> "<request>"   hand work to another repo; its session starts it with relay take --request
 
 In a repo that opts in, hordle's release role can merge a reviewed, tested PR without the owner (see "Delegated merges (D1)" in docs/reference.md).
 

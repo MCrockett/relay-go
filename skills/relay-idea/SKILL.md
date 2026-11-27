@@ -10,6 +10,9 @@ description: Use when starting a new feature or product in a repo whose AGENTS.m
 3. Otherwise run `relay new <slug>`, or `relay new <slug> --idea-file <notes.md>` to start from existing notes. Fill in `docs/relay/<slug>/idea.md`, then run `relay submit`. That moves the feature to spec; continue with the relay-spec skill.
 4. If the owner answered questions or gave notes for this stage, add `--with-owner` to `relay new` or `relay submit`, so their involvement is counted.
 
+5. Told about a waiting request ("request <id> from the hub is waiting"), or asked by the owner to take one? Read it with `relay dispatch --show <id>`, then run `relay take --request <id>` (it uses the slug the hub suggested) or `relay new <slug> --request <id>`. The request becomes the idea: do not pass `--idea` or `--idea-file`. Then continue as for any idea, from step 3.
+6. Need work done in another repo? Do not message its session or run relay there yourself. Ask the hub to dispatch it for you, naming this session, and give the hub the request text.
+
 Always:
 - Run `relay rules` and follow the rules it prints.
 - From `relay new` on, you are the only writer in this repo until you hand off.
