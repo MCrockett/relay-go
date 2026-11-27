@@ -275,6 +275,11 @@ def remote_branches(root):
     return [r for r in refs if r not in ("origin", "origin/HEAD")]
 
 
+def local_branches(root):
+    """Every local branch (refs/heads), checked out or not."""
+    return git(root, "for-each-ref", "--format=%(refname:short)", "refs/heads").stdout.split()
+
+
 def show(root, ref, path):
     found, blob = scancache.lookup(root, ref, path)
     if found:

@@ -6,7 +6,7 @@ import time
 import unittest
 from unittest import mock
 
-from relaylib import dispatch, sessions
+from relaylib import dispatch, gitops, sessions, state
 from relaylib.dispatch import DispatchError
 from tests import helpers
 
@@ -224,6 +224,83 @@ class InputsTest(unittest.TestCase):  # dispatch R1, R1a, R3, R4
     def test_an_unknown_repo_name_is_refused(self):
         with self.assertRaises(DispatchError):
             dispatch.resolve_asker("nothere", None, self.target)
+
+
+def add_feature(repo, branch, slug, rid, base="develop", push=False, own_branch=True):
+    """Commit docs/relay/<slug>/state.md (a request record for `rid`) on `branch`, started from `base`."""
+    helpers.sh(repo, "git", "switch", "-q", "-c", branch, base)
+    st = state.new_state(slug, "r", {"provider": "claude", "session": "S1", "worktree": "r", "since": "x"},
+                         branch if own_branch else "feat/other")
+    st["request"] = {"id": rid, "requested_by": "owner", "asked_by": None, "relayed_by": None, "at": "x"}
+    state.write_state(state.state_path(repo, slug), st)
+    helpers.sh(repo, "git", "add", "-A")
+    helpers.sh(repo, "git", "commit", "-q", "-m", f"relay: new {slug}")
+    if push:
+        helpers.sh(repo, "git", "push", "-q", "-u", "origin", branch)
+    helpers.sh(repo, "git", "switch", "-q", "develop")
+
+
+class FeaturesWithTest(unittest.TestCase):  # dispatch R18 step 1
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(dir="/tmp")
+        self.addCleanup(temp.cleanup)
+        self.tmp = os.path.realpath(temp.name)
+        self.origin, self.work = helpers.make_repo(self.tmp)
+        p = mock.patch.dict(os.environ, {"RELAY_HOME": os.path.join(self.tmp, "h"), "HOME": self.tmp})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_found_on_origin(self):
+        add_feature(self.work, "feat/a", "a", "q1", push=True)
+        helpers.sh(self.work, "git", "branch", "-q", "-D", "feat/a")
+        self.assertEqual(dispatch.features_with(self.work, "q1"), [("a", "origin/feat/a", "origin")])
+
+    def test_found_only_on_a_local_branch_that_is_not_checked_out(self):
+        add_feature(self.work, "feat/a", "a", "q1")
+        self.assertEqual(dispatch.features_with(self.work, "q1"), [("a", "feat/a", "local")])
+
+    def test_found_in_a_worktree_including_uncommitted_state(self):
+        wt = os.path.join(self.tmp, "wt")
+        helpers.sh(self.work, "git", "worktree", "add", "-q", "-b", "feat/w", wt, "develop")
+        st = state.new_state("w", "r", {}, "feat/w")
+        st["request"] = {"id": "q2", "requested_by": "owner", "asked_by": None, "relayed_by": None, "at": "x"}
+        state.write_state(state.state_path(wt, "w"), st)
+        self.assertEqual(dispatch.features_with(self.work, "q2"), [("w", "feat/w", "local")])
+
+    def test_found_only_on_develop_after_the_branch_was_deleted(self):
+        add_feature(self.work, "feat/a", "a", "q1")
+        helpers.sh(self.work, "git", "merge", "-q", "--no-ff", "-m", "merge", "feat/a")
+        helpers.sh(self.work, "git", "push", "-q", "origin", "develop")
+        helpers.sh(self.work, "git", "branch", "-q", "-D", "feat/a")
+        self.assertEqual(dispatch.features_with(self.work, "q1"), [("a", "origin/develop", "origin")])
+
+    def test_a_feature_on_its_own_and_a_stacked_branch_is_reported_once_with_its_own_branch(self):
+        add_feature(self.work, "feat/a", "a", "q1", push=True)
+        helpers.sh(self.work, "git", "switch", "-q", "-c", "feat/b", "feat/a")
+        helpers.write(os.path.join(self.work, "b.txt"), "b\n")
+        helpers.sh(self.work, "git", "add", "-A")
+        helpers.sh(self.work, "git", "commit", "-q", "-m", "b")
+        helpers.sh(self.work, "git", "push", "-q", "-u", "origin", "feat/b")
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        self.assertEqual(dispatch.features_with(self.work, "q1"), [("a", "origin/feat/a", "origin")])
+
+    def test_origin_wins_over_a_local_copy(self):
+        add_feature(self.work, "feat/a", "a", "q1", push=True)
+        self.assertEqual(dispatch.features_with(self.work, "q1"), [("a", "origin/feat/a", "origin")])
+
+    def test_nothing_found_and_other_ids_ignored(self):
+        add_feature(self.work, "feat/a", "a", "q1", push=True)
+        self.assertEqual(dispatch.features_with(self.work, "q9"), [])
+
+    def test_a_fetch_failure_raises_with_gits_message(self):
+        helpers.sh(self.work, "git", "remote", "set-url", "origin", os.path.join(self.tmp, "gone.git"))
+        with self.assertRaises(DispatchError) as ctx:
+            dispatch.features_with(self.work, "q1")
+        self.assertIn("cannot fetch origin", str(ctx.exception))
+
+    def test_local_branches(self):
+        helpers.sh(self.work, "git", "branch", "feat/x")
+        self.assertEqual(gitops.local_branches(self.work), ["develop", "feat/x"])
 
 
 if __name__ == "__main__":

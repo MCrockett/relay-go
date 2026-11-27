@@ -10,7 +10,7 @@ import tempfile
 import time
 import unicodedata
 
-from . import config, gitops
+from . import config, gitops, state
 from .config import relay_home
 from .errors import RelayError
 
@@ -274,3 +274,74 @@ def resolve_asker(value, hub, target_path):
         raise DispatchError(f"--for cannot name a session inside {os.path.basename(target_path)}, "
                             "the repo the work is for")
     return {"provider": pair[0], "session_id": pair[1], "repo": _repo_name(record.get("cwd"))}
+
+
+# ---------------------------------------------------------------- finding a request's feature (R18 step 1)
+
+def _request_id(st):
+    request = st.get("request") if isinstance(st, dict) else None
+    return request.get("id") if isinstance(request, dict) else None
+
+
+def _candidates(root, request_id):
+    """Every copy of a feature whose state.md carries this request, on any origin branch, any local branch and
+    the working copy of every worktree. Unlike ownership.collect, a copy whose `branch` names another branch is
+    kept: a feature merged into develop after its branch was deleted may be the only evidence left."""
+    try:
+        gitops.fetch(root)
+    except RelayError as e:
+        raise DispatchError(str(e))
+    out = []
+
+    def add(slug, ref, where, st):
+        branch = st.get("branch")
+        short = ref[len("origin/"):] if where == "origin" else ref
+        owner = st.get("owner") if isinstance(st.get("owner"), dict) else {}
+        out.append({"slug": slug, "ref": ref, "where": where, "own": bool(branch) and branch == short,
+                    "branch": branch or short, "provider": owner.get("provider"),
+                    "session_id": owner.get("session")})
+
+    refs = [(r, "origin") for r in gitops.remote_branches(root)]
+    refs += [(f"refs/heads/{b}", "local") for b in gitops.local_branches(root)]
+    for ref, where in refs:
+        files = gitops.ls_files(root, ref, state.RELAY_DIR)
+        for path in files:
+            parts = path.split("/")
+            if len(parts) != 4 or parts[3].lower() != "state.md":
+                continue
+            try:
+                st = state.parse_state(gitops.show(root, ref, path) or "", f"{ref}:{path}")
+            except RelayError:
+                continue
+            if _request_id(st) == request_id:
+                add(parts[2], ref[len("refs/heads/"):] if where == "local" else ref, where, st)
+    for wt in gitops.worktrees(root):
+        try:
+            wt_branch = gitops.current_branch(wt)
+            features = state.list_features(wt)
+        except (RelayError, OSError):
+            continue
+        for slug, st in features:
+            if _request_id(st) == request_id:
+                add(slug, wt_branch, "local", st)
+    best = {}
+    for c in out:
+        key = (c["where"] != "origin", not c["own"])
+        if c["slug"] not in best or key < best[c["slug"]][0]:
+            best[c["slug"]] = (key, c)
+    return [c for _, c in sorted(best.values(), key=lambda kc: kc[1]["slug"])]
+
+
+def features_with(root, request_id):
+    """[(slug, ref, where)] for every feature that carries this request, `where` being origin or local. Fetches
+    first; a fetch failure raises DispatchError with git's message."""
+    return [(c["slug"], c["ref"], c["where"]) for c in _candidates(root, request_id)]
+
+
+def find_features(root, request_id):
+    """As features_with, but each as a dict with slug, ref, where, branch and the owner session, ready for
+    mark_started."""
+    found = _candidates(root, request_id)
+    now = time.time()
+    return [{"slug": c["slug"], "ref": c["ref"], "where": c["where"], "branch": c["branch"],
+             "provider": c["provider"], "session_id": c["session_id"], "at": now} for c in found]
