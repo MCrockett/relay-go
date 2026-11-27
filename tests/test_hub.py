@@ -9,6 +9,7 @@ import unittest
 from unittest import mock
 
 from relaylib import commands, hub, notes, sessions, state
+from relaylib.errors import RelayError
 from tests import helpers
 from tests.test_agentask import said
 from tests.test_notes import FakeInbox
@@ -332,6 +333,73 @@ SRC = {"from": "build", "seconds": 1.0}
 
 def feat(n, slug):
     return {"n": n, "kind": "feature", "slug": slug}
+
+
+class RequestItemsTest(HubHome):  # dispatch R9, R11, R23
+    NOW = 10_000.0
+
+    def make(self, text="fix the thing\nand more", now=None, repo="thinkling"):
+        from relaylib import dispatch
+        return dispatch.create({"repo": {"name": repo, "path": "/p/" + repo}, "request": text, "owner_said": None,
+                                "slug": None, "requested_by": "owner", "asked_by": None, "relayed_by": None},
+                               now=now or self.NOW - 7200)
+
+    def digest(self, data, **kw):
+        with mock.patch.object(hub, "load", return_value=(data, {"from": "dashboard", "age_seconds": 1.0})):
+            return hub.digest(S, records=[rec("S")], now=self.NOW, **kw)
+
+    def test_a_waiting_request_is_numbered_among_the_features_by_its_time(self):
+        r = self.make(now=self.NOW - 500)
+        data = {"rows": [row("old", status="ready-to-merge", wait=self.NOW - 900, actions=["merge"]),
+                         row("new", status="ready-to-merge", wait=self.NOW - 100, actions=["merge"])]}
+        records, _ = __import__("relaylib.dispatch", fromlist=["x"]).all_records()
+        found = hub.items(data, hubs=set(), requests=records)
+        self.assertEqual([(i["n"], i["kind"]) for i in found], [(1, "feature"), (2, "request"), (3, "feature")])
+        item = found[1]
+        self.assertEqual((item["id"], item["repo"], item["repo_path"], item["actions"], item["wait_since"]),
+                         (r["id"], "thinkling", "/p/thinkling", ["cancel"], self.NOW - 500))
+        self.assertEqual(hub.counts(data, found, hubs=set()), {"features": 0, "sessions": 0})
+
+    def test_the_text_names_the_request_and_how_to_start_or_cancel_it(self):
+        r = self.make()
+        text, warnings = self.digest({"rows": []})
+        self.assertIn(f"1. thinkling: request {r['id']}, waiting for a session · 2h", text)
+        self.assertIn("    fix the thing", text)
+        self.assertNotIn("and more", text)
+        self.assertIn("cd /p/thinkling && claude", text)
+        self.assertIn(f'take request {r["id"]}', text)
+        self.assertIn(f"relay dispatch --cancel {r['id']} --relayed", text)
+        self.assertEqual(warnings, [])
+        out = json.loads(self.digest({"rows": []}, as_json=True)[0])
+        self.assertEqual(out["items"][0]["kind"], "request")
+        self.assertNotIn("repo_path", out["items"][0])
+
+    def test_started_and_cancelled_requests_are_not_shown(self):
+        from relaylib import dispatch
+        a, b, c = self.make(now=self.NOW - 3), self.make(repo="b", now=self.NOW - 2000), self.make(repo="c", now=self.NOW - 9000)
+        dispatch.mark_started(a["id"], {"slug": "s", "branch": "x", "provider": "claude", "session_id": "Z"})
+        dispatch.mutate(b["id"], lambda rec_: rec_.update(status="cancelled"))
+        text, _ = self.digest({"rows": []})
+        self.assertNotIn(a["id"], text)
+        self.assertNotIn(b["id"], text)
+        self.assertIn(c["id"], text)
+
+    def test_an_unreadable_record_is_a_warning_not_a_failure(self):
+        from relaylib import dispatch
+        r = self.make()
+        bad = os.path.join(dispatch.folder(), "qbroken.json")
+        with open(bad, "w") as f:
+            f.write("{")
+        text, warnings = self.digest({"rows": []})
+        self.assertIn(r["id"], text)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("qbroken.json", warnings[0])
+
+    def test_a_request_is_not_acted_on_as_a_feature(self):
+        item = {"n": 1, "kind": "request", "id": "q1", "repo": "x"}
+        with self.assertRaises(RelayError) as ctx:
+            hub.note_target(item)
+        self.assertIn("no session", str(ctx.exception))
 
 
 class DigestStoreTest(HubHome):  # mobile-hub D4, R7, R7a

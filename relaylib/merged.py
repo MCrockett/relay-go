@@ -109,12 +109,17 @@ def announced(repo_dir, pr):
 
 def _queue_merge_event(repo_dir, st, base):
     from . import events
+    kind = "released" if base == "main" else "merged"
+    fields = events.request_fields(st, kind)  # the dispatch record moves even when no note is sent below
+    name = st.get("repo") or gitops.repo_name(repo_dir)
+    text = events.merged_text(name, st.get("feature"), st["pr"], base)
     if announced(repo_dir, st["pr"]) == "timeout":
-        return  # a delegated merge already told of this merge, saying GitHub had not marked it yet
-    _warn(events.queue("released" if base == "main" else "merged", st.get("repo") or gitops.repo_name(repo_dir),
-                 st.get("feature"), "build", st["pr"],
-                 events.merged_text(st.get("repo") or gitops.repo_name(repo_dir), st.get("feature"), st["pr"], base),
-                 owner=events.owner_of(st)))
+        # a delegated merge already told the hubs, saying GitHub had not marked it yet; the requesters were not
+        # told then (dispatch R20), so they hear of it now
+        if fields.get("requesters"):
+            _warn(events.queue(kind, name, st.get("feature"), "build", st["pr"], text, requesters_only=True, **fields))
+        return
+    _warn(events.queue(kind, name, st.get("feature"), "build", st["pr"], text, owner=events.owner_of(st), **fields))
 
 
 def _warn(warnings):

@@ -218,6 +218,17 @@ def _session_item(entry):
             "answer_here": entry.get("state") == "permission" or bool(QUESTION_TOOLS & set(tools))}
 
 
+def _request_item(record):
+    return {"kind": "request", "id": record["id"], "repo": record["repo"].get("name"),
+            "repo_path": record["repo"].get("path"), "first_line": _first_line(record), "wait_since":
+            record["created_at"], "actions": ["cancel"]}
+
+
+def _first_line(record):
+    from . import dispatch
+    return dispatch.first_line(record)
+
+
 def _num(value):
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
@@ -270,7 +281,7 @@ def _clean(data):
 
 def _order(item):
     at = item.get("wait_since")
-    name = (item.get("repo") or "", item.get("slug") or "") if item["kind"] != "session" else \
+    name = (item.get("repo") or "", item.get("slug") or item.get("id") or "") if item["kind"] != "session" else \
         (item.get("label") or "", item.get("session_id") or "")
     return (at is None, at or 0) + name
 
@@ -285,15 +296,17 @@ def _without_hubs(row, hubs):
     return dict(row, asks=kept, waiting_on_owner=bool(kept), wait_since=min(times) if times else None)
 
 
-def items(data, hubs=None):
+def items(data, hubs=None, requests=()):
     """The digest's items, oldest wait first, numbered from 1 (D2, R1 to R3). Hub sessions are left out even
-    when a snapshot cached before they registered lists them, and so are asks that wait on one."""
+    when a snapshot cached before they registered lists them, and so are asks that wait on one. `requests` are
+    the dispatch records; each waiting one is an item of kind request (dispatch R9)."""
     hubs = registered() if hubs is None else hubs
     data = _clean(data)
     rows = [_without_hubs(r, hubs) for r in data.get("rows") or []]
     out = [_feature_item(r) for r in rows if r.get("error") or _feature_wanted(r)]
     out += [_session_item(e) for e in data.get("other_sessions") or []
             if (e.get("provider"), e.get("session_id")) not in hubs]
+    out += [_request_item(r) for r in requests if r.get("status") == "waiting"]
     out.sort(key=_order)
     for n, item in enumerate(out, 1):
         item["n"] = n
@@ -304,7 +317,7 @@ def counts(data, found, hubs=None):
     """What needs nothing: features in progress and sessions working, beyond the items."""
     hubs = registered() if hubs is None else hubs
     data = _clean(data)
-    listed = {(i.get("repo"), i.get("slug")) for i in found if i["kind"] != "session"}
+    listed = {(i.get("repo"), i.get("slug")) for i in found if i["kind"] not in ("session", "request")}
     sessions = {(i.get("provider"), i.get("session_id")) for i in found if i["kind"] == "session"}
     sessions |= {(i["session"]["provider"], i["session"]["session_id"]) for i in found if i.get("session")}
     features = [r for r in data.get("rows") or [] if (r.get("repo"), r.get("feature")) not in listed
@@ -466,7 +479,15 @@ def _item_lines(item, numbered, now):
     wait = f" · waiting {_age(now - item['wait_since'])}" if item.get("wait_since") is not None else ""
     if item["kind"] == "error":
         return _wrap(f"{lead}{item['repo']} · could not be read: {item['error']}", "")
-    if item["kind"] == "session":
+    if item["kind"] == "request":
+        age = f" · {_age(now - item['wait_since'])}" if item.get("wait_since") is not None else ""
+        lines = _wrap(f"{lead}{item['repo']}: request {item['id']}, waiting for a session{age}", "")
+        if item.get("first_line"):
+            lines += _wrap(item["first_line"], "    ")
+        if item.get("repo_path"):
+            lines += _wrap(f'start: cd {item["repo_path"]} && claude, then say "take request {item["id"]}"', "    ")
+        lines += _wrap(f"cancel: relay dispatch --cancel {item['id']} --relayed", "    ")
+    elif item["kind"] == "session":
         state = "" if item["state"] == "waiting" and wait else f" · {item['state']}"  # "waiting 40m" says it
         lines = _wrap(f"{lead}{item['label']} · {item['provider']} session{state}{wait}", "")
         if item.get("pending_tools"):
@@ -646,7 +667,14 @@ def digest(session, records=None, as_json=False, now=None, page=False):
     data, source = load()
     failed = problems(data)
     warnings += failed
-    found = items(data)
+    try:
+        from . import dispatch
+        requests, unreadable = dispatch.waiting_records()
+    except Exception as e:
+        requests, unreadable = [], []
+        warnings.append(f"could not read dispatch requests: {e}")
+    warnings += [f"could not read dispatch request file {path}" for path in unreadable]
+    found = items(data, requests=requests)
     c = counts(data, found)
     view = usage_view(data)
     digest_id, warning = save(found, source, session, now)

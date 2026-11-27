@@ -121,6 +121,17 @@ class RenderTest(unittest.TestCase):  # phone-artifact D3, D5, R4, R5, R7, R9
         self.assertEqual(cards(page), 4)
         self.assertNotIn("Nothing needs you right now", page)
 
+    def test_a_request_card_has_no_path(self):  # dispatch R9
+        item = {"n": 1, "kind": "request", "id": "qabc12", "repo": "thinkling", "repo_path": HOME + "/p/thinkling",
+                "first_line": "fix <b>the</b> thing", "wait_since": NOW - 7200, "actions": ["cancel"]}
+        page = self.render([item])
+        for text in ("thinkling: request qabc12, waiting for a session", "waiting 2h", "fix &lt;b&gt;the&lt;/b&gt; thing",
+                     "relay dispatch --cancel qabc12 --relayed"):
+            self.assertIn(text, page)
+        self.assertNotIn("/p/thinkling", page)
+        self.assertNotIn(HOME, page)
+        self.assertEqual(cards(page), 1)
+
     def test_an_unsaved_digest_has_no_numbers(self):
         page = self.render([feature(1), session(2)], digest_id=None)
         self.assertIn("Not saved: actions need a new digest.", page)

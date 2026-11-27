@@ -353,13 +353,36 @@ def _other_lines(others, now):
     return lines
 
 
-def render(rows, others=()):
+def _request_lines(requests, now):
+    from . import dispatch
+    lines = ["", "Requests waiting for a session"]
+    for r in requests:
+        lines.append(f"* {r['repo']['name']} · request {r['id']} · waiting {health.age(now - r['created_at'])}")
+        first = dispatch.first_line(r)
+        if first:
+            lines.append(f"    {first}")
+    return lines
+
+
+def waiting_requests():
+    """The dispatch requests waiting for a session, or [] when they cannot be read."""
+    try:
+        from . import dispatch
+        return dispatch.waiting_records()[0]
+    except Exception:
+        return []
+
+
+def render(rows, others=(), requests=()):
     now = time.time()
     if not rows:
-        if not others:
+        if not others and not requests:
             return "No relay features. Start one with `relay new <slug>` inside a repo."
-        lines = ["No relay features. Start one with `relay new <slug>` inside a repo."] + _other_lines(others, now)
-        lines.append(f"\n{len(others)} waiting on you (*)")
+        lines = ["No relay features. Start one with `relay new <slug>` inside a repo."] + _other_lines(others, now) \
+            if others else ["No relay features. Start one with `relay new <slug>` inside a repo."]
+        if requests:
+            lines += _request_lines(requests, now)
+        lines.append(f"\n{len(others) + len(requests)} waiting on you (*)")
         return "\n".join(lines)
     heads = [c.upper() for c in COLUMNS] + ["FLAGS"]
     table = [[str(r[c] if r[c] is not None else "") for c in COLUMNS] + ["; ".join(r["flags"])] for r in rows]
@@ -379,7 +402,9 @@ def render(rows, others=()):
                 lines.append(f"    {label}: {r['excerpt']['text']}")
     if others:
         lines += _other_lines(others, now)
-    lines.append(f"\n{sum(r['waiting_on_owner'] for r in rows) + len(others)} waiting on you (*)")
+    if requests:
+        lines += _request_lines(requests, now)
+    lines.append(f"\n{sum(r['waiting_on_owner'] for r in rows) + len(others) + len(requests)} waiting on you (*)")
     return "\n".join(lines)
 
 
@@ -402,6 +427,7 @@ def cmd_status(args):
     if args.json:  # unchanged: feature rows only, oldest wait first (other-sessions D5, running-now D8)
         print(json.dumps(sorted(rows, key=waiting.oldest_first_key), indent=2))
     else:
-        print(render(sorted(rows, key=waiting.sort_key), other_sessions(root, claimed)))  # newest wait first
+        print(render(sorted(rows, key=waiting.sort_key), other_sessions(root, claimed),  # newest wait first
+                     waiting_requests()))
         for r in hidden:  # why a closed or gone feature left the list (D12); named by the checkout it is in
             print(f"Hidden: {os.path.basename(r['checkout'])}/{r['feature']}: {r['hidden']}")

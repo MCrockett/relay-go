@@ -320,10 +320,11 @@ def merge(repo, slug, seen, relayed_by=None, source="hub", cause=None, cwd=None)
         done["tidy"] = tidied.lines
         if claimed or warning:  # one event per PR: a resolver that saw the merge first already announced it
             name = st.get("repo") or gitops.repo_name(repo)
-            events.queue("released" if info["baseRefName"] == "main" else "merged", name, slug, "build",
+            kind = "released" if info["baseRefName"] == "main" else "merged"
+            events.queue(kind, name, slug, "build",
                          info["number"], events.merged_text(name, slug, info["number"], info["baseRefName"],
                                                             tidied.left, tidied=True), cause,
-                         owner=events.owner_of(st))
+                         owner=events.owner_of(st), **events.request_fields(st, kind))
         if warnings:
             done["warning"] = "; ".join(warnings)
         return done
@@ -427,7 +428,8 @@ def _delegated_record(repo, slug, st, fresh, info, remote, base, facts, merge_sh
                          else f"Remove the worktree: git worktree remove {keep['path']}")
             text = events.merged_text(name, slug, number, base, tidied.left, tidied=True, delegated=True)
             # a resolver that saw the merge first already told the hub sessions: log the line, tell the owner only
-            record(text, "merged", note_extra=extra, **({} if claimed or warning else {"owner_only": True}))
+            record(text, "merged", note_extra=extra, **events.request_fields(st, kind),
+                   **({} if claimed or warning else {"owner_only": True}))
         else:
             announced = merged.announce(repo, number, outcome.name)
             left = tidy.leftovers(repo, branch) if outcome.name == "timeout" else []

@@ -919,6 +919,18 @@ class MergedOutcomeTest(MergedRun):  # R10 merged, R11, R12, R13, R14
         self.assertIn("relay: Merged PR #7 into develop, delegated under D1", self.last_out)
         self.assertEqual(self.last_err, "")
 
+    def test_a_delegated_merge_tells_the_requesters_once(self):  # dispatch R20, R21
+        from relaylib import dispatch, events
+        rec = dispatch.create({"repo": {"name": "r", "path": self.work}, "request": "x", "owner_said": None,
+                               "slug": None, "requested_by": "owner", "asked_by": None, "relayed_by": None}, now=1.0)
+        with mock.patch.object(events, "request_id_of", return_value=rec["id"]), \
+                mock.patch.object(events, "requesters_of", return_value=[("claude", "ask1")]):
+            self.assertEqual(self.relay("merge", "7"), 0, self.last_err)
+        self.assertEqual(dispatch.read(rec["id"])["status"], "merged")
+        told = [n["text"] for n in notes._load(notes.log_path("claude", "ask1"))]
+        self.assertEqual(len(told), 1)
+        self.assertTrue(told[0].endswith(f"This was your request {rec['id']}."), told)
+
     def test_the_hub_log_line_is_written_before_the_wait(self):
         seen = []
 

@@ -472,6 +472,58 @@ still act by typing in the hub chat. relay builds it (`relay hub --page`) withou
 paths or tokens, and redacts secrets and email addresses in quoted text. It shows how old it is and says so
 once its numbers expire after 24 hours.
 
+### Dispatching work to another repo
+
+`relay dispatch <repo> "<request>" --owner-said "<quote>" [--slug <slug>] [--for <asker>] --relayed` is how the
+hub hands work to another repo. `<repo>` is a git checkout directly under the projects root. The hub records a
+request and prints its id; a session in that repo turns it into a feature. Only a registered hub dispatches,
+and only with `--relayed`; the owner can also run it from their own terminal without `--relayed`, and then the
+request is the owner's own words. Both texts are cleaned of control characters and limited to 4000 characters.
+`--owner-said` is required when relayed and holds what the owner typed, apart from the hub's own statement of
+the work. `--slug` only suggests a name.
+
+`--for` names the session that first asked for the work: `<provider>:<session id>`, or a repo folder with exactly
+one live session. It cannot be the hub itself or a session in the target repo. That session and the hub are the
+requesters: both hear when the request is dispatched, picked up, merged or released.
+
+Requests live on this machine, in `~/.relay/dispatch/`, one JSON file each (folder mode 0700, files 0600). Nothing
+goes to the target repo until its session starts the feature, so a request never needs the repo's branch rules or
+CI. A request is waiting, started, merged, released or cancelled. Finished records are removed 30 days after
+their last change; an unreadable file is skipped and named in a warning by `relay dispatch --list` and `relay hub`.
+`relay dispatch --list [--json]` lists waiting and started requests, `--show <id>` prints one in full (any
+session may), and `--cancel <id> --relayed` cancels a waiting one.
+
+A waiting request shows on `relay hub` and its phone page as an item numbered with the others (cancel with
+`relay dispatch --cancel`, or start a session in that repo), and on `relay status` under "Requests waiting for a
+session", counted among the items waiting on you. At the hooks that carry merge notices, a session whose folder
+is inside the target repo (its main checkout or a worktree) is told once about each waiting request. relay never
+starts or resumes a session to tell it.
+
+The target session runs `relay take --request <id>` (the slug the hub suggested, or `--slug`) or
+`relay new <slug> --request <id>`. Both run the normal `relay new` with all its checks and write `idea.md` from
+the request, with the owner's words in their own section. The request must be waiting and the checkout must be
+the repo it was dispatched to; otherwise relay refuses before it switches branch or writes anything. The
+feature's `state.md` records the request and an owner action, so the owner's involvement is counted.
+
+One request becomes at most one feature. Before anything else, relay looks through every branch of the repo for a
+feature with that request. A feature on origin marks the request started and the command refuses; one only on a
+local branch is refused with how to push or delete it. Then the session claims the request. A second session is
+refused while the first's claim is live; a claim can be taken over once its session is gone or it is 30 minutes
+old. Just before the push the claim becomes "publishing", and while it is, nobody can cancel or take over the
+request. If the request was cancelled or taken over meanwhile, relay does not push and names the local branch to
+delete. A failed push keeps the claim, so the next attempt finds the local branch. If a publishing session dies,
+the claim stays until a start attempt, a cancel or `--show` looks on origin: found, the request is started; not
+found, the claim may be taken over. If that look cannot fetch, the claim stays and the error is shown. A failure
+before the commit removes the claim and leaves the request waiting.
+
+Once the feature is published, each requester is told: `relay: request <id> was started in <repo> as <slug> by
+<provider> session <session id>.` When the feature merges or is released, however relay learns of it (the owner's
+merge, a relayed or delegated merge, or a merge found on GitHub), each requester is told once, with ` This was
+your request <id>.` added to the event note. A requester that is a hub gets that one note, not two; a requester
+that caused the event is not told it. A request the owner dispatched from their terminal adds the line to every
+hub's note. The request's record becomes merged or released at the same moment; if the record is missing, the
+note still goes, from the feature's `state.md`. Notes are queued for the next prompt when the session is not open.
+
 For SwiftBar, choose its plugin folder and run `./install.sh`. The installer links `menubar/relay.30s.py`.
 The menu shows how many features need you, links to the dashboard or GitHub, and can open the UI.
 The installer prints setup instructions when SwiftBar has no `PluginDirectory` setting.

@@ -353,6 +353,58 @@ class MergeNoticeTest(NoticeFixture):
         self.assertIn("PR #26 (docker)", self.hook())
 
 
+class RequestNoticeTest(NoticeFixture):  # dispatch R12
+    def setUp(self):
+        super().setUp()
+        from relaylib import dispatch
+        self.dispatch = dispatch
+        self.path = os.path.realpath(self.repo)
+        self.wt = os.path.join(os.path.dirname(self.path), "wt")
+        subprocess.run(["git", "-C", self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                        "--allow-empty", "-m", "init"], check=True)
+        subprocess.run(["git", "-C", self.repo, "worktree", "add", "-q", "-b", "side", self.wt], check=True)
+
+    def request(self, text="do the thing\nmore"):
+        return self.dispatch.create({"repo": {"name": "proj", "path": self.path}, "request": text,
+                                     "owner_said": None, "slug": None, "requested_by": "owner", "asked_by": None,
+                                     "relayed_by": None}, now=1.0)["id"]
+
+    def test_a_session_in_the_repo_or_its_worktree_is_told_once(self):
+        rid = self.request()
+        text = json.loads(self.hook())["hookSpecificOutput"]["additionalContext"]
+        self.assertEqual(text, f"relay: request {rid} from the hub is waiting in proj: do the thing. Read it with "
+                               f"relay dispatch --show {rid}, then start it with relay take --request {rid} or "
+                               f"relay new <slug> --request {rid}.")
+        self.assertEqual(self.hook(), "")
+        self.assertIn(rid, self.hook(session="s2", cwd=self.wt))
+        self.assertEqual(self.hook(session="s2", cwd=self.wt), "")
+
+    def test_a_session_elsewhere_or_a_started_request_hears_nothing(self):
+        rid = self.request()
+        self.assertEqual(self.hook(cwd=self.home), "")
+        self.dispatch.mark_started(rid, {"slug": "s", "branch": "feat/s", "provider": "claude",
+                                         "session_id": "x"})
+        self.assertEqual(self.hook(session="s3"), "")
+
+    def test_a_merge_notice_and_a_request_notice_share_one_output(self):
+        self.feature("docker", 26)
+        self.merged(26)
+        rid = self.request()
+        text = json.loads(self.hook())["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("PR #26 (docker) was merged", text)
+        self.assertIn(f"request {rid}", text)
+
+    def test_a_broken_dispatch_folder_leaves_the_hook_alone(self):
+        self.request()
+        with mock.patch("relaylib.dispatch.all_records", side_effect=RuntimeError("boom")):
+            self.assertEqual(self.hook(), "")
+        self.assertTrue(os.path.exists(sessions.record_path("claude", "s1")))
+        folder = self.dispatch.folder()
+        with open(os.path.join(folder, "qbad.json"), "w") as f:
+            f.write("{")
+        self.assertIn("request", self.hook(session="s9"))
+
+
 T1, T2 = "Thu Oct  8 15:13:49 2026", "Fri Oct  9 09:00:00 2026"
 
 

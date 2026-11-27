@@ -54,16 +54,45 @@ def owner_of(st):
     return None
 
 
+def requesters_of(st):
+    """[(provider, session_id)] who asked for a feature through relay dispatch (R19): the hub that dispatched it
+    and the asker. Empty for a feature with no request or one the owner dispatched from their terminal."""
+    from . import dispatch
+    request = st.get("request") if isinstance(st, dict) else None
+    return dispatch.requesters(request) if isinstance(request, dict) else []
+
+
+def request_id_of(st):
+    request = st.get("request") if isinstance(st, dict) else None
+    rid = request.get("id") if isinstance(request, dict) else None
+    return rid if isinstance(rid, str) and rid else None
+
+
+def request_fields(st, kind):
+    """Keyword arguments for queue()/event() when this feature came from a dispatch request, and the dispatch
+    record moves to `kind` (merged or released) now, whether or not a note is then sent (R21). {} otherwise."""
+    rid = request_id_of(st)
+    if not rid:
+        return {}
+    from . import dispatch
+    dispatch.mark_landed(rid, kind)
+    return {"requesters": requesters_of(st), "request_id": rid}
+
+
 def event(kind, repo, slug, stage, pr, text, cause=None, *, owner=None, note_extra="", fields=None,
-          log_only=False, owner_only=False):
+          log_only=False, owner_only=False, requesters=(), request_id=None, requesters_only=False):
     """`owner`: the feature's session, told of a merge (R14) with `note_extra` added to its note. `fields` join the
     hub log line. `log_only`: the log line and no note at all; `owner_only`: the log line and the owner's note,
-    not the hub sessions' (they already had the event from the resolver that saw the merge first)."""
+    not the hub sessions' (they already had the event from the resolver that saw the merge first).
+    `request_id` and `requesters`: the feature came from a dispatch request (R20); a merged or released note to a
+    requester ends with "This was your request <id>." (to every hub when `requesters` is empty).
+    `requesters_only`: only the requesters' notes, with no hub log line, for a merge the hubs already heard of."""
     if kind not in KINDS:
         raise ValueError(f"unknown event {kind}")
     return {"kind": kind, "repo": repo, "slug": slug, "stage": stage, "pr": pr, "text": text, "cause": cause,
             "owner": owner, "note_extra": note_extra, "fields": fields, "log_only": log_only,
-            "owner_only": owner_only}
+            "owner_only": owner_only, "requesters": [tuple(r) for r in requesters], "request_id": request_id,
+            "requesters_only": requesters_only}
 
 
 def queue(kind, repo, slug, stage, pr, text, cause=None, **extra):
@@ -113,6 +142,12 @@ def deliver(ev):
     from . import hub
     warnings = []
     try:
+        if ev.get("requesters_only"):
+            add = f" This was your request {ev['request_id']}." if ev.get("request_id") else ""
+            for provider, sid in ev.get("requesters") or []:
+                if (provider, sid) != ev.get("cause"):
+                    _send(provider, sid, ev["text"] + add, warnings)
+            return warnings
         warning = hub.log({"command": "event", "event": ev["kind"], "repo": ev["repo"], "slug": ev["slug"],
                            "pr": ev["pr"], "text": ev["text"], **(ev.get("fields") or {})})
         if warning:
@@ -120,16 +155,25 @@ def deliver(ev):
         if ev.get("log_only"):
             return warnings
         registered = hub.registered()
+        landed = ev["kind"] in ("merged", "released")
+        asked = ev.get("requesters") or []
+        add = f" This was your request {ev['request_id']}." if landed and ev.get("request_id") else ""
+        cause = ev.get("cause")
         if not ev.get("owner_only"):
             for provider, sid in sorted(registered):
-                if ev.get("cause") == (provider, sid):
+                if cause == (provider, sid):
                     continue
-                _send(provider, sid, ev["text"], warnings)
-        owner = ev.get("owner")
-        if (owner and tuple(owner) != ev.get("cause") and tuple(owner) not in registered
-                and ev["kind"] in ("merged", "released")):
+                _send(provider, sid, ev["text"] + (add if not asked or (provider, sid) in asked else ""), warnings)
+        owner = tuple(ev["owner"]) if ev.get("owner") else None
+        if owner and owner != cause and owner not in registered and landed:
             extra = ev.get("note_extra")
-            _send(owner[0], owner[1], ev["text"] + (" " + extra if extra else ""), warnings)
+            _send(owner[0], owner[1], ev["text"] + (" " + extra if extra else "")
+                  + (add if owner in asked else ""), warnings)
+        if add:
+            for provider, sid in asked:  # a requester no note above reached: not a hub, not the cause, not the owner
+                if (provider, sid) in registered or (provider, sid) == cause or (provider, sid) == owner:
+                    continue
+                _send(provider, sid, ev["text"] + add, warnings)
     except Exception as e:
         warnings.append(f"could not deliver the event: {e}")
     return warnings
