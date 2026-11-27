@@ -105,6 +105,17 @@ def all_records():
     return records, unreadable
 
 
+def waiting_records():
+    """([waiting records], [unreadable file paths]), oldest first."""
+    records, unreadable = all_records()
+    return [r for r in records if r["status"] == "waiting"], unreadable
+
+
+def first_line(record):
+    """The first non-empty line of a request."""
+    return next((x.strip() for x in record["request"].splitlines() if x.strip()), "")
+
+
 def prune(now=None):
     """Remove finished records whose last change is over 30 days old (R22). Waiting and started ones stay."""
     now = time.time() if now is None else now

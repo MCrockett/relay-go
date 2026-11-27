@@ -1408,6 +1408,8 @@ def cmd_hub_act(args):
         item = hub.resolve(args.ref, me)
         if item["kind"] == "session":
             raise RelayError(f"item {item['n']} is a session; use relay hub note")
+        if item["kind"] == "request":
+            raise RelayError(f"item {item['n']} is a request; use relay dispatch --cancel {item['id']} --relayed")
         if item["kind"] != "feature":
             raise RelayError(f"item {item['n']} has no feature to act on")
         entry["target"] = f"{item['repo']}/{item['slug']}"

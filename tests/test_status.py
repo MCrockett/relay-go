@@ -256,6 +256,35 @@ class StatusTest(StatusFixture):
         self.assertEqual([r["feature"] for r in before], ["nba"])                 # --json: feature rows only
         self.assertNotIn("P1", json.dumps(before))
 
+    def request(self, repo="thinkling", text="fix the thing\nmore", age_s=7200):
+        from relaylib import dispatch
+        return dispatch.create({"repo": {"name": repo, "path": "/p/" + repo}, "request": text, "owner_said": None,
+                                "slug": None, "requested_by": "owner", "asked_by": None, "relayed_by": None},
+                               now=time.time() - age_s)
+
+    def test_waiting_requests_show_in_a_block_and_the_total(self):  # dispatch R10, R11
+        self.held("bottomsup", "nba", "S1", status="waiting-owner", stage="spec")
+        r = self.request()
+        started = self.request(repo="gone")
+        from relaylib import dispatch
+        dispatch.mark_started(started["id"], {"slug": "s", "branch": "b", "provider": "claude", "session_id": "Z"})
+        text = self.run_cmd("status")
+        self.assertIn(f"\nRequests waiting for a session\n* thinkling · request {r['id']} · waiting 2h\n"
+                      "    fix the thing\n", text)
+        self.assertNotIn(started["id"], text)
+        self.assertIn("2 waiting on you (*)", text)
+        self.assertNotIn("Requests waiting", self.run_cmd("status", "--json"))
+
+    def test_requests_with_no_features_and_an_unreadable_record(self):
+        from relaylib import dispatch
+        r = self.request()
+        with open(os.path.join(dispatch.folder(), "qbad.json"), "w") as f:
+            f.write("{")
+        text = self.run_cmd("status")
+        self.assertTrue(text.startswith("No relay features."), text)
+        self.assertIn(f"request {r['id']}", text)
+        self.assertIn("1 waiting on you (*)", text)
+
     def test_other_sessions_without_features(self):
         self.session("P1", age_s=2 * 3600, said="Which key?")
         text = self.run_cmd("status")
