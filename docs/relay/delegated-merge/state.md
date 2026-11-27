@@ -10,6 +10,17 @@
   "extra_rounds": {},
   "feature": "delegated-merge",
   "history": {
+    "build": [
+      {
+        "blocking_ids": [
+          "R1-1"
+        ],
+        "head": "563e0e2b8712d24a297e30c1e12caef6efd0eb3d",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ],
     "spec": [
       {
         "blocking_ids": [
@@ -92,9 +103,10 @@
   "skipped": [],
   "small": false,
   "stage": "build",
-  "status": "in-review",
-  "updated": "2026-11-26T19:26:16-05:00",
+  "status": "changes-requested",
+  "updated": "2026-11-26T19:29:01-05:00",
   "verdicts": {
+    "build": "NO-GO",
     "plan": "GO",
     "spec": "GO"
   }
