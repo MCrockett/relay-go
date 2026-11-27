@@ -9,6 +9,19 @@
   "extra_rounds": {},
   "feature": "dispatch",
   "history": {
+    "plan": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2",
+          "R1-3"
+        ],
+        "head": "519edda3877ae6d1d2a6c4cfb54e8f2bdd0d86e7",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ],
     "spec": [
       {
         "blocking_ids": [
@@ -72,9 +85,10 @@
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "in-review",
-  "updated": "2026-11-27T08:20:24-05:00",
+  "status": "changes-requested",
+  "updated": "2026-11-27T08:21:22-05:00",
   "verdicts": {
+    "plan": "NO-GO",
     "spec": "GO"
   }
 }
