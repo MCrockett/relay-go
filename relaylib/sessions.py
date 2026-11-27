@@ -267,6 +267,7 @@ def capture(provider, stream, now=None):
             try:
                 from . import notices
                 found = notices.merged_features(event["session_id"], event.get("cwd"))
+                found = found + notices.waiting_requests(event["session_id"], event.get("cwd"))
             except Exception:
                 found = []  # a notice is a courtesy; the record still gets written
         os.makedirs(folder(), mode=0o700, exist_ok=True)
