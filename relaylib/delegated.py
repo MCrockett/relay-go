@@ -230,9 +230,27 @@ def remote_base(repo, base):
     return ""
 
 
+def holds(repo, tip, merge_sha):
+    """True when origin's `tip` is or descends from `merge_sha`, False when it does not, None when that cannot be
+    established (the tip could not be fetched or git could not answer)."""
+    if tip == merge_sha:
+        return True
+    if not tip:
+        return False  # the base is gone, so it does not hold the merge
+    try:
+        p = gitops.network_git(repo, "fetch", "-q", "origin", tip)
+    except RelayError:
+        return None
+    if p.returncode:
+        return None
+    p = gitops.git(repo, "merge-base", "--is-ancestor", merge_sha, tip, check=False)
+    return {0: True, 1: False}.get(p.returncode)
+
+
 def _push(work, repo, merge_sha, base, base_sha):
     """The leased push, reconciled with origin when it fails or times out: a push whose answer was lost may still
-    have moved the base. Returns None when origin holds the merge commit, else raises Refused or Uncertain."""
+    have moved the base, and later pushes may have built on it. Returns None when origin's base holds the merge
+    commit, raises Refused when it is known not to, and Uncertain when that cannot be established."""
     try:
         p = gitops.hookless(work, "push", "origin", f"{merge_sha}:refs/heads/{base}",
                             f"--force-with-lease=refs/heads/{base}:{base_sha}", network=True)
@@ -242,9 +260,10 @@ def _push(work, repo, merge_sha, base, base_sha):
     except RelayError as e:  # a timeout
         why = str(e)
     now = remote_base(repo, base)
-    if now == merge_sha:
+    held = None if now is None else holds(repo, now, merge_sha)
+    if held:
         return None  # it landed; only the answer was lost
-    if now is None:
+    if held is None:
         raise Uncertain(merge_sha, f"the push to {base} failed ({why}) and origin could not be read after it")
     raise refuse(f"GitHub refused the push to {base}: {why}")
 

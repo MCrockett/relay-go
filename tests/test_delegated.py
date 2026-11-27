@@ -568,6 +568,48 @@ class MergeAndPushTest(DelegatedBase):  # R10 steps 1, 2, 5, 6
         self.assertEqual(self.origin_sha(), sha)
         self.assertIn(self.pr_head, self.origin_log("%P"))
 
+    def advance_origin(self):
+        other = self.other_clone()
+        helpers.write(os.path.join(other, "later.txt"), "later\n")
+        helpers.sh(other, "git", "add", "-A")
+        helpers.sh(other, "git", "commit", "-q", "-m", "built on the merge")
+        helpers.sh(other, "git", "push", "-q", "origin", "develop")
+
+    def lost_answer_then_advance(self):
+        """The push lands, another push builds on it, then the push's answer is lost."""
+        hookless = gitops.hookless
+
+        def spy(root, *args, **kw):
+            if args[0] == "push":
+                hookless(root, *args, **kw)
+                self.advance_origin()
+                raise RelayError("git push origin timed out after 60s")
+            return hookless(root, *args, **kw)
+        return mock.patch.object(gitops, "hookless", side_effect=spy)
+
+    def test_a_landed_push_built_on_before_its_answer_was_lost_is_a_merge(self):
+        with self.lost_answer_then_advance():
+            sha = self.go()
+        self.assertEqual(self.origin_log("%s"), "built on the merge")
+        self.assertEqual(self.origin_log("%H", "develop~1"), sha)
+
+    def test_a_landed_push_built_on_with_the_tip_unfetchable_is_uncertain(self):
+        with self.lost_answer_then_advance(), mock.patch.object(delegated, "holds", return_value=None), \
+                self.assertRaises(delegated.Uncertain):
+            self.go()
+
+    def test_a_base_moved_by_someone_else_without_the_merge_is_refused(self):
+        hookless = gitops.hookless
+
+        def spy(root, *args, **kw):
+            if args[0] == "push":
+                self.advance_origin()  # the lease then fails: the merge never lands
+            return hookless(root, *args, **kw)
+        with mock.patch.object(gitops, "hookless", side_effect=spy), self.assertRaises(delegated.Refused):
+            self.go()
+        self.assertEqual(self.origin_log("%s"), "built on the merge")
+        self.assertNotIn(self.pr_head, helpers.sh(self.origin, "git", "log", "--format=%P", "develop"))
+
     def test_a_push_that_did_not_land_and_lost_its_answer_is_refused(self):
         with self.lost_answer(False), self.assertRaises(delegated.Refused) as cm:
             self.go()

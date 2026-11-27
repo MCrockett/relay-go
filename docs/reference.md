@@ -211,7 +211,7 @@ refused by a GitHub rule (a base that accepts only pull requests) refuses with `
 merged. A repo whose non-production base accepts only pull requests cannot use D1 until you relax that rule. The merge
 commit's message ends with `Delegated-merge: D1`. When a push fails or times out, relay reads the base on origin
 before it answers, because the push may have landed with only its reply lost: a base that holds the merge commit
-counts as merged, and a base relay cannot read is reported as `unconfirmed` (exit 1, a notification to you, the
+(or has later commits built on it) counts as merged, and a base relay cannot read or check is reported as `unconfirmed` (exit 1, a notification to you, the
 commit named so you can check), never as a refusal.
 
 **The record.** Once the push has succeeded the merge is on the base, whatever GitHub shows next, so relay writes the
