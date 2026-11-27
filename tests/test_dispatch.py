@@ -443,6 +443,15 @@ class ClaimTest(unittest.TestCase):  # dispatch R8, R18 steps 2 to 5, R19
         self.assertEqual(len([x for x in self.hub_lines() if x.get("event") == "started"]), 1)
         self.assertEqual(self.status()["started"]["slug"], "s")
 
+    def test_a_no_op_transition_does_not_move_updated_at(self):
+        dispatch.mark_started(self.id, self.feature())
+        first = self.status()["updated_at"]
+        with mock.patch("time.time", return_value=first + 500):
+            self.assertFalse(dispatch.mark_started(self.id, self.feature(slug="again")))
+            dispatch.push_failed(self.id, self.a)
+            dispatch.drop_claim(self.id, self.a)
+        self.assertEqual(self.status()["updated_at"], first)
+
     def test_an_owner_dispatched_request_with_no_asker_tells_nobody(self):
         r = dispatch.create({"repo": {"name": "work", "path": self.work}, "request": "x", "owner_said": None,
                              "slug": None, "requested_by": "owner", "asked_by": None, "relayed_by": None},

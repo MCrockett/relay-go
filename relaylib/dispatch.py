@@ -154,14 +154,17 @@ def create(fields, now=None):
 
 
 def mutate(request_id, change, now=None):
-    """Read the record under the lock, let `change(record)` edit it (it may raise), write it. The record."""
+    """Read the record under the lock, let `change(record)` edit it (it may raise), write it when it changed. The
+    record."""
     try:
         with _locked():
             record = read(request_id)
             if record is None:
                 raise DispatchError(f"no request {request_id} on this machine")
+            before = json.dumps(record, sort_keys=True)
             change(record)
-            _write(record, now)
+            if json.dumps(record, sort_keys=True) != before:  # a no-op leaves the file and updated_at alone
+                _write(record, now)
             return record
     except OSError as e:
         raise DispatchError(f"could not update request {request_id}: {e}")
