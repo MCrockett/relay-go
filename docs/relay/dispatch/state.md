@@ -69,9 +69,20 @@
   "refresh": false,
   "repo": "relay-go",
   "retried": false,
-  "review_notes": {},
+  "review_notes": {
+    "build": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra out of usage: 5-hour limit used up until Fri 12:20, same provider as the author"
+  },
   "reviewed": {
-    "build": null,
+    "build": {
+      "base_ref": "origin/develop",
+      "base_sha": "dc314e2a110f9e3b11720893ea41007d1303d126",
+      "head": "e05e8498691aa519086faa87575c051664353084",
+      "inputs": {
+        "plan": "e1e3e6f6009e2918fe06643ccd05821375264f3e8ca54016683d9dc158bcc9f6",
+        "spec": "7079384d3ba4dbb209cd891633c21c4c9d8218c4864ed1f7d12503595c36b172"
+      },
+      "merge": "0e04429a225e7920e2685ffcd327accd8eaefe3cab9d2699b7a3754786e3a642"
+    },
     "plan": {
       "inputs": {
         "plan": "e1e3e6f6009e2918fe06643ccd05821375264f3e8ca54016683d9dc158bcc9f6",
@@ -92,9 +103,10 @@
   "skipped": [],
   "small": false,
   "stage": "build",
-  "status": "in-review",
-  "updated": "2026-11-27T12:12:50-05:00",
+  "status": "ready-to-merge",
+  "updated": "2026-11-27T12:29:25-05:00",
   "verdicts": {
+    "build": "GO",
     "plan": "GO",
     "spec": "GO"
   }
