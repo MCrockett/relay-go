@@ -351,14 +351,20 @@ def merge_delegated(repo, slug, seen, cause=None, cwd=None):
         reason, facts = delegated.conditions(repo, st, fresh["commit"], remote, base, base_sha, fresh["pr_head"])
         if reason:
             raise delegated.refuse(reason)
-        merge_sha = delegated.merge_and_push(repo, remote, info["number"], fresh["branch"], fresh["pr_head"], base,
-                                             base_sha)
-    # The merge stands from here, so nothing below may fail it. The lock is released: the wait is up to 60 seconds,
-    # and another owner action must not be refused as busy for that long (the tidy takes it again).
-    return _delegated_record(repo, slug, st, fresh, info, remote, base, facts, merge_sha, cause, cwd)
+        uncertain = cleanup = None
+        try:
+            merge_sha, cleanup = delegated.merge_and_push(repo, remote, info["number"], fresh["branch"],
+                                                          fresh["pr_head"], base, base_sha)
+        except delegated.Uncertain as e:  # the push may have landed: never a refusal
+            merge_sha, uncertain = e.merge_sha, str(e)
+    # The merge stands (or may) from here, so nothing below may fail it. The lock is released: the wait is up to 60
+    # seconds, and another owner action must not be refused as busy for that long (the tidy takes it again).
+    return _delegated_record(repo, slug, st, fresh, info, remote, base, facts, merge_sha, cause, cwd,
+                             uncertain=uncertain, cleanup=cleanup)
 
 
-def _delegated_record(repo, slug, st, fresh, info, remote, base, facts, merge_sha, cause, cwd):
+def _delegated_record(repo, slug, st, fresh, info, remote, base, facts, merge_sha, cause, cwd, uncertain=None,
+                      cleanup=None):
     """After a delegated push (R10 steps 3 and 4, R11 to R14): the PR comment, the hub log line, the bounded wait, then
     per outcome the branch delete, claim, tidy and the one event. The event is queued in a `finally`, so a wait that
     fails or is interrupted still leaves it; anything unexpected exits 1 naming the merge as standing."""
@@ -368,12 +374,24 @@ def _delegated_record(repo, slug, st, fresh, info, remote, base, facts, merge_sh
     kind = "released" if base == "main" else "merged"
     owner = events.owner_of(st)
     done = {"message": f"Merged PR #{number} into {base}, delegated under D1", "tidy": [], "exit": 0}
-    warnings, recorded, failure, outcome = [], [], None, None
+    warnings, recorded, failure, outcome = [cleanup] if cleanup else [], [], None, None
 
     def record(text, outcome_name, **extra):  # the one event of this merge, delivered after the command reports
         recorded.append(outcome_name)
         warnings.extend(events.queue(kind, name, slug, "build", number, text, cause, owner=owner,
                                      fields={"delegated": True, "outcome": outcome_name}, **extra))
+    if uncertain:  # no comment and no wait: say only what is known, and tell the owner
+        message = (f"the merge commit {merge_sha[:7]} may be on {base}: {uncertain}; check origin/{base} and PR "
+                   f"#{number}: tell the owner")
+        record(events.delegated_text(name, slug, number, message), "unconfirmed")
+        done.update(message=message, error=message, exit=1)
+        try:
+            notify.send(config.load(), f"relay: {name} merge needs you", message)
+        except Exception:
+            pass
+        if warnings:
+            done["warning"] = "; ".join(w for w in warnings if w)
+        return done
     try:
         why = _comment(remote, number, f"Merged by relay under D1 (delegated), run by the hordle release role. "
                        f"Checked: {base}, not production; {facts['mode']} tests green; GO from "

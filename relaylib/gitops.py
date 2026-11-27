@@ -227,11 +227,11 @@ def hookless(root, *args, network=False):
     return run(["git", *HOOKS_OFF, *args], root, check=False)
 
 
-def pr_state(root, remote, number):
+def pr_state(root, remote, number, timeout=None):
     """The PR as GitHub shows it now: state, base, head and draft flag. Never memoized or cached (a poll must always
-    ask; pr_info keeps a MERGED answer for good)."""
+    ask; pr_info keeps a MERGED answer for good). `timeout` lowers the read's bound below GH_TIMEOUT_S."""
     return _gh_json(root, ["pr", "view", str(number), "--json", "state,baseRefName,headRefOid,isDraft",
-                           "-R", remote])
+                           "-R", remote], timeout=timeout)
 
 
 def push(root, branch):
@@ -339,9 +339,10 @@ def gh_json(root, args):
     return json.loads(json.dumps(result))  # callers may edit what they get
 
 
-def _gh_json(root, args):
+def _gh_json(root, args, timeout=None):
+    bound = GH_TIMEOUT_S if timeout is None else min(GH_TIMEOUT_S, timeout)
     try:
-        p = run([os.environ.get("RELAY_GH_BIN", "gh"), *args], root, check=False, timeout=GH_TIMEOUT_S)
+        p = run([os.environ.get("RELAY_GH_BIN", "gh"), *args], root, check=False, timeout=bound)
     except OSError as e:
         raise RelayError(f"cannot run gh: {e}") from e
     if p.returncode != 0:

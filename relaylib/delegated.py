@@ -24,6 +24,15 @@ class Refused(RelayError):
     """A D1 refusal; the text already starts with PREFIX."""
 
 
+class Uncertain(RelayError):
+    """The push to the base failed or timed out and origin could not be read after it, so the merge commit may be on
+    the base. Never a refusal: the caller records it as unconfirmed and tells the owner."""
+
+    def __init__(self, merge_sha, reason):
+        super().__init__(reason)
+        self.merge_sha = merge_sha
+
+
 def refuse(reason):
     return Refused(PREFIX + reason)
 
@@ -206,14 +215,48 @@ def _message(p):
     return ((p.stderr or "").strip() or (p.stdout or "").strip() or f"exit {p.returncode}")
 
 
+def remote_base(repo, base):
+    """The SHA origin holds for `base` now, or None when it could not be read (the branch missing reads as "")."""
+    try:
+        p = gitops.network_git(repo, "ls-remote", "--heads", "origin", f"refs/heads/{base}")
+    except RelayError:
+        return None
+    if p.returncode:
+        return None
+    for line in p.stdout.splitlines():
+        sha, _, ref = line.partition("\t")
+        if ref.strip() == f"refs/heads/{base}":
+            return sha.strip()
+    return ""
+
+
+def _push(work, repo, merge_sha, base, base_sha):
+    """The leased push, reconciled with origin when it fails or times out: a push whose answer was lost may still
+    have moved the base. Returns None when origin holds the merge commit, else raises Refused or Uncertain."""
+    try:
+        p = gitops.hookless(work, "push", "origin", f"{merge_sha}:refs/heads/{base}",
+                            f"--force-with-lease=refs/heads/{base}:{base_sha}", network=True)
+        if not p.returncode:
+            return None
+        why = _message(p)
+    except RelayError as e:  # a timeout
+        why = str(e)
+    now = remote_base(repo, base)
+    if now == merge_sha:
+        return None  # it landed; only the answer was lost
+    if now is None:
+        raise Uncertain(merge_sha, f"the push to {base} failed ({why}) and origin could not be read after it")
+    raise refuse(f"GitHub refused the push to {base}: {why}")
+
+
 def merge_and_push(repo, remote, number, branch, pr_head, base, base_sha):
     """R10 steps 1, 2, 5, 6: the merge commit of the checked head onto the checked base commit, in a temporary
     detached worktree with local hooks off; the PR read once more; then the push, leased on the checked base commit.
-    Returns the merge commit's SHA or raises Refused with nothing merged."""
+    Returns (merge SHA, cleanup warning or None), or raises Refused with nothing merged, or Uncertain."""
     owner = remote.split("/")[0]
     temp = tempfile.mkdtemp(prefix="relay-d1-")
     work = os.path.join(temp, "work")
-    added = False
+    added, pushed, cleanup = False, None, None
     try:
         p = gitops.hookless(repo, "worktree", "add", "--detach", work, base_sha)
         if p.returncode:
@@ -237,15 +280,18 @@ def merge_and_push(repo, remote, number, branch, pr_head, base, base_sha):
         if (info.get("state") != "OPEN" or info.get("isDraft") or info.get("baseRefName") != base
                 or info.get("headRefOid") != pr_head):
             raise refuse("the PR changed while it was checked")
-        p = gitops.hookless(work, "push", "origin", f"{merge_sha}:refs/heads/{base}",
-                            f"--force-with-lease=refs/heads/{base}:{base_sha}", network=True)
-        if p.returncode:
-            raise refuse(f"GitHub refused the push to {base}: {_message(p)}")
-        return merge_sha
+        _push(work, repo, merge_sha, base, base_sha)
+        pushed = merge_sha
     finally:
-        if added:
-            gitops.hookless(repo, "worktree", "remove", "--force", work)
+        try:  # a cleanup failure must never turn a pushed merge into an error
+            if added:
+                p = gitops.hookless(repo, "worktree", "remove", "--force", work)
+                if p.returncode:
+                    cleanup = f"could not remove the temporary merge worktree {work}: {_message(p)}"
+        except Exception as e:
+            cleanup = f"could not remove the temporary merge worktree {work}: {e}"
         shutil.rmtree(temp, True)
+    return pushed, cleanup
 
 
 class Outcome:
@@ -261,8 +307,8 @@ def wait_for_merge(repo, remote, number, base, pr_head):
     head differs from the checked one. A failed read is retried; one still standing at the end is `read-failed`."""
     deadline, error = clock() + WAIT_S, None
     while True:
-        try:
-            info = gitops.pr_state(repo, remote, number)
+        try:  # each read is bounded by the time left, so the wait stays near WAIT_S
+            info = gitops.pr_state(repo, remote, number, timeout=max(1.0, deadline - clock()))
             error = None
             if info["state"] == "MERGED":
                 return Outcome("merged")
@@ -275,9 +321,10 @@ def wait_for_merge(repo, remote, number, base, pr_head):
                     return Outcome("head-moved", info["headRefOid"])
         except (RelayError, KeyError, TypeError) as e:
             error = e
-        if clock() >= deadline:
+        left = deadline - clock()
+        if left <= 0:
             return Outcome("read-failed", str(error)) if error else Outcome("timeout")
-        sleep(EVERY_S)
+        sleep(min(EVERY_S, left))
 
 
 def describe(outcome, base, number, pr_head):

@@ -418,8 +418,10 @@ class MergeAndPushTest(DelegatedBase):  # R10 steps 1, 2, 5, 6
         helpers.mark_pushes(self.origin, self.marker)
 
     def go(self, pr_head=None, base_sha=None):
-        return delegated.merge_and_push(self.work, "owner/project", 7, "fix/tiny", pr_head or self.pr_head,
-                                        "develop", base_sha or self.base)
+        sha, cleanup = delegated.merge_and_push(self.work, "owner/project", 7, "fix/tiny", pr_head or self.pr_head,
+                                                "develop", base_sha or self.base)
+        self.cleanup = cleanup
+        return sha
 
     def origin_log(self, fmt, ref="develop"):
         return helpers.sh(self.origin, "git", "log", "-1", f"--format={fmt}", ref).strip()
@@ -548,16 +550,65 @@ class MergeAndPushTest(DelegatedBase):  # R10 steps 1, 2, 5, 6
         self.assertIn(f"--force-with-lease=refs/heads/develop:{self.base}", argv)
         self.assertIn(f"{sha}:refs/heads/develop", argv)
 
+    def lost_answer(self, really_push):
+        """gitops.hookless with the push's answer lost: the push runs first when `really_push`, then it times out."""
+        hookless = gitops.hookless
+
+        def spy(root, *args, **kw):
+            if args[0] == "push":
+                if really_push:
+                    hookless(root, *args, **kw)
+                raise RelayError("git push origin timed out after 60s")
+            return hookless(root, *args, **kw)
+        return mock.patch.object(gitops, "hookless", side_effect=spy)
+
+    def test_a_push_that_landed_but_lost_its_answer_is_a_merge(self):
+        with self.lost_answer(True):
+            sha = self.go()
+        self.assertEqual(self.origin_sha(), sha)
+        self.assertIn(self.pr_head, self.origin_log("%P"))
+
+    def test_a_push_that_did_not_land_and_lost_its_answer_is_refused(self):
+        with self.lost_answer(False), self.assertRaises(delegated.Refused) as cm:
+            self.go()
+        self.assertIn("GitHub refused the push to develop: git push origin timed out", str(cm.exception))
+        self.assertEqual(self.origin_sha(), self.base)
+
+    def test_a_failed_push_with_origin_unreadable_after_it_is_uncertain_not_refused(self):
+        with self.lost_answer(True), mock.patch.object(delegated, "remote_base", return_value=None), \
+                self.assertRaises(delegated.Uncertain) as cm:
+            self.go()
+        self.assertNotIsInstance(cm.exception, delegated.Refused)
+        self.assertEqual(cm.exception.merge_sha, self.origin_sha())
+        self.assertIn("origin could not be read after it", str(cm.exception))
+
+    def test_a_cleanup_failure_after_the_push_keeps_the_merge_and_warns(self):
+        hookless = gitops.hookless
+
+        def spy(root, *args, **kw):
+            if args[:2] == ("worktree", "remove"):
+                raise OSError("disk gone")
+            return hookless(root, *args, **kw)
+        with mock.patch.object(gitops, "hookless", side_effect=spy):
+            sha = self.go()
+        self.assertEqual(self.origin_sha(), sha)
+        self.assertIn("could not remove the temporary merge worktree", self.cleanup)
+        self.assertIn("disk gone", self.cleanup)
+
 
 class WaitTest(DelegatedBase):  # R10 step 4
     HEAD = "a" * 40
 
-    def wait(self, reads):
-        """wait_for_merge with pr_state answering `reads` in turn (the last repeats); a RelayError instance raises."""
+    def wait(self, reads, read_s=0):
+        """wait_for_merge with pr_state answering `reads` in turn (the last repeats); a RelayError instance raises.
+        Each read takes `read_s` seconds, but never more than the timeout it was given."""
         clock = helpers.FakeClock()
         queue = list(reads)
+        self.timeouts = []
 
-        def pr_state(*args):
+        def pr_state(*args, timeout=None):
+            self.timeouts.append(timeout)
+            clock.now += min(read_s, timeout) if timeout is not None else read_s
             item = queue.pop(0) if len(queue) > 1 else queue[0]
             if isinstance(item, Exception):
                 raise item
@@ -581,6 +632,17 @@ class WaitTest(DelegatedBase):  # R10 step 4
         self.assertEqual(self.wait([{"state": "OPEN"}]).name, "timeout")
         self.assertGreaterEqual(self.clock.now, 60)
         self.assertLess(self.clock.now, 63)
+
+    def test_slow_reads_keep_the_wait_near_its_bound(self):
+        self.assertEqual(self.wait([{"state": "OPEN"}], read_s=45).name, "timeout")
+        self.assertLessEqual(self.clock.now, 61)
+        self.assertTrue(all(t is not None and t <= 60 for t in self.timeouts), self.timeouts)
+        self.assertLessEqual(self.timeouts[-1], 15)
+
+    def test_a_slow_failing_read_is_read_failed_within_the_bound(self):
+        outcome = self.wait([RelayError("gh slow")], read_s=50)
+        self.assertEqual(outcome.name, "read-failed")
+        self.assertLessEqual(self.clock.now, 61)
 
     def test_closed_is_reported(self):
         self.assertEqual(self.wait([{"state": "CLOSED"}]).name, "closed")
@@ -842,6 +904,23 @@ class MergedOutcomeTest(MergedRun):  # R10 merged, R11, R12, R13, R14
         (ev,) = self.final_events()
         self.assertEqual((ev["delegated"], ev["outcome"]), (True, "unconfirmed"))
         self.assertIn("merged into develop", ev["text"])
+        self.assertFalse(merged.recorded(self.work, {"pr": 7}))
+
+    def test_a_push_whose_outcome_is_unknown_is_recorded_unconfirmed_and_tells_the_owner(self):
+        def uncertain(repo, remote, number, branch, pr_head, base, base_sha):
+            raise delegated.Uncertain("c" * 40, "the push to develop failed (timed out) and origin could not be "
+                                      "read after it")
+        with mock.patch.object(delegated, "merge_and_push", side_effect=uncertain), \
+                mock.patch.object(delegated, "wait_for_merge") as waited:
+            self.assertEqual(self.relay("merge", "7"), 1)
+        waited.assert_not_called()
+        self.assertNotIn("not delegated", self.last_err)
+        self.assertIn("the merge commit ccccccc may be on develop", self.last_err)
+        self.assertIn("tell the owner", self.last_err)
+        (ev,) = self.final_events()
+        self.assertEqual((ev["delegated"], ev["outcome"]), (True, "unconfirmed"))
+        self.assertEqual(self.gh_calls("pr comment"), [])
+        self.assertIn("merge needs you", self.notifications())
         self.assertFalse(merged.recorded(self.work, {"pr": 7}))
 
     def test_anything_unexpected_after_the_push_exits_1_naming_the_merge_as_standing(self):
