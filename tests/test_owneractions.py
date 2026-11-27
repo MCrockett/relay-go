@@ -361,6 +361,47 @@ class MergeAndTidyTest(OwnerFixture):  # merge-and-tidy D3 to D7
     def published_after_merge(self):
         return dict(self.st, pr=7)
 
+    def requested(self, record=True):
+        """The feature came from a dispatch request q: asked by a non-hub session (dispatch R20, R21)."""
+        from relaylib import dispatch
+        os.makedirs(os.environ["RELAY_HOME"], exist_ok=True)
+        rec = dispatch.create({"repo": {"name": "demo", "path": self.work}, "request": "do it", "owner_said": None,
+                               "slug": None, "requested_by": "owner", "asked_by": {
+                                   "provider": "claude", "session_id": "ask1", "repo": "other"},
+                               "relayed_by": None}, now=1.0) if record else {"id": "qgone"}
+        self.st["request"] = {"id": rec["id"], "requested_by": "owner",
+                              "asked_by": {"provider": "claude", "session_id": "ask1", "repo": "other"},
+                              "relayed_by": None, "at": 1.0}
+        self.save()
+        self.publish(self.work)
+        self.pr()
+        return rec["id"]
+
+    def asker_notes(self):
+        from relaylib import notes
+        return [n["text"] for n in notes._load(notes.log_path("claude", "ask1"))]
+
+    def test_an_owner_merge_tells_the_asker_and_marks_the_request(self):
+        from relaylib import dispatch
+        rid = self.requested()
+        self.merge()
+        self.assertEqual(dispatch.read(rid)["status"], "merged")
+        (text,) = self.asker_notes()
+        self.assertTrue(text.endswith(f"This was your request {rid}."), text)
+
+    def test_a_missing_record_still_sends_the_note(self):
+        self.requested(record=False)
+        self.merge()
+        (text,) = self.asker_notes()
+        self.assertTrue(text.endswith("This was your request qgone."), text)
+
+    def test_a_merge_the_requester_caused_marks_the_record_but_sends_no_note(self):
+        from relaylib import dispatch
+        rid = self.requested()
+        self.merge(cause=("claude", "ask1"))
+        self.assertEqual(dispatch.read(rid)["status"], "merged")
+        self.assertEqual(self.asker_notes(), [])
+
     def test_a_merge_into_main_is_a_release(self):
         self.pr(baseRefName="main")
         with mock.patch("relaylib.freshness.check", return_value=(True, "")):

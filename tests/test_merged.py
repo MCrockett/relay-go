@@ -198,6 +198,26 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(note["prefix"], "relay event:")
         self.assertIn("is merged into develop", note["text"])
 
+    def test_a_found_merge_tells_the_requesters_and_marks_the_request(self):  # dispatch R20, R21
+        from relaylib import dispatch, notes
+        helpers.write(self.data, '{"state": "MERGED", "baseRefName": "develop"}')
+        rec = dispatch.create({"repo": {"name": "r", "path": self.repo}, "request": "x", "owner_said": None,
+                               "slug": None, "requested_by": "owner", "asked_by": None, "relayed_by": None}, now=1.0)
+        st = dict(self.st, request={"id": rec["id"], "requested_by": "owner", "relayed_by": None, "at": 1.0,
+                                    "asked_by": {"provider": "claude", "session_id": "ask1", "repo": "o"}})
+        merged.resolve(self.repo, st)
+        self.assertEqual(dispatch.read(rec["id"])["status"], "merged")
+        (note,) = notes._load(notes.log_path("claude", "ask1"))
+        self.assertTrue(note["text"].endswith(f"This was your request {rec['id']}."), note["text"])
+
+    def test_a_missing_record_does_not_stop_the_note(self):
+        from relaylib import notes
+        helpers.write(self.data, '{"state": "MERGED", "baseRefName": "develop"}')
+        st = dict(self.st, request={"id": "qgone", "requested_by": "owner", "relayed_by": None, "at": 1.0,
+                                    "asked_by": {"provider": "claude", "session_id": "ask1", "repo": "o"}})
+        merged.resolve(self.repo, st)
+        self.assertEqual(len(notes._load(notes.log_path("claude", "ask1"))), 1)
+
     # delegated-merge R12: one event per PR when a delegated merge was announced before GitHub marked it merged
     def test_announce_claims_once_per_outcome_and_never_touches_merged_json(self):
         self.assertTrue(merged.announce(self.repo, 57, "timeout"))

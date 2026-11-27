@@ -109,12 +109,14 @@ def announced(repo_dir, pr):
 
 def _queue_merge_event(repo_dir, st, base):
     from . import events
+    kind = "released" if base == "main" else "merged"
+    fields = events.request_fields(st, kind)  # the dispatch record moves even when no note is sent below
     if announced(repo_dir, st["pr"]) == "timeout":
         return  # a delegated merge already told of this merge, saying GitHub had not marked it yet
-    _warn(events.queue("released" if base == "main" else "merged", st.get("repo") or gitops.repo_name(repo_dir),
+    _warn(events.queue(kind, st.get("repo") or gitops.repo_name(repo_dir),
                  st.get("feature"), "build", st["pr"],
                  events.merged_text(st.get("repo") or gitops.repo_name(repo_dir), st.get("feature"), st["pr"], base),
-                 owner=events.owner_of(st)))
+                 owner=events.owner_of(st), **fields))
 
 
 def _warn(warnings):

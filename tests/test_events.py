@@ -158,6 +158,81 @@ class EventsTest(unittest.TestCase):
         self.assertEqual(len(self.notes_of(*self.OWNER)), 1)
         self.assertEqual(self.notes_of("codex", "h2"), [])
 
+    # dispatch R20
+    ASK = ("claude", "ask1")
+    ADD = " This was your request q1."
+
+    def landed(self, kind="merged", **kw):
+        kw.setdefault("request_id", "q1")
+        return events.queue(kind, "r", "x", "build", 1, "relay: merged", **kw)
+
+    def test_a_hub_requester_gets_one_note_with_the_addition(self):
+        self.hubs(("claude", "h1"), ("codex", "h2"))
+        self.landed(requesters=[("claude", "h1")])
+        self.assertEqual([n["text"] for n in self.notes_of("claude", "h1")], ["relay: merged" + self.ADD])
+        self.assertEqual([n["text"] for n in self.notes_of("codex", "h2")], ["relay: merged"])
+
+    def test_a_non_hub_asker_gets_its_own_note_and_a_hub_requester_only_the_one(self):
+        self.hubs(("claude", "h1"))
+        self.landed(requesters=[("claude", "h1"), self.ASK])
+        self.assertEqual(len(self.notes_of("claude", "h1")), 1)
+        self.assertEqual([n["text"] for n in self.notes_of(*self.ASK)], ["relay: merged" + self.ADD])
+
+    def test_an_asker_that_is_the_feature_owner_gets_one_note(self):
+        self.landed(requesters=[self.OWNER], owner=self.OWNER, note_extra="Remove x")
+        self.assertEqual([n["text"] for n in self.notes_of(*self.OWNER)], ["relay: merged Remove x" + self.ADD])
+
+    def test_the_cause_is_not_told(self):
+        self.hubs(("claude", "h1"))
+        self.landed(requesters=[("claude", "h1"), self.ASK], cause=self.ASK)
+        self.assertEqual(self.notes_of(*self.ASK), [])
+        self.assertEqual(len(self.notes_of("claude", "h1")), 1)   # the one from the asker's merge, not a second
+        self.landed(requesters=[("claude", "h1")], cause=("claude", "h1"))
+        self.assertEqual(len(self.notes_of("claude", "h1")), 1)
+
+    def test_an_owner_dispatched_request_adds_the_line_for_every_hub(self):
+        self.hubs(("claude", "h1"), ("codex", "h2"))
+        self.landed(requesters=[])
+        for who in (("claude", "h1"), ("codex", "h2")):
+            self.assertEqual(self.notes_of(*who)[0]["text"], "relay: merged" + self.ADD)
+
+    def test_without_a_request_delivery_is_as_before(self):
+        self.hubs(("claude", "h1"))
+        events.queue("merged", "r", "x", "build", 1, "relay: merged", owner=self.OWNER)
+        self.assertEqual(self.notes_of("claude", "h1")[0]["text"], "relay: merged")
+        self.assertEqual(self.notes_of(*self.OWNER)[0]["text"], "relay: merged")
+
+    def test_a_released_event_behaves_like_merged(self):
+        self.hubs(("claude", "h1"))
+        self.landed("released", requesters=[self.ASK])
+        self.assertEqual(self.notes_of(*self.ASK)[0]["text"], "relay: merged" + self.ADD)
+
+    def test_a_go_event_never_carries_the_addition(self):
+        self.hubs(("claude", "h1"))
+        self.landed("go", requesters=[self.ASK])
+        self.assertEqual(self.notes_of("claude", "h1")[0]["text"], "relay: merged")
+        self.assertEqual(self.notes_of(*self.ASK), [])
+
+    def test_owner_only_skips_hubs_but_a_non_hub_requester_is_told(self):
+        self.hubs(("claude", "h1"))
+        self.landed(requesters=[self.ASK], owner_only=True)
+        self.assertEqual(self.notes_of("claude", "h1"), [])
+        self.assertEqual(len(self.notes_of(*self.ASK)), 1)
+
+    def test_log_only_tells_nobody(self):
+        self.hubs(("claude", "h1"))
+        self.landed(requesters=[("claude", "h1"), self.ASK], log_only=True)
+        self.assertEqual((self.notes_of("claude", "h1"), self.notes_of(*self.ASK)), ([], []))
+
+    def test_requesters_of_reads_the_state_record(self):
+        st = {"request": {"id": "q1", "requested_by": {"provider": "claude", "session_id": "h1"},
+                          "asked_by": {"provider": "codex", "session_id": "a", "repo": "x"}}}
+        self.assertEqual(events.requesters_of(st), [("claude", "h1"), ("codex", "a")])
+        self.assertEqual(events.requesters_of({"request": {"id": "q1", "requested_by": "owner", "asked_by": None}}), [])
+        self.assertEqual(events.requesters_of({}), [])
+        self.assertEqual(events.request_id_of(st), "q1")
+        self.assertIsNone(events.request_id_of({}))
+
     def test_owner_of_needs_a_provider_and_a_session(self):
         self.assertIsNone(events.owner_of({}))
         self.assertIsNone(events.owner_of({"owner": {}}))

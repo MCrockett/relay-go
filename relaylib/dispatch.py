@@ -477,6 +477,18 @@ def mark_started(request_id, feature, warnings=None):
     return True
 
 
+def mark_landed(request_id, kind):
+    """The feature merged or was released (R21): the record becomes `merged` or `released`. A missing, unreadable,
+    cancelled or already finished record is left alone; never raises."""
+    def change(record):
+        if record["status"] in ("waiting", "started"):
+            record["status"] = kind
+    try:
+        mutate(request_id, change)
+    except Exception:
+        pass
+
+
 def published(request_id, me, feature, warnings=None):
     """After a successful push: mark_started."""
     return mark_started(request_id, feature, warnings)
