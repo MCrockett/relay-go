@@ -1,5 +1,6 @@
 """relay command line (spec section 4)."""
 import argparse
+import contextlib
 import dataclasses
 import json
 import os
@@ -335,62 +336,173 @@ def refresh_upstream(c, me):
 
 # ---------------------------------------------------------------- new
 
+def idea_text(record, slug, now):
+    """idea.md for a feature started from a dispatch request (dispatch R14). Pure."""
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    by = record.get("requested_by")
+    if isinstance(by, dict):
+        who = f"{by['provider']} hub session {by['session_id']}"
+    else:
+        who = "the owner"
+    asker = record.get("asked_by")
+    for_part = ""
+    if isinstance(asker, dict):
+        for_part = f", for {asker['provider']} session {asker['session_id']}" + (
+            f" in {asker['repo']}" if asker.get("repo") else "")
+    text = (f"# {slug}\n\nRequested through relay dispatch ({record['id']}) by {who}, {day}{for_part}.\n\n"
+            f"## Request\n\n{record['request'].strip()}\n")
+    if record.get("owner_said"):
+        quoted = "\n".join(("> " + line).rstrip() for line in record["owner_said"].strip().splitlines())
+        text += f"\n## Owner's words\n\n{quoted}\n"
+    return text
+
+
+def _warn_all(warnings):
+    for w in warnings:
+        print(f"relay: warning: {w}", file=sys.stderr)
+
+
+def _request_checks(request_id, root, me):
+    """R16 and R18 step 1 for a start: the record, this checkout, the features this request already has, a dead
+    publisher; then the claim. Returns the record. Nothing is switched or written before these pass."""
+    from . import dispatch
+    record = dispatch.read(request_id)
+    if record is None:
+        raise RelayError(f"no request {request_id} on this machine")
+    if os.path.realpath(dispatch.main_checkout(root)) != os.path.realpath(record["repo"]["path"]):
+        raise RelayError(f"request {request_id} is for {record['repo']['name']}")
+    if record["status"] != "waiting":
+        raise dispatch._not_waiting(record)
+    warnings = []
+    try:
+        found = dispatch.find_features(root, request_id)
+        origin = next((f for f in found if f["where"] == "origin"), None)
+        if origin:
+            dispatch.mark_started(request_id, origin, warnings)
+            raise RelayError(f"request {request_id} was started as {origin['slug']} in {record['repo']['name']}")
+        if found:
+            raise RelayError(f"request {request_id} already has an unpublished feature {found[0]['slug']} on "
+                             f"{found[0]['ref']}; push it with git push -u origin {found[0]['ref']} and run this "
+                             "again, or delete that branch")
+        old = (dispatch.read(request_id) or {}).get("claim") or {}
+        if old.get("publishing"):
+            done = dispatch.reconcile_dead(request_id, warnings=warnings)  # a dead publisher's claim ends here
+            if done:
+                raise RelayError(f"request {request_id} was started as {done['slug']} in "
+                                 f"{record['repo']['name']}")
+    finally:
+        _warn_all(warnings)
+    return record
+
+
 def cmd_new(args):
+    return start_feature(args)
+
+
+def start_feature(args):
+    """relay new; with args.request the feature starts from a dispatch request (dispatch R14 to R19)."""
+    from . import dispatch
     env = dict(os.environ)
     root = gitops.repo_root(os.getcwd())
     me = identity.detect(env, args.by)
     slug = args.slug
+    request_id = getattr(args, "request", None)
     if not SLUG.fullmatch(slug):
         raise RelayError("slug must be lowercase letters, digits and dashes")
-    if os.path.exists(state.state_path(root, slug)):
+    if request_id and (args.idea or args.idea_file):
+        raise RelayError("--request cannot be combined with --idea or --idea-file")
+    if not request_id and os.path.exists(state.state_path(root, slug)):
         raise RelayError(f"feature {slug} already exists")
-    if args.small and not args.idea:
+    if args.small and not args.idea and not request_id:
         raise RelayError('--small needs --idea "one line saying what changes"')
     idea = None
-    if args.idea_file:  # read before switching branches: the notes may exist only on this one
+    record = claimed = None
+    start_branch = None
+    if request_id:
+        record = _request_checks(request_id, root, me)
+        claimed = {"provider": me.provider, "session_id": me.session}
+        dispatch.claim(request_id, claimed, slug, f"{args.type}/{slug}")
+        idea = idea_text(record, slug, time.time())
+    try:
+        if request_id and os.path.exists(state.state_path(root, slug)):
+            raise RelayError(f"feature {slug} already exists")
+        if args.idea_file:  # read before switching branches: the notes may exist only on this one
+            try:
+                with open(args.idea_file) as f:
+                    idea = f.read()
+            except OSError as e:
+                raise RelayError(f"cannot read --idea-file: {e}")
+        ownership.check_can_write(root, me.session)  # also fetches origin
+        claims = [x for x in ownership.collect(root) if x.where.startswith("origin/")]
+        branches = gitops.open_pr_branches(root)  # GitHub is the truth: a PR opened before submit counts,
+        unverified = branches is None             # and a closed or merged one does not
+        open_prs = [] if unverified else sorted({x.slug for x in claims if x.where[len("origin/"):] in branches})
+        if unverified and not args.stack:
+            raise RelayError("cannot verify open PRs (gh could not list them), so relay cannot enforce one open PR "
+                             "per repo. Check GitHub; pass --stack only if the owner says to go ahead.")
+        if open_prs and not args.stack:
+            raise RelayError(f"{', '.join(open_prs)} has an open PR that is not merged yet. One open PR per repo "
+                             "(an owner rule): finish or merge that first. Pass --stack only if the owner asked "
+                             "for another feature to start before it merges.")
+        base = f"origin/{args.base}"
+        if gitops.git(root, "rev-parse", "--verify", "-q", base, check=False).returncode != 0:
+            raise RelayError(f"no {base} to branch from; pass --base <branch>")
+        if gitops.ls_files(root, base, f"{state.RELAY_DIR}/{slug}"):
+            raise RelayError(f"feature {slug} already exists on {base}; pick another slug")
+        branch = f"{args.type}/{slug}"
+        start_branch = gitops.git(root, "rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip() or None
+        gitops.git(root, "switch", "-q", "-c", branch, base)  # never from HEAD: unpublished local commits stay local
+        d = state.feature_dir(root, slug)
+        os.makedirs(d, exist_ok=True)
+        if idea is None:
+            idea = f"# {slug}\n\n{args.idea}\n" if args.idea else IDEA_TEMPLATE.format(slug=slug)
+        with open(os.path.join(d, "idea.md"), "w") as f:
+            f.write(idea)
+        st = state.new_state(slug, gitops.repo_name(root), owner_record(me, root), branch, small=args.small)
+        if me.provider == "owner":
+            record_owner_action(st, "owner started")
+        elif args.with_owner:
+            record_owner_action(st, "owner joined idea", once=True)
+        if open_prs or unverified:  # --stack: the owner asked for this; agents record who passed it on
+            what = (f"while {', '.join(open_prs)} is open" if open_prs
+                    else "without a verified open-PR check")
+            record_owner_action(st, f"owner approved starting {slug} {what}",
+                                None if me.provider == "owner" else f"{me.provider} session {me.session}")
+        if record:
+            st["request"] = {"id": record["id"], "requested_by": record["requested_by"],
+                             "asked_by": record["asked_by"], "relayed_by": record["relayed_by"],
+                             "at": state.now_iso()}
+            record_owner_action(st, "owner asked for this through relay dispatch", record["relayed_by"])
+        state.write_state(state.state_path(root, slug), st)
+        marked = ciskip.commit(root, slug, st, config.load(root), f"relay: new {slug}")
+    except RelayError:
+        if claimed:  # a failure before the commit leaves the request waiting, with no claim
+            with contextlib.suppress(RelayError):
+                dispatch.drop_claim(request_id, claimed)
+        raise
+    if record:
         try:
-            with open(args.idea_file) as f:
-                idea = f.read()
-        except OSError as e:
-            raise RelayError(f"cannot read --idea-file: {e}")
-    ownership.check_can_write(root, me.session)  # also fetches origin
-    claims = [x for x in ownership.collect(root) if x.where.startswith("origin/")]
-    branches = gitops.open_pr_branches(root)  # GitHub is the truth: a PR opened before submit counts,
-    unverified = branches is None             # and a closed or merged one does not
-    open_prs = [] if unverified else sorted({x.slug for x in claims if x.where[len("origin/"):] in branches})
-    if unverified and not args.stack:
-        raise RelayError("cannot verify open PRs (gh could not list them), so relay cannot enforce one open PR per "
-                         "repo. Check GitHub; pass --stack only if the owner says to go ahead.")
-    if open_prs and not args.stack:
-        raise RelayError(f"{', '.join(open_prs)} has an open PR that is not merged yet. One open PR per repo "
-                         "(an owner rule): finish or merge that first. Pass --stack only if the owner asked for another "
-                         "feature to start before it merges.")
-    base = f"origin/{args.base}"
-    if gitops.git(root, "rev-parse", "--verify", "-q", base, check=False).returncode != 0:
-        raise RelayError(f"no {base} to branch from; pass --base <branch>")
-    if gitops.ls_files(root, base, f"{state.RELAY_DIR}/{slug}"):
-        raise RelayError(f"feature {slug} already exists on {base}; pick another slug")
-    branch = f"{args.type}/{slug}"
-    gitops.git(root, "switch", "-q", "-c", branch, base)  # never from HEAD: unpublished local commits stay local
-    d = state.feature_dir(root, slug)
-    os.makedirs(d, exist_ok=True)
-    if idea is None:
-        idea = f"# {slug}\n\n{args.idea}\n" if args.idea else IDEA_TEMPLATE.format(slug=slug)
-    with open(os.path.join(d, "idea.md"), "w") as f:
-        f.write(idea)
-    st = state.new_state(slug, gitops.repo_name(root), owner_record(me, root), branch, small=args.small)
-    if me.provider == "owner":
-        record_owner_action(st, "owner started")
-    elif args.with_owner:
-        record_owner_action(st, "owner joined idea", once=True)
-    if open_prs or unverified:  # --stack: the owner asked for this; agents record who passed it on
-        what = (f"while {', '.join(open_prs)} is open" if open_prs
-                else "without a verified open-PR check")
-        record_owner_action(st, f"owner approved starting {slug} {what}",
-                            None if me.provider == "owner" else f"{me.provider} session {me.session}")
-    state.write_state(state.state_path(root, slug), st)
-    marked = ciskip.commit(root, slug, st, config.load(root), f"relay: new {slug}")
-    ciskip.push(root, branch, marked)
+            dispatch.enter_publishing(request_id, claimed)
+        except RelayError as e:
+            if start_branch and start_branch != branch:
+                gitops.git(root, "switch", "-q", start_branch, check=False)
+            raise RelayError(f"{e}. Nothing was pushed. The feature is committed locally on {branch}; remove it "
+                             f"with git branch -D {branch}")
+    try:
+        ciskip.push(root, branch, marked)
+    except RelayError:
+        if record:
+            with contextlib.suppress(RelayError):
+                dispatch.push_failed(request_id, claimed)
+        raise
+    if record:
+        warnings = []
+        try:
+            dispatch.published(request_id, claimed, {"slug": slug, "branch": branch, "provider": me.provider,
+                                                     "session_id": me.session, "at": time.time()}, warnings)
+        except RelayError as e:  # the next start or show finds the feature on origin and marks it started
+            warnings.append(f"could not mark request {request_id} started: {e}")
+        _warn_all(warnings)
     rivals = ownership.conflicts(ownership.collect(root), me.session)
     if rivals:  # another session published a claim between our check and our push
         raise RelayError("another session claimed this repo at the same time: "
@@ -1137,6 +1249,34 @@ def _dispatch_show_text(r):
     return "\n".join(lines) + "\n"
 
 
+def _dispatch_reconcile(record):
+    """--show: look for the request's feature on origin when it is claimed, or waiting and shown from inside its
+    repo (R18 step 6). A failure prints the stored record with a warning. The record as it stands afterwards."""
+    from . import dispatch
+    rid = record["id"]
+    if record["status"] != "waiting":
+        return record
+    warnings = []
+    try:
+        claim = record.get("claim")
+        inside = False
+        if not claim:
+            with contextlib.suppress(RelayError):
+                inside = dispatch.main_checkout(os.getcwd()) == os.path.realpath(record["repo"]["path"])
+        if isinstance(claim, dict) and claim.get("publishing"):
+            dispatch.reconcile_dead(rid, warnings=warnings)
+        elif claim or inside:
+            origin = next((f for f in dispatch.find_features(record["repo"]["path"], rid)
+                           if f["where"] == "origin"), None)
+            if origin:
+                dispatch.mark_started(rid, origin, warnings)
+    except RelayError as e:
+        warnings.append(f"could not check {record['repo']['name']} for this request, so this is the stored "
+                        f"record: {e}")
+    _warn_all(warnings)
+    return dispatch.read(rid) or record
+
+
 def cmd_dispatch(args):
     """Record work for another repo (create), or cancel, list or show a request (dispatch R1 to R8, R13)."""
     from . import dispatch
@@ -1156,6 +1296,7 @@ def cmd_dispatch(args):
         record = dispatch.read(args.show)
         if record is None:
             raise RelayError(f"no request {args.show} on this machine")
+        record = _dispatch_reconcile(record)
         sys.stdout.write(_dispatch_show_text(record))
         return 0
     if args.list:
@@ -1301,7 +1442,26 @@ def cmd_hub_act(args):
 
 # ---------------------------------------------------------------- ownership handoff
 
+def _take_request(args):
+    """relay take --request: start the dispatched feature as relay new does (dispatch R15)."""
+    from . import dispatch
+    record = dispatch.read(args.request)
+    if record is None:
+        raise RelayError(f"no request {args.request} on this machine")
+    slug = args.slug or record.get("slug")
+    if not slug:
+        raise RelayError(f"request {args.request} has no slug; run relay new <slug> --request {args.request}")
+    return start_feature(argparse.Namespace(
+        slug=slug, small=args.small, type=args.type or "feat", idea=None, idea_file=None, by=args.by, with_owner=False,
+        base="develop", stack=False, request=args.request))
+
+
 def cmd_take(args):
+    if args.request:
+        return _take_request(args)
+    for flag, value in (("--slug", args.slug), ("--small", args.small), ("--type", args.type)):
+        if value:
+            raise RelayError(f"{flag} goes with --request")
     c = Ctx(args)
     c.sync()
     me = identity.detect(c.env, args.by)
@@ -1597,6 +1757,7 @@ def build_parser():
     n.add_argument("--idea-file", help="start idea.md from existing notes")
     n.add_argument("--by", help="claude, codex or owner, when detection is ambiguous")
     n.add_argument("--with-owner", action="store_true", help="the owner took part in shaping the idea")
+    n.add_argument("--request", metavar="ID", help="start from a dispatch request (its text becomes the idea)")
     n.add_argument("--base", default="develop", help="branch on origin to start from (default develop)")
     n.add_argument("--stack", action="store_true",
                    help="start while another feature's PR is open; only when the owner asked for it")
@@ -1655,6 +1816,11 @@ def build_parser():
     t = add("take", cmd_take, "take over a feature another session handed off")
     t.add_argument("--feature")
     t.add_argument("--by")
+    t.add_argument("--request", metavar="ID", help="start the feature for a dispatch request instead")
+    t.add_argument("--slug", help="with --request: the feature slug (default: the dispatch's)")
+    t.add_argument("--small", action="store_true", help="with --request: skip idea/spec/plan")
+    t.add_argument("--type", choices=["feat", "fix", "chore", "docs", "refactor", "perf", "test"],
+                   help="with --request: the branch type (default feat)")
     h = add("handoff", cmd_handoff, "write handoff.md; --commit publishes it")
     h.add_argument("--feature")
     h.add_argument("--by")

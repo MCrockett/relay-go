@@ -7,7 +7,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-from relaylib import commands, dispatch, hub, identity, notes
+from relaylib import ciskip, commands, dispatch, gitops, hub, identity, notes, state
 from tests import helpers
 from tests.test_dispatch import add_feature
 from tests.test_notes import FakeInbox
@@ -339,6 +339,296 @@ class DispatchCommandTest(unittest.TestCase):  # dispatch R1, R2, R3, R7, R8, R1
         self.assertEqual(self.relay("--list", "--slug", "a"), 1)
         self.assertEqual(self.relay("target"), 1)
         self.assertEqual(self.relay(), 1)
+
+
+class StartRequestTest(unittest.TestCase):  # dispatch R14 to R19: relay new/take --request
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(dir="/tmp")
+        self.addCleanup(temp.cleanup)
+        self.tmp = os.path.realpath(temp.name)
+        self.root = os.path.join(self.tmp, "p")
+        os.makedirs(self.root)
+        sub = os.path.join(self.tmp, "mk")
+        os.makedirs(sub)
+        self.origin, work = helpers.make_repo(sub)
+        self.target = os.path.join(self.root, "target")
+        os.rename(work, self.target)
+        helpers.sh(self.target, "git", "remote", "set-url", "origin", self.origin)
+        env = {"PATH": os.environ["PATH"], "HOME": self.tmp, "RELAY_HOME": os.path.join(self.tmp, "h"),
+               "RELAY_ROOT": self.root, "RELAY_CONFIG": os.path.join(self.tmp, "none.toml"),
+               "CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "c"), "CODEX_HOME": os.path.join(self.tmp, "x"),
+               "RELAY_GH_BIN": helpers.fake_bin(self.tmp, "fake-gh", helpers.FAKE_GH),
+               "FAKE_GH_PRS": os.path.join(self.tmp, "prs.json"), "CLAUDECODE": "1", "RELAY_PROVIDER": "claude",
+               "RELAY_SESSION": "T1"}
+        p = mock.patch.dict(os.environ, env, clear=True)
+        p.start()
+        self.addCleanup(p.stop)
+        cwd = os.getcwd()
+        os.chdir(self.target)
+        self.addCleanup(os.chdir, cwd)
+        helpers.live_session("claude", "HUB")
+        helpers.live_session("claude", "ASK")
+        self.hub = {"provider": "claude", "session_id": "HUB"}
+        self.rid = self.new_request()
+
+    def new_request(self, **over):
+        fields = {"repo": {"name": "target", "path": self.target}, "request": "Add the clip hook.",
+                  "owner_said": "please add the clip hook", "slug": "clip-hook", "requested_by": self.hub,
+                  "asked_by": {"provider": "claude", "session_id": "ASK", "repo": "other"},
+                  "relayed_by": "claude session HUB", **over}
+        return dispatch.create(fields)["id"]
+
+    def relay(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = commands.main(list(argv))
+        self.out, self.err = out.getvalue(), err.getvalue()
+        return rc
+
+    def rec(self, rid=None):
+        return dispatch.read(rid or self.rid)
+
+    def texts(self, sid):
+        return [n["text"] for n in notes.list_for("claude", sid)]
+
+    def branches(self):
+        return helpers.sh(self.target, "git", "branch", "--format=%(refname:short)").split()
+
+    def current(self):
+        return helpers.sh(self.target, "git", "rev-parse", "--abbrev-ref", "HEAD").strip()
+
+    def st(self, slug="clip-hook"):
+        return state.read_state(state.state_path(self.target, slug))
+
+    def idea(self, slug="clip-hook"):
+        with open(os.path.join(state.feature_dir(self.target, slug), "idea.md")) as f:
+            return f.read()
+
+    # idea text
+    def test_idea_text_for_a_hub_request_with_an_asker(self):
+        got = commands.idea_text(self.rec(), "clip-hook", 1_800_000_000)
+        day = time.strftime("%Y-%m-%d", time.localtime(1_800_000_000))
+        self.assertEqual(got, f"# clip-hook\n\nRequested through relay dispatch ({self.rid}) by claude hub session "
+                              f"HUB, {day}, for claude session ASK in other.\n\n## Request\n\nAdd the clip hook.\n\n"
+                              "## Owner's words\n\n> please add the clip hook\n")
+
+    def test_idea_text_without_an_asker_or_owner_words_and_for_the_owner(self):
+        rid = self.new_request(asked_by=None, owner_said=None)
+        day = time.strftime("%Y-%m-%d", time.localtime(1_800_000_000))
+        self.assertEqual(commands.idea_text(self.rec(rid), "x", 1_800_000_000),
+                         f"# x\n\nRequested through relay dispatch ({rid}) by claude hub session HUB, {day}.\n\n"
+                         "## Request\n\nAdd the clip hook.\n")
+        rid = self.new_request(requested_by="owner", asked_by=None, relayed_by=None, owner_said="a\n\nb")
+        self.assertEqual(commands.idea_text(self.rec(rid), "x", 1_800_000_000),
+                         f"# x\n\nRequested through relay dispatch ({rid}) by the owner, {day}.\n\n"
+                         "## Request\n\nAdd the clip hook.\n\n## Owner's words\n\n> a\n>\n> b\n")
+
+    # new
+    def test_new_request_writes_the_idea_state_and_marks_started(self):
+        self.assertEqual(self.relay("new", "clip-hook", "--request", self.rid), 0, self.err)
+        self.assertEqual(self.current(), "feat/clip-hook")
+        self.assertIn("Requested through relay dispatch", self.idea())
+        self.assertIn("## Owner's words", self.idea())
+        st = self.st()
+        self.assertEqual(st["request"]["id"], self.rid)
+        self.assertEqual((st["request"]["requested_by"], st["request"]["relayed_by"]),
+                         (self.hub, "claude session HUB"))
+        self.assertEqual(st["request"]["asked_by"]["session_id"], "ASK")
+        self.assertIn({"action": "owner asked for this through relay dispatch", "relayed_by": "claude session HUB"},
+                      [{k: v for k, v in a.items() if k != "at"} for a in st["owner_actions"]])
+        r = self.rec()
+        self.assertEqual((r["status"], r["started"]["slug"], r["started"]["session_id"]), ("started", "clip-hook", "T1"))
+        self.assertNotIn("claim", r)
+        text = f"relay: request {self.rid} was started in target as clip-hook by claude session T1."
+        self.assertEqual((self.texts("HUB"), self.texts("ASK")), ([text], [text]))
+        self.assertIn("feat/clip-hook", helpers.sh(self.target, "git", "ls-remote", "origin"))
+
+    def test_new_request_for_an_owner_dispatch_records_no_relay(self):
+        rid = self.new_request(requested_by="owner", asked_by=None, relayed_by=None, owner_said=None)
+        self.assertEqual(self.relay("new", "x", "--request", rid), 0, self.err)
+        self.assertIn("by the owner", self.idea("x"))
+        self.assertNotIn("Owner's words", self.idea("x"))
+        acts = [a for a in self.st("x")["owner_actions"] if "dispatch" in a["action"]]
+        self.assertEqual(len(acts), 1)
+        self.assertNotIn("relayed_by", acts[0])
+        self.assertEqual(self.texts("HUB"), [])
+
+    def test_new_request_small_uses_the_same_idea(self):
+        self.assertEqual(self.relay("new", "clip-hook", "--small", "--type", "fix", "--request", self.rid), 0, self.err)
+        self.assertEqual(self.current(), "fix/clip-hook")
+        self.assertEqual(self.st()["stage"], "build")
+        self.assertIn("## Owner's words", self.idea())
+
+    def test_request_cannot_be_combined_with_idea(self):
+        self.assertEqual(self.relay("new", "x", "--request", self.rid, "--idea", "y"), 1)
+        self.assertIn("--request cannot be combined", self.err)
+        self.assertEqual(self.relay("new", "x", "--request", self.rid, "--idea-file", "y"), 1)
+        self.assertEqual(self.rec()["status"], "waiting")
+
+    def test_new_without_request_is_unchanged(self):
+        self.assertEqual(self.relay("new", "plain", "--idea", "one line"), 0, self.err)
+        self.assertNotIn("request", self.st("plain"))
+        self.assertEqual(self.rec()["status"], "waiting")
+
+    # take
+    def test_take_request_uses_the_dispatch_slug_or_slug_flag(self):
+        self.assertEqual(self.relay("take", "--request", self.rid), 0, self.err)
+        self.assertEqual(self.current(), "feat/clip-hook")
+        self.assertEqual(self.rec()["status"], "started")
+        rid = self.new_request(slug="other-slug")
+        helpers.sh(self.target, "git", "switch", "-q", "develop")
+        self.assertEqual(self.relay("take", "--request", rid, "--slug", "mine", "--type", "fix"), 0, self.err)
+        self.assertEqual(self.current(), "fix/mine")
+
+    def test_take_request_without_a_slug_is_refused(self):
+        rid = self.new_request(slug=None)
+        self.assertEqual(self.relay("take", "--request", rid), 1)
+        self.assertIn(f"request {rid} has no slug; run relay new <slug> --request {rid}", self.err)
+        self.assertEqual(self.rec(rid)["status"], "waiting")
+        self.assertNotIn("claim", self.rec(rid))
+
+    # refusals before anything changes
+    def assert_untouched(self, rid=None):
+        self.assertEqual(self.branches(), ["develop"])
+        self.assertNotIn("claim", self.rec(rid))
+
+    def test_r16_refusals_change_nothing(self):
+        self.assertEqual(self.relay("new", "x", "--request", "qnone"), 1)
+        self.assertIn("no request qnone on this machine", self.err)
+        other = self.new_request(repo={"name": "elsewhere", "path": os.path.join(self.root, "elsewhere")})
+        self.assertEqual(self.relay("new", "x", "--request", other), 1)
+        self.assertIn(f"request {other} is for elsewhere", self.err)
+        self.assert_untouched(other)
+        cancelled = self.new_request()
+        dispatch.mutate(cancelled, lambda r: r.update(status="cancelled"))
+        self.assertEqual(self.relay("new", "x", "--request", cancelled), 1)
+        self.assertIn(f"request {cancelled} was cancelled", self.err)
+        started = self.new_request()
+        dispatch.mutate(started, lambda r: r.update(status="started", started={"slug": "z", "at": 1}))
+        self.assertEqual(self.relay("new", "x", "--request", started), 1)
+        self.assertIn(f"request {started} was started as z in target", self.err)
+        self.assertEqual(self.branches(), ["develop"])
+
+    def test_a_linked_worktree_belongs_to_its_repo(self):
+        wt = os.path.join(self.tmp, "wt")
+        helpers.sh(self.target, "git", "worktree", "add", "-q", "-b", "scratch", wt, "develop")
+        os.chdir(wt)
+        self.assertEqual(self.relay("new", "clip-hook", "--request", self.rid), 0, self.err)
+
+    def test_a_feature_already_on_origin_marks_the_request_started_and_refuses(self):
+        from tests.test_dispatch import add_feature
+        add_feature(self.target, "feat/z", "z", self.rid, push=True)
+        helpers.sh(self.target, "git", "branch", "-q", "-D", "feat/z")
+        self.assertEqual(self.relay("new", "clip-hook", "--request", self.rid), 1)
+        self.assertIn(f"request {self.rid} was started as z in target", self.err)
+        self.assertEqual(self.rec()["status"], "started")
+        self.assertEqual((len(self.texts("HUB")), len(self.texts("ASK"))), (1, 1))
+        self.assertEqual(self.relay("new", "clip-hook", "--request", self.rid), 1)  # again: no second note
+        self.assertEqual(len(self.texts("HUB")), 1)
+        self.assertNotIn("feat/clip-hook", self.branches())
+
+    def test_a_local_only_feature_refuses_with_the_push_hint(self):
+        from tests.test_dispatch import add_feature
+        add_feature(self.target, "feat/z", "z", self.rid)
+        self.assertEqual(self.relay("new", "clip-hook", "--request", self.rid), 1)
+        self.assertIn(f"request {self.rid} already has an unpublished feature z on feat/z; push it with git push "
+                      "-u origin feat/z and run this again, or delete that branch", self.err)
+        self.assertEqual(self.rec()["status"], "waiting")
+        self.assertNotIn("claim", self.rec())
+
+    def test_a_refusal_from_relay_new_drops_the_claim(self):
+        from tests.test_dispatch import add_feature
+        add_feature(self.target, "feat/rival", "rival", "qother", push=True)  # another session's claim on origin
+        helpers.sh(self.target, "git", "branch", "-q", "-D", "feat/rival")
+        self.assertEqual(self.relay("new", "clip-hook", "--request", self.rid), 1)
+        self.assertIn("another session owns work", self.err)
+        r = self.rec()
+        self.assertEqual(r["status"], "waiting")
+        self.assertNotIn("claim", r)
+        self.assertEqual(self.branches(), ["develop"])
+
+    # publishing
+    def test_a_cancel_between_the_commit_and_the_push_stops_before_the_push(self):
+        real = ciskip.commit
+
+        def commit_then_cancel(*a, **k):
+            sha = real(*a, **k)
+            dispatch.mutate(self.rid, lambda r: r.update(status="cancelled", claim=None))
+            return sha
+        with mock.patch.object(ciskip, "commit", side_effect=commit_then_cancel):
+            self.assertEqual(self.relay("new", "clip-hook", "--request", self.rid), 1)
+        self.assertIn(f"request {self.rid} was cancelled", self.err)
+        self.assertIn("feat/clip-hook", self.err)
+        self.assertIn("git branch -D feat/clip-hook", self.err)
+        self.assertEqual(self.current(), "develop")
+        self.assertNotIn("feat/clip-hook", helpers.sh(self.target, "git", "ls-remote", "origin"))
+
+    def test_a_rejected_push_keeps_the_claim_not_publishing(self):
+        helpers.reject_pushes(self.origin, "nope")
+        self.assertEqual(self.relay("new", "clip-hook", "--request", self.rid), 1)
+        self.assertIn("push failed", self.err)
+        r = self.rec()
+        self.assertEqual((r["status"], r["claim"]["session_id"], r["claim"]["publishing"]), ("waiting", "T1", False))
+        os.remove(os.path.join(self.origin, "hooks", "pre-receive"))
+        self.assertEqual(self.relay("new", "clip-hook", "--request", self.rid), 1)  # step 1 finds the local branch
+        self.assertIn("unpublished feature clip-hook on feat/clip-hook", self.err)
+
+    # show and recovery
+    def dead_publisher(self, slug="clip-hook"):
+        me = {"provider": "claude", "session_id": "DEAD"}
+        dispatch.claim(self.rid, me, slug, f"feat/{slug}")
+        dispatch.enter_publishing(self.rid, me)
+
+    def show(self):
+        return self.relay("dispatch", "--show", self.rid)
+
+    def test_show_reconciles_a_dead_publisher(self):
+        from tests.test_dispatch import add_feature
+        add_feature(self.target, "feat/clip-hook", "clip-hook", self.rid, push=True)
+        self.dead_publisher()
+        self.assertEqual(self.show(), 0, self.err)
+        self.assertIn("(started)", self.out)
+        self.assertEqual(self.rec()["status"], "started")
+        self.assertEqual(len(self.texts("HUB")), 1)
+
+    def test_show_clears_a_dead_publisher_when_origin_has_nothing(self):
+        self.dead_publisher()
+        self.assertEqual(self.show(), 0, self.err)
+        self.assertIn("(waiting)", self.out)
+        self.assertNotIn("(publishing)", self.out)
+
+    def test_show_warns_when_the_fetch_fails_and_prints_the_stored_record(self):
+        self.dead_publisher()
+        helpers.sh(self.target, "git", "remote", "set-url", "origin", os.path.join(self.tmp, "gone.git"))
+        self.assertEqual(self.show(), 0, self.err)
+        self.assertIn("warning:", self.err)
+        self.assertIn("cannot fetch origin", self.err)
+        self.assertIn("(publishing)", self.out)
+
+    def test_show_of_a_waiting_request_from_inside_its_repo_finds_a_published_feature(self):
+        from tests.test_dispatch import add_feature
+        add_feature(self.target, "feat/z", "z", self.rid, push=True)
+        self.assertEqual(self.show(), 0, self.err)
+        self.assertIn("(started)", self.out)
+
+    def test_a_dead_publisher_is_cleared_by_a_plain_retry(self):
+        self.dead_publisher()
+        self.assertEqual(self.relay("take", "--request", self.rid), 0, self.err)
+        r = self.rec()
+        self.assertEqual((r["status"], r["started"]["session_id"]), ("started", "T1"))
+
+    def test_a_failed_started_write_after_a_push_is_a_warning_and_the_next_start_reconciles(self):
+        with mock.patch.object(dispatch, "published", side_effect=dispatch.DispatchError("disk full")):
+            self.assertEqual(self.relay("new", "clip-hook", "--request", self.rid), 0, self.err)
+        self.assertIn("warning:", self.err)
+        self.assertIn("disk full", self.err)
+        r = self.rec()
+        self.assertEqual((r["status"], r["claim"]["publishing"]), ("waiting", True))
+        helpers.sh(self.target, "git", "switch", "-q", "develop")
+        self.assertEqual(self.relay("new", "again", "--request", self.rid), 1)
+        self.assertIn(f"request {self.rid} was started as clip-hook in target", self.err)
+        self.assertEqual(self.rec()["status"], "started")
+        self.assertEqual((len(self.texts("HUB")), len(self.texts("ASK"))), (1, 1))
 
 
 if __name__ == "__main__":
