@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import time
 
 from . import (availability, ciskip, cimode, config, events, freshness, gitops, identity, ledger, localtests, machine, merged, notify,
                ownership, prompts, reviewtables, runner, state, verdict)
@@ -1084,6 +1085,159 @@ def cmd_note(args):
     return 0
 
 
+def _dispatch_who(args):
+    """(relayed_by, hub session) for a dispatch or a cancel (R2): the owner's terminal, or a registered hub with
+    --relayed."""
+    from . import hub
+    relayed_by = owner_or_relayed(args, "relay dispatch")
+    me = None
+    if relayed_by:
+        me = _hub_session(dict(os.environ), args.by)
+        if me is None or (me["provider"], me["session_id"]) not in hub.registered():
+            raise RelayError("only a registered hub dispatches; run relay hub first")
+    return relayed_by, me
+
+
+def _first_line(text):
+    return (text.strip().splitlines() or [""])[0]
+
+
+def _dispatch_when(at):
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(at))
+
+
+def _dispatch_who_text(requested_by):
+    if isinstance(requested_by, dict):
+        return f"{requested_by['provider']} session {requested_by['session_id']} (the hub)"
+    return "the owner"
+
+
+def _dispatch_show_text(r):
+    lines = [f"Request {r['id']} ({r['status']})",
+             f"Repo: {r['repo']['name']} ({r['repo'].get('path')})",
+             f"Slug suggested: {r['slug'] or 'none'}",
+             f"Dispatched by: {_dispatch_who_text(r.get('requested_by'))}, "
+             f"{_dispatch_when(r['created_at'])}"]
+    asker = r.get("asked_by")
+    if isinstance(asker, dict):
+        where = f" in {asker['repo']}" if asker.get("repo") else ""
+        lines.append(f"Asked for by: {asker['provider']} session {asker['session_id']}{where}")
+    lines += ["", "Request:", r["request"]]
+    if r.get("owner_said"):
+        lines += ["", "Owner's words:"] + ["> " + line for line in r["owner_said"].splitlines()]
+    claim = r.get("claim")
+    if isinstance(claim, dict):
+        lines += ["", f"Being started by {claim.get('provider')} session {claim.get('session_id')} as "
+                      f"{claim.get('slug')} since {_dispatch_when(claim['at'])}"
+                      + (" (publishing)" if claim.get("publishing") else "")]
+    started = r.get("started")
+    if isinstance(started, dict):
+        lines += ["", f"Started as {started.get('slug')} on {started.get('branch')} by {started.get('provider')} "
+                      f"session {started.get('session_id')}, {_dispatch_when(started['at'])}"]
+    return "\n".join(lines) + "\n"
+
+
+def cmd_dispatch(args):
+    """Record work for another repo (create), or cancel, list or show a request (dispatch R1 to R8, R13)."""
+    from . import dispatch
+    chosen = [n for n, v in (("--cancel", args.cancel), ("--show", args.show), ("--list", args.list)) if v]
+    if len(chosen) > 1:
+        raise RelayError(f"{' and '.join(chosen)} cannot be used together")
+    if args.json and "--list" not in chosen:
+        raise RelayError("--json goes with --list")
+    if chosen:
+        extra = [n for n, v in (("a repo", args.repo), ("a request", args.request), ("--owner-said", args.owner_said),
+                                ("--slug", args.slug), ("--for", args.asker)) if v]
+        if extra:
+            raise RelayError(f"{chosen[0]} does not take {extra[0]}")
+    if args.cancel:
+        return _dispatch_cancel(args)
+    if args.show:
+        record = dispatch.read(args.show)
+        if record is None:
+            raise RelayError(f"no request {args.show} on this machine")
+        sys.stdout.write(_dispatch_show_text(record))
+        return 0
+    if args.list:
+        records, unreadable = dispatch.all_records()
+        records = [r for r in records if r["status"] in ("waiting", "started")]
+        if unreadable:
+            print("relay: warning: could not read " + ", ".join(unreadable), file=sys.stderr)
+        if args.json:
+            print(json.dumps(records))
+        else:
+            for r in records:
+                print(f"{r['id']}  {r['status']}  {r['repo']['name']}  {_dispatch_when(r['created_at'])}  "
+                      f"{_first_line(r['request'])}")
+        return 0
+    if not args.repo or args.request is None:
+        raise RelayError('relay dispatch needs a repo and the request: relay dispatch <repo> "<request>"')
+    return _dispatch_create(args)
+
+
+def _dispatch_create(args):
+    from . import dispatch
+    entry = {"command": "dispatch", "action": "create", "id": None, "repo": args.repo}
+    result = "failed"
+    try:
+        relayed_by, me = _dispatch_who(args)
+        target = dispatch.target_repo(args.repo)
+        request = dispatch.clean_text(args.request, "the request")
+        if args.relayed and args.owner_said is None:
+            raise RelayError("--owner-said is required with --relayed: the words the owner typed")
+        owner_said = dispatch.clean_text(args.owner_said, "the owner's words") if args.owner_said is not None else None
+        slug = dispatch.check_slug(args.slug) if args.slug else None
+        asker = dispatch.resolve_asker(args.asker, me, target) if args.asker else None
+        record = dispatch.create({
+            "repo": {"name": os.path.basename(target), "path": target}, "request": request,
+            "owner_said": owner_said, "slug": slug, "requested_by": me or "owner", "asked_by": asker,
+            "relayed_by": relayed_by})
+        entry["id"] = record["id"]
+        result = "recorded"
+    except RelayError as e:
+        result = f"refused: {e}"
+        raise
+    finally:
+        _hub_logged(entry, result)
+    name, rid = record["repo"]["name"], record["id"]
+    print(f"relay: request {rid} recorded for {name}, waiting for a session there")
+    print(f"From a session in {record['repo']['path']}, run:")
+    if slug:
+        print(f"  relay take --request {rid}")
+    print(f"  relay new {slug or '<slug>'} --request {rid}")
+    if asker:
+        warnings = []
+        events._send(asker["provider"], asker["session_id"],
+                     f"relay: your request was dispatched to {name} as {rid} by the hub; you will be told when it "
+                     "is started and when it merges.", warnings)
+        for w in warnings:
+            print(f"relay: warning: {w}", file=sys.stderr)
+    return 0
+
+
+def _dispatch_cancel(args):
+    from . import dispatch
+    entry = {"command": "dispatch", "action": "cancel", "id": args.cancel, "repo": None}
+    result = "failed"
+
+    def cancel(record):
+        entry["repo"] = record["repo"]["name"]
+        if record["status"] != "waiting":
+            raise RelayError(f"request {record['id']} is {record['status']}, not waiting")
+        record["status"] = "cancelled"
+    try:
+        _dispatch_who(args)
+        dispatch.mutate(args.cancel, cancel)
+        result = "cancelled"
+    except RelayError as e:
+        result = f"refused: {e}"
+        raise
+    finally:
+        _hub_logged(entry, result)
+    print(f"relay: request {args.cancel} cancelled")
+    return 0
+
+
 HUB_REVIEWS = {"review": "build", "review-spec": "spec", "review-plan": "plan"}
 
 
@@ -1549,6 +1703,19 @@ def build_parser():
     nt.add_argument("--json", action="store_true")
     nt.add_argument("--session", help="the hub session id to send to; without it, the only open one")
     nt.add_argument("text", nargs="?")
+    dp = add("dispatch", cmd_dispatch, "hand work to another repo through relay; list, show or cancel requests")
+    dp.add_argument("repo", nargs="?", help="a folder directly under the projects root")
+    dp.add_argument("request", nargs="?", help="what the repo's session should do")
+    dp.add_argument("--owner-said", help="what the owner typed (required with --relayed)")
+    dp.add_argument("--slug", help="the suggested feature slug")
+    dp.add_argument("--for", dest="asker", help="the session that first asked: <provider>:<session_id> or a repo")
+    dp.add_argument("--cancel", metavar="ID", help="cancel a waiting request")
+    dp.add_argument("--list", action="store_true", help="the requests waiting or started on this machine")
+    dp.add_argument("--show", metavar="ID", help="print one request in full")
+    dp.add_argument("--json", action="store_true", help="with --list: JSON")
+    dp.add_argument("--relayed", action="store_true",
+                    help="agents only: the registered hub passes on what the owner asked for (recorded as relayed)")
+    dp.add_argument("--by", help="claude or codex, when detection is ambiguous (with --relayed)")
     try:
         from . import status
     except ImportError:
