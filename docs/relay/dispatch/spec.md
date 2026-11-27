@@ -67,14 +67,16 @@ session that asked is told when the work is picked up and when it merges.
 - **R5.** The record is one JSON file per request in `~/.relay/dispatch/` (folder mode 0700, files 0600),
   written under a lock with a temporary file and rename. It holds: id, repo (folder name and real path),
   request, owner_said, slug, requested_by (`{provider, session_id}`, or `owner`), relayed_by, created_at,
-  status (`waiting`, `started`, `merged`, `released`, `cancelled`), and, once started, `started`
-  (`{provider, session_id, slug, branch, at}`).
+  updated_at (set on every change), status (`waiting`, `started`, `merged`, `released`, `cancelled`), while
+  being started a `claim` (R18), and, once started, `started` (`{provider, session_id, slug, branch, at}`).
 - **R6.** Ids are short, unique on this machine and safe in a command line: `q` followed by base 36 of the
   creation time in milliseconds, with a suffix on collision.
 - **R7.** A dispatch writes a hub log line (`command: dispatch`, id, repo, result). It is not sent to other
   hub sessions as an event.
 - **R8.** `relay dispatch --cancel <id>` marks a waiting request `cancelled`, with the same who-may rule as R2.
-  A request that is not waiting is refused with its status. `relay dispatch --list [--json]` lists the
+  A request that is not waiting is refused with its status. A waiting request with a live claim (R18) is
+  refused with `request <id> is being started by <provider> session <session_id>`; a claim that may be taken
+  over (R18) does not stop the cancel, and the cancel removes it. `relay dispatch --list [--json]` lists the
   requests on this machine that are waiting or started, oldest first.
 
 ### Showing a waiting request
@@ -108,6 +110,9 @@ session that asked is told when the work is picked up and when it merges.
 
       Requested through relay dispatch (<id>) by <provider> hub session <session_id>, <date>.
 
+  or, for a request the owner dispatched from their own terminal, `Requested through relay dispatch (<id>) by
+  the owner, <date>.`
+
       ## Request
 
       <request>
@@ -117,8 +122,8 @@ session that asked is told when the work is picked up and when it merges.
       > <owner_said>
 
   The "Owner's words" section is left out when the record has none. `--request` cannot be combined with
-  `--idea` or `--idea-file`. `--small` and `--type` work as today; with `--small`, the request text is the
-  idea.
+  `--idea` or `--idea-file`. `--small` and `--type` work as today; with `--small`, `idea.md` is the same text
+  as above, owner's words included.
 - **R15.** `relay take --request <id> [--slug <slug>] [--small] [--type <type>]` does the same as R14, with the
   slug from `--slug` or else from the dispatch. With neither it is refused with `request <id> has no slug;
   run relay new <slug> --request <id>`. `relay take` without `--request` is unchanged.
@@ -128,15 +133,33 @@ session that asked is told when the work is picked up and when it merges.
   branch or writes anything: `request <id> is for <repo>`, `request <id> was started as <slug> in <repo>`,
   `request <id> was cancelled`, `no request <id> on this machine`.
 - **R17.** The feature's `state.md` gets `request: {id, requested_by, relayed_by, at}`, and an owner action
-  `owner asked for this through relay dispatch`, recorded as relayed by the hub when it was relayed, so the
-  owner's involvement is counted as with `--with-owner`.
-- **R18.** Two sessions cannot both start one request. The command claims the request under the dispatch
-  lock before it starts the feature (status stays `waiting`, with a `claim` naming the session and time). A
-  claim held by another session that is still live and less than 30 minutes old refuses the second with
-  `request <id> is being started by <provider> session <session_id>`. A claim by a session that is gone, or
-  older than 30 minutes, can be taken over. When the feature is published the record becomes `started`;
-  when `relay new` fails, the claim is removed and the request stays waiting.
-- **R19.** Once the feature is published, the requesting session is sent a `relay event:` note: `relay:
+  `owner asked for this through relay dispatch`, recorded as relayed by the hub when it was relayed and as
+  the owner's own when the owner dispatched from their terminal, so the owner's involvement is counted as
+  with `--with-owner`.
+- **R18.** One request becomes at most one feature. Starting runs in these steps:
+  1. **Reconcile.** After `relay new`'s fetch, relay looks through every feature in this repo, on origin and on
+     local branches (as `ownership.collect` lists them), for a `request` record with this id. One on origin:
+     the dispatch record becomes `started` from it (the R19 note is sent if the record was not already
+     `started`), and the command refuses with `request <id> was started as <slug> in <repo>`. One only on a
+     local branch: refused with `request <id> already has an unpublished feature <slug> on <branch>; push it
+     with git push -u origin <branch> and run this again, or delete that branch`.
+  2. **Claim.** Under the dispatch lock, the record must be waiting with no claim, or with a claim that may be
+     taken over, and the command writes `claim: {provider, session_id, slug, branch, at}`. A claim may be
+     taken over when its session is gone (not live, as event notes decide it) or the claim is more than 30
+     minutes old. Otherwise refused with `request <id> is being started by <provider> session <session_id>`.
+  3. **Check before publishing.** `relay new` makes its branch and commit as today. Just before its push,
+     relay reads the record again under the lock. If the request was cancelled or the claim is no longer this
+     session's, it does not push: it switches back to the branch it started on and refuses with `request <id>
+     was cancelled` or `request <id> was taken over by <provider> session <session_id>`, naming the local
+     branch and `git branch -D <branch>` to remove it.
+  4. **Publish.** After the push, the record becomes `started` and the claim is removed. If that write fails,
+     the next start attempt, `relay dispatch --show` and `relay dispatch --list` reconcile it as in step 1
+     for this repo before they answer.
+  A failure before the commit removes the claim and leaves the request waiting. A failure after the commit
+  but before the push leaves the claim; step 1 then finds the local branch on the next attempt. Two sessions
+  in one repo are also stopped by `relay new`'s existing one-writer check, which refuses a second writer and
+  reports a race found after its push.
+- **R19.** Once the feature is published, when the request came from a hub session, the requesting session is sent a `relay event:` note: `relay:
   request <id> was started in <repo> as <slug> by <provider> session <session_id>.` It is queued for the
   next prompt when the session is not open, as event notes are. The hub log gets a line with event
   `started`. Other hub sessions are not sent it.
@@ -148,13 +171,15 @@ session that asked is told when the work is picked up and when it merges.
   found on GitHub), the requesting session is told, once: the event text followed by ` This was your request
   <id>.` If the requester is a registered hub that would get the event anyway, that addition goes into the
   note it already gets, so it gets one note, not two. If it is not registered or not open, the note is
-  queued as event notes are. The requester is never told an event it caused.
-- **R21.** The dispatch record moves to `merged` or `released` when that event is delivered. A record that
+  queued as event notes are. The requester is never told an event it caused. A request the owner dispatched
+  from their terminal has no requesting session: hub sessions get the event as today, with the same addition.
+- **R21.** The dispatch record moves to `merged` or `released` when relay resolves the merge or release and
+  queues its event, whether or not the note is then sent or suppressed (R20). A record that
   is missing (pruned, or another machine) does not stop the note: the requester comes from `state.md`.
 
 ### Upkeep
 
-- **R22.** Records that are merged, released or cancelled are pruned 30 days after their last change, when
+- **R22.** Records that are merged, released or cancelled are pruned 30 days after their `updated_at`, when
   relay writes a dispatch record. Waiting and started records are kept.
 - **R23.** An unreadable record file is skipped by every reader and named once in a warning by `relay
   dispatch --list` and `relay hub`; it never blocks another request.
@@ -181,7 +206,10 @@ session that asked is told when the work is picked up and when it merges.
 | Hook cannot read requests | No notice; the hook carries on (R12) |
 | `relay new --request` hits one open PR per repo, another writer, or a slug clash | The usual `relay new` refusal; the claim is removed and the request stays waiting (R18) |
 | Two sessions start the same request | The second is refused while the first's claim is live (R18) |
-| A session dies mid-start | Its claim expires after 30 minutes or when the session is gone (R18) |
+| A session dies mid-start | Its claim can be taken over after 30 minutes or once the session is gone; a feature it already committed or published is found first (R18 step 1) |
+| The push fails after the commit | The claim stays; the next attempt finds the local branch and says how to push it (R18) |
+| The request is cancelled or taken over while being started | The start does not push and names the local branch to delete (R18 step 3) |
+| The record cannot be marked started after the push | The next start, show or list reconciles it from origin (R18 step 4) |
 | The started note cannot be sent | A warning; the feature stands |
 | The merge note to the requester cannot be sent | A warning, as for other event notes; the merge stands |
 | The dispatch record is missing at merge time | The note still goes, from `state.md` (R21) |
