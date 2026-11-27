@@ -345,3 +345,164 @@ def find_features(root, request_id):
     now = time.time()
     return [{"slug": c["slug"], "ref": c["ref"], "where": c["where"], "branch": c["branch"],
              "provider": c["provider"], "session_id": c["session_id"], "at": now} for c in found]
+
+
+# ---------------------------------------------------------------- claiming and publishing (R18, R19)
+
+CLAIM_STALE_S = 30 * 60
+
+
+def _name(who):
+    return f"{who.get('provider')} session {who.get('session_id')}"
+
+
+def _not_waiting(record):
+    if record["status"] == "cancelled":
+        return DispatchError(f"request {record['id']} was cancelled")
+    started = record.get("started")
+    if record["status"] in ("started", "merged", "released") and isinstance(started, dict):
+        return DispatchError(f"request {record['id']} was started as {started.get('slug')} in "
+                             f"{record['repo']['name']}")
+    return DispatchError(f"request {record['id']} is {record['status']}, not waiting")
+
+
+def claim_blocks(claim, now):
+    """True while a claim stops a takeover or a cancel: it is publishing, or its session is live and it is under
+    30 minutes old (R18 step 2)."""
+    from . import events
+    if not isinstance(claim, dict):
+        return False
+    if claim.get("publishing"):
+        return True
+    if now - claim.get("at", 0) > CLAIM_STALE_S:
+        return False
+    return events.session_live(claim.get("provider"), claim.get("session_id")) is not None
+
+
+def claim(request_id, me, slug, branch, now=None):
+    """Claim a waiting request for this session; refused while another session's claim may not be taken over."""
+    now = time.time() if now is None else now
+
+    def change(record):
+        if record["status"] != "waiting":
+            raise _not_waiting(record)
+        old = record.get("claim")
+        mine = isinstance(old, dict) and (old.get("provider"), old.get("session_id")) == (me["provider"],
+                                                                                         me["session_id"])
+        if isinstance(old, dict) and not mine and claim_blocks(old, now):
+            raise DispatchError(f"request {record['id']} is being started by {_name(old)}")
+        record["claim"] = {"provider": me["provider"], "session_id": me["session_id"], "slug": slug,
+                           "branch": branch, "at": now, "publishing": False}
+    return mutate(request_id, change, now)
+
+
+def _mine(record, me):
+    old = record.get("claim")
+    return isinstance(old, dict) and (old.get("provider"), old.get("session_id")) == (me["provider"],
+                                                                                    me["session_id"])
+
+
+def enter_publishing(request_id, me):
+    """Just before the push: still waiting and still this session's claim, then `publishing` (R18 step 3)."""
+    def change(record):
+        if record["status"] != "waiting":
+            raise _not_waiting(record)
+        if not _mine(record, me):
+            old = record.get("claim")
+            raise DispatchError(f"request {record['id']} was taken over by {_name(old)}" if isinstance(old, dict)
+                                else f"request {record['id']} lost its claim")
+        record["claim"]["publishing"] = True
+    return mutate(request_id, change)
+
+
+def requesters(record):
+    """[(provider, session_id)] told of a request's progress: the hub that dispatched it (when it was a session)
+    and the asker."""
+    out = []
+    by = record.get("requested_by")
+    if isinstance(by, dict) and by.get("provider") and by.get("session_id"):
+        out.append((by["provider"], by["session_id"]))
+    asked = record.get("asked_by")
+    if isinstance(asked, dict) and asked.get("provider") and asked.get("session_id"):
+        pair = (asked["provider"], asked["session_id"])
+        if pair not in out:
+            out.append(pair)
+    return out
+
+
+def mark_started(request_id, feature, warnings=None):
+    """The one started transition, used by every path. `feature` holds slug, branch, provider, session_id and at.
+    Under the lock: status started, `started` filled, claim removed. Only when the status changed are the
+    requesters told and the hub log line written, so each hears once. True when it changed; failed notes or log
+    lines are added to `warnings`."""
+    from . import events, hub
+    warnings = [] if warnings is None else warnings
+    changed = []
+
+    def change(record):
+        if record["status"] != "waiting":
+            return
+        record["status"] = "started"
+        record["started"] = {"provider": feature.get("provider"), "session_id": feature.get("session_id"),
+                             "slug": feature["slug"], "branch": feature.get("branch"),
+                             "at": feature.get("at", time.time())}
+        record.pop("claim", None)
+        changed.append(record)
+    mutate(request_id, change)
+    if not changed:
+        return False
+    record = changed[0]
+    text = (f"relay: request {record['id']} was started in {record['repo']['name']} as {feature['slug']} by "
+            f"{feature.get('provider')} session {feature.get('session_id')}.")
+    for provider, sid in requesters(record):
+        events._send(provider, sid, text, warnings)
+    warning = hub.log({"command": "event", "event": "started", "repo": record["repo"]["name"],
+                       "slug": feature["slug"], "request": record["id"], "text": text})
+    if warning:
+        warnings.append(warning)
+    return True
+
+
+def published(request_id, me, feature, warnings=None):
+    """After a successful push: mark_started."""
+    return mark_started(request_id, feature, warnings)
+
+
+def push_failed(request_id, me):
+    """The push failed: `publishing` goes back to false and the claim stays (R18 step 4)."""
+    def change(record):
+        if _mine(record, me):
+            record["claim"]["publishing"] = False
+    return mutate(request_id, change)
+
+
+def drop_claim(request_id, me):
+    """A failure before the commit: remove this session's claim; the request stays waiting."""
+    def change(record):
+        if _mine(record, me):
+            record.pop("claim", None)
+    return mutate(request_id, change)
+
+
+def reconcile_dead(request_id, now=None, warnings=None):
+    """A publishing claim whose session is gone (R18 step 5): look for the feature on origin. Found: mark the
+    request started and return the feature. Not found: clear `publishing`. A fetch failure raises and leaves the
+    claim. A live publisher, or a request with no publishing claim, is left alone (None)."""
+    from . import events
+    record = read(request_id)
+    old = record.get("claim") if record else None
+    if (not record or record["status"] != "waiting" or not isinstance(old, dict) or not old.get("publishing")
+            or events.session_live(old.get("provider"), old.get("session_id")) is not None):
+        return None
+    found = [f for f in find_features(record["repo"]["path"], request_id) if f["where"] == "origin"]
+    if found:
+        mark_started(request_id, found[0], warnings)
+        return found[0]
+
+    def change(rec):
+        c = rec.get("claim")
+        if (rec["status"] == "waiting" and isinstance(c, dict) and c.get("publishing")
+                and (c.get("provider"), c.get("session_id")) == (old.get("provider"), old.get("session_id"))):
+            c["publishing"] = False
+    mutate(request_id, change, now)
+    return None

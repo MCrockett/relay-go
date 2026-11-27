@@ -6,7 +6,7 @@ import time
 import unittest
 from unittest import mock
 
-from relaylib import dispatch, gitops, sessions, state
+from relaylib import dispatch, gitops, hub, notes, sessions, state
 from relaylib.dispatch import DispatchError
 from tests import helpers
 
@@ -301,6 +301,214 @@ class FeaturesWithTest(unittest.TestCase):  # dispatch R18 step 1
     def test_local_branches(self):
         helpers.sh(self.work, "git", "branch", "feat/x")
         self.assertEqual(gitops.local_branches(self.work), ["develop", "feat/x"])
+
+
+class ClaimTest(unittest.TestCase):  # dispatch R8, R18 steps 2 to 5, R19
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(dir="/tmp")
+        self.addCleanup(temp.cleanup)
+        self.tmp = os.path.realpath(temp.name)
+        self.origin, self.work = helpers.make_repo(self.tmp)
+        env = {"RELAY_HOME": os.path.join(self.tmp, "h"), "HOME": self.tmp,
+               "CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "c"), "CODEX_HOME": os.path.join(self.tmp, "x")}
+        p = mock.patch.dict(os.environ, env)
+        p.start()
+        self.addCleanup(p.stop)
+        self.hub = {"provider": "claude", "session_id": "HUB"}
+        self.asker = {"provider": "claude", "session_id": "ASK", "repo": "other"}
+        helpers.live_session("claude", "HUB")
+        helpers.live_session("claude", "ASK")
+        self.a = {"provider": "claude", "session_id": "A"}
+        self.b = {"provider": "codex", "session_id": "B"}
+        self.rec = dispatch.create({"repo": {"name": "work", "path": self.work}, "request": "do it",
+                                    "owner_said": None, "slug": "s", "requested_by": self.hub,
+                                    "asked_by": self.asker, "relayed_by": "claude session HUB"}, now=NOW)
+        self.id = self.rec["id"]
+
+    def status(self):
+        return dispatch.read(self.id)
+
+    def feature(self, **extra):
+        return {"slug": "s", "branch": "feat/s", "provider": "claude", "session_id": "A", "at": NOW, **extra}
+
+    def texts(self, sid):
+        return [n["text"] for n in notes.list_for("claude", sid)]
+
+    def hub_lines(self):
+        try:
+            with open(os.path.join(hub.folder(), "log.jsonl")) as f:
+                return [json.loads(x) for x in f]
+        except OSError:
+            return []
+
+    # claim
+    def test_claim_writes_the_claim(self):
+        helpers.live_session("claude", "A")
+        got = dispatch.claim(self.id, self.a, "s", "feat/s", NOW + 1)
+        self.assertEqual(got["claim"], {"provider": "claude", "session_id": "A", "slug": "s", "branch": "feat/s",
+                                        "at": NOW + 1, "publishing": False})
+
+    def test_a_second_live_session_is_refused(self):
+        helpers.live_session("claude", "A")
+        helpers.live_session("codex", "B")
+        dispatch.claim(self.id, self.a, "s", "feat/s", NOW)
+        with self.assertRaises(DispatchError) as ctx:
+            dispatch.claim(self.id, self.b, "s", "feat/s", NOW + 60)
+        self.assertEqual(str(ctx.exception), f"request {self.id} is being started by claude session A")
+
+    def test_the_same_session_may_claim_again(self):
+        helpers.live_session("claude", "A")
+        dispatch.claim(self.id, self.a, "s", "feat/s", NOW)
+        dispatch.claim(self.id, self.a, "t", "feat/t", NOW + 5)
+        self.assertEqual(self.status()["claim"]["slug"], "t")
+
+    def test_a_gone_session_and_a_31_minute_old_claim_can_be_taken_over(self):
+        dispatch.claim(self.id, self.a, "s", "feat/s", NOW)          # A has no session record: gone
+        dispatch.claim(self.id, self.b, "s", "feat/s", NOW + 10)
+        self.assertEqual(self.status()["claim"]["session_id"], "B")
+        helpers.live_session("codex", "B")
+        with self.assertRaises(DispatchError):
+            dispatch.claim(self.id, self.a, "s", "feat/s", NOW + 20)
+        dispatch.claim(self.id, self.a, "s", "feat/s", NOW + 10 + 31 * 60)
+        self.assertEqual(self.status()["claim"]["session_id"], "A")
+
+    def test_only_a_waiting_request_can_be_claimed(self):
+        dispatch.mutate(self.id, lambda r: r.update(status="cancelled"))
+        with self.assertRaises(DispatchError) as ctx:
+            dispatch.claim(self.id, self.a, "s", "feat/s", NOW)
+        self.assertEqual(str(ctx.exception), f"request {self.id} was cancelled")
+        with self.assertRaises(DispatchError):
+            dispatch.claim("qnone", self.a, "s", "feat/s", NOW)
+
+    def test_a_publishing_claim_cannot_be_taken_over_at_any_age(self):
+        helpers.live_session("claude", "A", state="ended")
+        dispatch.claim(self.id, self.a, "s", "feat/s", NOW)
+        dispatch.enter_publishing(self.id, self.a)
+        with self.assertRaises(DispatchError):
+            dispatch.claim(self.id, self.b, "s", "feat/s", NOW + 10 * 86400)
+        self.assertTrue(self.status()["claim"]["publishing"])
+
+    # enter_publishing, push_failed, drop_claim
+    def test_enter_publishing_sets_the_flag(self):
+        dispatch.claim(self.id, self.a, "s", "feat/s", NOW)
+        self.assertTrue(dispatch.enter_publishing(self.id, self.a)["claim"]["publishing"])
+
+    def test_enter_publishing_fails_after_a_cancel_and_after_a_takeover(self):
+        dispatch.claim(self.id, self.a, "s", "feat/s", NOW)
+        dispatch.mutate(self.id, lambda r: r.update(status="cancelled", claim=None))
+        with self.assertRaises(DispatchError) as ctx:
+            dispatch.enter_publishing(self.id, self.a)
+        self.assertEqual(str(ctx.exception), f"request {self.id} was cancelled")
+        dispatch.mutate(self.id, lambda r: r.update(status="waiting"))
+        dispatch.claim(self.id, self.b, "s", "feat/s", NOW + 10)
+        with self.assertRaises(DispatchError) as ctx:
+            dispatch.enter_publishing(self.id, self.a)
+        self.assertEqual(str(ctx.exception), f"request {self.id} was taken over by codex session B")
+
+    def test_push_failed_keeps_the_claim_and_drop_claim_removes_it(self):
+        dispatch.claim(self.id, self.a, "s", "feat/s", NOW)
+        dispatch.enter_publishing(self.id, self.a)
+        dispatch.push_failed(self.id, self.a)
+        self.assertEqual(self.status()["claim"]["publishing"], False)
+        self.assertEqual(self.status()["claim"]["session_id"], "A")
+        dispatch.drop_claim(self.id, self.b)        # not this session's: kept
+        self.assertIsNotNone(self.status().get("claim"))
+        dispatch.drop_claim(self.id, self.a)
+        self.assertIsNone(self.status().get("claim"))
+
+    # mark_started and published
+    def test_published_marks_started_and_tells_each_requester_once(self):
+        dispatch.claim(self.id, self.a, "s", "feat/s", NOW)
+        dispatch.enter_publishing(self.id, self.a)
+        warnings = []
+        dispatch.published(self.id, self.a, self.feature(), warnings)
+        r = self.status()
+        self.assertEqual(r["status"], "started")
+        self.assertNotIn("claim", r)
+        self.assertEqual(r["started"], {"provider": "claude", "session_id": "A", "slug": "s", "branch": "feat/s",
+                                        "at": NOW})
+        text = f"relay: request {self.id} was started in work as s by claude session A."
+        self.assertEqual(self.texts("HUB"), [text])
+        self.assertEqual(self.texts("ASK"), [text])
+        line = [x for x in self.hub_lines() if x.get("event") == "started"]
+        self.assertEqual(len(line), 1)
+        self.assertEqual((line[0]["command"], line[0]["repo"], line[0]["slug"]), ("event", "work", "s"))
+        self.assertEqual(warnings, [])
+
+    def test_mark_started_twice_sends_one_note_and_one_log_line(self):
+        self.assertTrue(dispatch.mark_started(self.id, self.feature()))
+        self.assertFalse(dispatch.mark_started(self.id, self.feature(slug="again")))
+        self.assertEqual(len(self.texts("HUB")), 1)
+        self.assertEqual(len(self.texts("ASK")), 1)
+        self.assertEqual(len([x for x in self.hub_lines() if x.get("event") == "started"]), 1)
+        self.assertEqual(self.status()["started"]["slug"], "s")
+
+    def test_an_owner_dispatched_request_with_no_asker_tells_nobody(self):
+        r = dispatch.create({"repo": {"name": "work", "path": self.work}, "request": "x", "owner_said": None,
+                             "slug": None, "requested_by": "owner", "asked_by": None, "relayed_by": None},
+                            now=NOW + 1)
+        self.assertTrue(dispatch.mark_started(r["id"], self.feature()))
+        self.assertEqual(self.texts("HUB"), [])
+
+    def test_a_failed_note_is_a_warning(self):
+        warnings = []
+        with mock.patch.object(notes, "send", side_effect=OSError("boom")):
+            dispatch.mark_started(self.id, self.feature(), warnings)
+        self.assertEqual(self.status()["status"], "started")
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("could not send the event to claude session", warnings[0])
+
+    # reconcile_dead
+    def make_dead_publisher(self, slug="s"):
+        dispatch.claim(self.id, self.a, slug, f"feat/{slug}", NOW)   # no record for A: gone
+        dispatch.enter_publishing(self.id, self.a)
+
+    def test_reconcile_dead_marks_started_when_origin_has_the_feature(self):
+        add_feature(self.work, "feat/s", "s", self.id, push=True)
+        self.make_dead_publisher()
+        warnings = []
+        got = dispatch.reconcile_dead(self.id, NOW + 5, warnings)
+        self.assertEqual((got["slug"], got["where"]), ("s", "origin"))
+        r = self.status()
+        self.assertEqual((r["status"], r["started"]["slug"], r["started"]["session_id"]), ("started", "s", "S1"))
+        self.assertNotIn("claim", r)
+        self.assertEqual(len(self.texts("HUB")), 1)
+
+    def test_reconcile_dead_clears_publishing_when_origin_has_nothing(self):
+        self.make_dead_publisher()
+        self.assertIsNone(dispatch.reconcile_dead(self.id, NOW + 5))
+        r = self.status()
+        self.assertEqual((r["status"], r["claim"]["publishing"]), ("waiting", False))
+        dispatch.claim(self.id, self.b, "s", "feat/s", NOW + 6)   # now it can be taken over
+
+    def test_reconcile_dead_leaves_a_live_publisher_alone(self):
+        helpers.live_session("claude", "A")
+        self.make_dead_publisher()
+        self.assertIsNone(dispatch.reconcile_dead(self.id, NOW + 5))
+        self.assertTrue(self.status()["claim"]["publishing"])
+
+    def test_reconcile_dead_leaves_the_claim_when_the_fetch_fails(self):
+        self.make_dead_publisher()
+        helpers.sh(self.work, "git", "remote", "set-url", "origin", os.path.join(self.tmp, "gone.git"))
+        with self.assertRaises(DispatchError) as ctx:
+            dispatch.reconcile_dead(self.id, NOW + 5)
+        self.assertIn("cannot fetch origin", str(ctx.exception))
+        self.assertTrue(self.status()["claim"]["publishing"])
+
+    def test_reconcile_dead_ignores_a_request_with_no_publishing_claim(self):
+        self.assertIsNone(dispatch.reconcile_dead(self.id, NOW))
+        dispatch.claim(self.id, self.a, "s", "feat/s", NOW)
+        self.assertIsNone(dispatch.reconcile_dead(self.id, NOW))
+        self.assertIsNotNone(self.status().get("claim"))
+
+    def test_reconcile_then_a_start_sends_each_requester_one_note(self):
+        add_feature(self.work, "feat/s", "s", self.id, push=True)
+        self.make_dead_publisher()
+        dispatch.reconcile_dead(self.id, NOW + 5)
+        found = dispatch.find_features(self.work, self.id)
+        self.assertFalse(dispatch.mark_started(self.id, found[0]))
+        self.assertEqual(len(self.texts("HUB")), 1)
+        self.assertEqual(len(self.texts("ASK")), 1)
 
 
 if __name__ == "__main__":

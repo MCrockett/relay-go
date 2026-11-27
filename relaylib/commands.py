@@ -1224,9 +1224,23 @@ def _dispatch_cancel(args):
         entry["repo"] = record["repo"]["name"]
         if record["status"] != "waiting":
             raise RelayError(f"request {record['id']} is {record['status']}, not waiting")
+        claim = record.get("claim")
+        if dispatch.claim_blocks(claim, time.time()):
+            raise RelayError(f"request {record['id']} is being started by {claim.get('provider')} session "
+                             f"{claim.get('session_id')}")
+        record.pop("claim", None)  # a claim that may be taken over goes with the cancel
         record["status"] = "cancelled"
     try:
         _dispatch_who(args)
+        current = dispatch.read(args.cancel)
+        if current and current["status"] == "waiting" and (current.get("claim") or {}).get("publishing"):
+            warnings = []
+            found = dispatch.reconcile_dead(args.cancel, warnings=warnings)  # a dead publisher may have published
+            for w in warnings:
+                print(f"relay: warning: {w}", file=sys.stderr)
+            if found:
+                raise RelayError(f"request {args.cancel} was started as {found['slug']} in "
+                                 f"{current['repo']['name']}")
         dispatch.mutate(args.cancel, cancel)
         result = "cancelled"
     except RelayError as e:

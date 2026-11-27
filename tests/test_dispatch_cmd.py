@@ -9,6 +9,7 @@ from unittest import mock
 
 from relaylib import commands, dispatch, hub, identity, notes
 from tests import helpers
+from tests.test_dispatch import add_feature
 from tests.test_notes import FakeInbox
 
 OWNER_ENV = dict.fromkeys(identity.AGENT_MARKERS + ("RELAY_SESSION",), "")
@@ -231,6 +232,61 @@ class DispatchCommandTest(unittest.TestCase):  # dispatch R1, R2, R3, R7, R8, R1
         self.assertIn("no request qnone on this machine", self.err)
         self.assertEqual(self.relay("--cancel", "../x", "--relayed"), 1)
         self.assertEqual(dispatch.read(rid)["status"], "waiting")
+
+    # cancel and claims
+    def claimed(self, session="A", live=True, publishing=False, slug="s"):
+        self.dispatch("--slug", slug)
+        rid = self.records()[0]["id"]
+        if live:
+            helpers.live_session("claude", session, cwd=self.target)
+        me = {"provider": "claude", "session_id": session}
+        dispatch.claim(rid, me, slug, f"feat/{slug}", time.time())
+        if publishing:
+            dispatch.enter_publishing(rid, me)
+        return rid
+
+    def test_cancel_refuses_a_live_claim(self):
+        rid = self.claimed()
+        self.assertEqual(self.relay("--cancel", rid, "--relayed"), 1)
+        self.assertIn(f"request {rid} is being started by claude session A", self.err)
+        self.assertEqual(dispatch.read(rid)["status"], "waiting")
+
+    def test_cancel_removes_a_claim_that_may_be_taken_over(self):
+        rid = self.claimed(live=False)
+        self.assertEqual(self.relay("--cancel", rid, "--relayed"), 0, self.err)
+        r = dispatch.read(rid)
+        self.assertEqual(r["status"], "cancelled")
+        self.assertNotIn("claim", r)
+
+    def test_cancel_removes_a_stale_live_claim(self):
+        self.dispatch()
+        rid = self.records()[0]["id"]
+        helpers.live_session("claude", "A", cwd=self.target)
+        dispatch.claim(rid, {"provider": "claude", "session_id": "A"}, "s", "feat/s", time.time() - 31 * 60)
+        self.assertEqual(self.relay("--cancel", rid, "--relayed"), 0, self.err)
+
+    def test_cancel_refuses_a_live_publisher_at_any_age(self):
+        rid = self.claimed(publishing=True)
+        dispatch.mutate(rid, lambda r: r["claim"].update(at=time.time() - 9 * 86400))
+        self.assertEqual(self.relay("--cancel", rid, "--relayed"), 1)
+        self.assertIn("is being started by claude session A", self.err)
+        self.assertEqual(dispatch.read(rid)["status"], "waiting")
+
+    def test_cancel_of_a_dead_publisher_whose_feature_is_on_origin_is_refused_and_marks_started(self):
+        rid = self.claimed(live=False, publishing=True)
+        add_feature(self.target, "feat/s", "s", rid, push=True)
+        self.assertEqual(self.relay("--cancel", rid, "--relayed"), 1)
+        self.assertIn(f"request {rid} was started as s in target", self.err)
+        self.assertEqual(dispatch.read(rid)["status"], "started")
+        self.assertEqual(self.relay("--cancel", rid, "--relayed"), 1)  # and a second cancel does not renotify
+        self.assertIn("is started, not waiting", self.err)
+
+    def test_cancel_of_a_dead_publisher_with_nothing_on_origin_works(self):
+        rid = self.claimed(live=False, publishing=True)
+        self.assertEqual(self.relay("--cancel", rid, "--relayed"), 0, self.err)
+        r = dispatch.read(rid)
+        self.assertEqual(r["status"], "cancelled")
+        self.assertNotIn("claim", r)
 
     # list
     def test_list_shows_waiting_and_started_oldest_first(self):
