@@ -198,6 +198,86 @@ class DispatchCommandTest(unittest.TestCase):  # dispatch R1, R2, R3, R7, R8, R1
         self.assertEqual(len(self.records()), 1)
 
     # cancel
+    # start (hub-start-session)
+    def fake_claude(self, **extra):
+        log = os.path.join(self.tmp, "claude.log")
+        p = mock.patch.dict(os.environ, {"PATH": helpers.fake_claude(self.tmp) + os.pathsep + os.environ["PATH"],
+                                         "FAKE_LOG": log, **extra})
+        p.start()
+        self.addCleanup(p.stop)
+        return log
+
+    def test_start_prints_session_worktree_and_name(self):  # R8
+        self.fake_claude()
+        self.dispatch("--slug", "clip-hook")
+        rid = self.records()[0]["id"]
+        self.assertEqual(self.relay("--start", rid, "--relayed"), 0, self.err)
+        started = dispatch.read(rid)["started"]
+        worktree = os.path.join(self.target, ".claude", "worktrees", "clip-hook")
+        self.assertIn(started["session_id"], self.out)
+        self.assertIn(worktree, self.out)
+        self.assertIn('"target clip-hook"', self.out)
+        line = self.logged()[-1]
+        self.assertEqual((line["command"], line["action"], line["id"], line["result"]),
+                         ("dispatch", "start", rid, "started"))
+        self.assertEqual(started["relayed_by"], "claude session hub1")
+
+    def test_start_unconfirmed_message(self):  # R9a
+        from relaylib import launch
+        log = self.fake_claude(FAKE_SLEEP="5")
+        self.dispatch("--slug", "clip-hook")
+        rid = self.records()[0]["id"]
+        with mock.patch.object(launch, "LAUNCH_WAIT_S", 1):
+            self.assertEqual(self.relay("--start", rid, "--relayed"), 0, self.err)
+        for call in helpers.fake_claude_calls(log):
+            self.addCleanup(lambda pid=call["pid"]: _kill(pid))
+        self.assertIn("may be starting", self.out)
+        self.assertIn("10 minutes", self.out)
+        self.assertIn(dispatch.read(rid)["started"]["session_id"], self.out)
+        self.assertEqual(self.logged()[-1]["result"], "unconfirmed")
+
+    def test_start_from_agent_needs_relayed_and_hub(self):  # D5
+        self.fake_claude()
+        self.dispatch("--slug", "clip-hook")
+        rid = self.records()[0]["id"]
+        self.assertEqual(self.relay("--start", rid), 1)
+        self.assertIn("--relayed", self.err)
+        self.register("someone-else")
+        self.assertEqual(self.relay("--start", rid, "--relayed"), 1)
+        self.assertIn("only a registered hub dispatches; run relay hub first", self.err)
+        self.assertIsNone(dispatch.read(rid).get("started"))
+
+    def test_start_by_the_owner_without_relayed(self):  # D5
+        self.fake_claude()
+        self.dispatch("--slug", "clip-hook")
+        rid = self.records()[0]["id"]
+        self.assertEqual(self.relay("--start", rid, env=OWNER_ENV), 0, self.err)
+
+    def test_start_refusal_logged(self):
+        self.fake_claude()
+        self.dispatch()
+        rid = self.records()[0]["id"]
+        self.assertEqual(self.relay("--start", rid, "--relayed"), 1)
+        self.assertIn("has no slug", self.err)
+        self.assertTrue(self.logged()[-1]["result"].startswith("refused: request"))
+
+    def test_start_rejects_other_options(self):
+        self.assertEqual(self.relay("--start", "q1", "--show", "q1", "--relayed"), 1)
+        self.assertIn("cannot be used together", self.err)
+        self.assertEqual(self.relay("--start", "q1", "--for", "other", "--relayed"), 1)
+        self.assertIn("--start does not take --for", self.err)
+
+    def test_show_waiting_with_launch(self):
+        self.fake_claude()
+        self.dispatch("--slug", "clip-hook")
+        rid = self.records()[0]["id"]
+        self.relay("--start", rid, "--relayed")
+        started = dispatch.read(rid)["started"]
+        self.assertEqual(self.relay("--show", rid), 0, self.err)
+        self.assertIn(f"Session starting as clip-hook in {started['worktree']}: target clip-hook "
+                      f"({started['session_id']}), ok, since", self.out)
+        self.assertNotIn("Started as", self.out)
+
     def test_cancel_a_waiting_request(self):
         self.dispatch()
         rid = self.records()[0]["id"]
@@ -470,6 +550,17 @@ class StartRequestTest(unittest.TestCase):  # dispatch R14 to R19: relay new/tak
         self.assertNotIn("request", self.st("plain"))
         self.assertEqual(self.rec()["status"], "waiting")
 
+    def test_take_after_hub_start(self):  # hub-start-session Review Focus 1
+        def launched(record):
+            record["started"] = {"provider": "claude", "session_id": "T1", "slug": "clip-hook",
+                                 "worktree": self.target, "name": "target clip-hook", "at": time.time(),
+                                 "relayed_by": "claude session HUB", "launch": "ok"}
+        dispatch.mutate(self.rid, launched)
+        self.assertEqual(self.relay("take", "--request", self.rid, "--slug", "clip-hook"), 0, self.err)
+        self.assertEqual(self.rec()["status"], "started")
+        self.assertNotIn("launch", self.rec()["started"])
+        self.assertEqual(self.rec()["started"]["branch"], "feat/clip-hook")
+
     # take
     def test_take_request_uses_the_dispatch_slug_or_slug_flag(self):
         self.assertEqual(self.relay("take", "--request", self.rid), 0, self.err)
@@ -629,6 +720,13 @@ class StartRequestTest(unittest.TestCase):  # dispatch R14 to R19: relay new/tak
         self.assertIn(f"request {self.rid} was started as clip-hook in target", self.err)
         self.assertEqual(self.rec()["status"], "started")
         self.assertEqual((len(self.texts("HUB")), len(self.texts("ASK"))), (1, 1))
+
+
+def _kill(pid):
+    try:
+        os.kill(pid, 9)
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":

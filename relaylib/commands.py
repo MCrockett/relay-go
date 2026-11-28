@@ -1076,6 +1076,8 @@ def cmd_hub(args):
         return cmd_hub_note(args)
     if args.hub_cmd == "act":
         return cmd_hub_act(args)
+    if args.hub_cmd == "clear":
+        return cmd_hub_clear(args)
     if args.hub_cmd == "page-url":
         return cmd_hub_page_url(args)
     out, warnings = hub.digest(_hub_session(dict(os.environ), args.by), as_json=args.json, page=args.page)
@@ -1110,7 +1112,7 @@ def _hub_logged(entry, result):
 
 
 def cmd_hub_note(args):
-    from . import hub, notes
+    from . import hub, notes, retired
     entry = {"command": "note", "ref": args.ref, "target": None, "action": None, "relayed_by": None}
     result = "failed"
     try:
@@ -1118,6 +1120,9 @@ def cmd_hub_note(args):
         item = hub.resolve(args.ref, _hub_session(dict(os.environ), args.by))
         provider, sid, label = hub.note_target(item)
         entry["target"] = f"{provider}:{sid}"
+        gone = retired.entry(provider, sid)
+        if gone and gone.get("state") == "retired":  # hub-start-session R16
+            raise RelayError(f"{label} was retired; replaced by {gone.get('replaced_by_name')}")
         inbox = hub.deliverable(item, provider, sid)
         note, message = notes.send(provider, sid, args.text, inbox, prefix=hub.prefix(relayed_by))
         if message:
@@ -1135,6 +1140,31 @@ def cmd_hub_note(args):
         raise
     finally:
         _hub_logged(entry, result)
+
+
+def cmd_hub_clear(args):
+    """Retire the closed session behind a digest item and start a fresh one in its folder (hub-start-session D5,
+    R11 to R14)."""
+    from . import hub, hubstart
+    entry = {"command": "clear", "ref": args.ref, "target": None, "action": None, "relayed_by": None}
+    result = "failed"
+    try:
+        relayed_by, me = _dispatch_who(args)
+        entry["relayed_by"] = relayed_by
+        item = hub.resolve(args.ref, me)
+        entry["target"] = f"{item.get('provider')}:{item.get('session_id')}"
+        out = hubstart.clear(item, relayed_by)
+        result = "cleared" if out["launch"] == "ok" else "unconfirmed"
+    except RelayError as e:
+        result = f"refused: {e}"
+        raise
+    finally:
+        _hub_logged(entry, result)
+    what = "started" if out["launch"] == "ok" else "may be starting (claude --bg did not finish within 60 seconds)"
+    print(f'relay: {what}: "{out["name"]}" ({out["session_id"]}); {out["label"]} ({out["old"]}) is retired')
+    if out["released"]:
+        print(f"relay: it will take over {', '.join(out['released'])}")
+    return 0
 
 
 NOTE_PREFIX = "Note from the owner, sent with relay note:"
@@ -1228,6 +1258,7 @@ def _dispatch_who_text(requested_by):
 
 
 def _dispatch_show_text(r):
+    from . import dispatch
     lines = [f"Request {r['id']} ({r['status']})",
              f"Repo: {r['repo']['name']} ({r['repo'].get('path')})",
              f"Slug suggested: {r['slug'] or 'none'}",
@@ -1246,7 +1277,10 @@ def _dispatch_show_text(r):
                       f"{claim.get('slug')} since {_dispatch_when(claim['at'])}"
                       + (" (publishing)" if claim.get("publishing") else "")]
     started = r.get("started")
-    if isinstance(started, dict):
+    if dispatch.launch_record(r):
+        lines += ["", f"Session starting as {started.get('slug')} in {started.get('worktree')}: {started.get('name')} "
+                      f"({started.get('session_id')}), {started.get('launch')}, since {_dispatch_when(started['at'])}"]
+    elif isinstance(started, dict):
         lines += ["", f"Started as {started.get('slug')} on {started.get('branch')} by {started.get('provider')} "
                       f"session {started.get('session_id')}, {_dispatch_when(started['at'])}"]
     return "\n".join(lines) + "\n"
@@ -1283,18 +1317,21 @@ def _dispatch_reconcile(record):
 def cmd_dispatch(args):
     """Record work for another repo (create), or cancel, list or show a request (dispatch R1 to R8, R13)."""
     from . import dispatch
-    chosen = [n for n, v in (("--cancel", args.cancel), ("--show", args.show), ("--list", args.list)) if v]
+    chosen = [n for n, v in (("--cancel", args.cancel), ("--show", args.show), ("--list", args.list),
+                             ("--start", args.start)) if v]
     if len(chosen) > 1:
         raise RelayError(f"{' and '.join(chosen)} cannot be used together")
     if args.json and "--list" not in chosen:
         raise RelayError("--json goes with --list")
     if chosen:
         extra = [n for n, v in (("a repo", args.repo), ("a request", args.request), ("--owner-said", args.owner_said),
-                                ("--slug", args.slug), ("--for", args.asker)) if v]
+                                ("--slug", args.slug if not args.start else None), ("--for", args.asker)) if v]
         if extra:
             raise RelayError(f"{chosen[0]} does not take {extra[0]}")
     if args.cancel:
         return _dispatch_cancel(args)
+    if args.start:
+        return _dispatch_start(args)
     if args.show:
         record = dispatch.read(args.show)
         if record is None:
@@ -1393,6 +1430,32 @@ def _dispatch_cancel(args):
     finally:
         _hub_logged(entry, result)
     print(f"relay: request {args.cancel} cancelled")
+    return 0
+
+
+def _dispatch_start(args):
+    """Start a Claude session for a waiting request (hub-start-session R1 to R9a)."""
+    from . import dispatch, hubstart
+    entry = {"command": "dispatch", "action": "start", "id": args.start, "repo": None}
+    result = "failed"
+    try:
+        relayed_by, _ = _dispatch_who(args)
+        entry["repo"] = ((dispatch.read(args.start) or {}).get("repo") or {}).get("name")
+        out = hubstart.start(args.start, args.slug, relayed_by)
+        result = "started" if out["launch"] == "ok" else "unconfirmed"
+        entry.update(session_id=out["session_id"], worktree=out["worktree"])
+    except RelayError as e:
+        result = f"refused: {e}"
+        raise
+    finally:
+        _hub_logged(entry, result)
+    if out["launch"] == "ok":
+        print(f"relay: started claude session {out['session_id']} in {out['worktree']}")
+    else:
+        print(f"relay: claude session {out['session_id']} may be starting in {out['worktree']}: claude --bg did not "
+              "finish within 60 seconds and was left running. If it does not show up, a later start is allowed "
+              "once 10 minutes have passed with no session")
+    print(f'relay: it is named "{out["name"]}" in the Remote Control list')
     return 0
 
 
@@ -1879,7 +1942,10 @@ def build_parser():
     ha.add_argument("action", choices=["go", "extra-round", "reset-rounds", "release", "review", "review-spec",
                                        "review-plan", "merge"])
     ha.add_argument("--reviewer", help="review actions only: provider:model[@effort] from the preference table")
-    for sp in (hn, ha):
+    hc = hsub.add_parser("clear", help="retire a closed session from the digest and start a fresh one in its folder "
+                                       "(the hub, --relayed)")
+    hc.add_argument("ref", help="<digest id>.<item number> from the digest the owner saw")
+    for sp in (hn, ha, hc):
         sp.add_argument("--relayed", action="store_true",
                         help="required: pass on what the owner typed in the hub chat (recorded as relayed)")
         sp.add_argument("--by", help="claude or codex, when detection is ambiguous")
@@ -1898,6 +1964,7 @@ def build_parser():
     dp.add_argument("--cancel", metavar="ID", help="cancel a waiting request")
     dp.add_argument("--list", action="store_true", help="the requests waiting or started on this machine")
     dp.add_argument("--show", metavar="ID", help="print one request in full")
+    dp.add_argument("--start", metavar="ID", help="start a Claude session for a waiting request (the hub, --relayed)")
     dp.add_argument("--json", action="store_true", help="with --list: JSON")
     dp.add_argument("--relayed", action="store_true",
                     help="agents only: the registered hub passes on what the owner asked for (recorded as relayed)")

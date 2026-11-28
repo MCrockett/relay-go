@@ -216,6 +216,14 @@ class CaptureTest(unittest.TestCase):
             self.assertEqual((p.returncode, p.stdout, p.stderr), (0, "", ""))
         self.assertEqual(json.load(open(sessions.record_path("claude", "s1")))["state"], "waiting")
 
+    def test_prune_prunes_retired(self):  # hub-start-session R19
+        from relaylib import retired
+        with retired.locked():
+            retired.save({"claude:old": {"provider": "claude", "session_id": "old", "state": "retired",
+                                         "replaced_by": "n", "at": 1000.0, "retired_at": 1000.0}})
+        sessions.prune(now=1000.0 + 8 * 86400)
+        self.assertEqual(retired.load(), {})
+
     def test_prune_deletes_old_records_under_the_folder_lock(self):
         sessions.capture("claude", io.StringIO(json.dumps(ev("Stop"))), now=1000.0)
         sessions.capture("codex", io.StringIO(json.dumps(ev("Stop", session_id="s2"))), now=1000.0 + 6 * 86400)
@@ -393,6 +401,33 @@ class RequestNoticeTest(NoticeFixture):  # dispatch R12
         text = json.loads(self.hook())["hookSpecificOutput"]["additionalContext"]
         self.assertIn("PR #26 (docker) was merged", text)
         self.assertIn(f"request {rid}", text)
+
+    def retire(self, sid, state="retired"):
+        from relaylib import retired
+        with retired.locked():
+            entries = retired.load()
+            entries[retired.key("claude", sid)] = {"provider": "claude", "session_id": sid, "state": state,
+                                                   "replaced_by": "n", "replaced_by_name": "proj (fresh)",
+                                                   "at": 1.0, "retired_at": 1.0}
+            retired.save(entries)
+
+    def test_retired_session_gets_no_notices(self):  # hub-start-session R15
+        self.feature("docker", 26)
+        self.merged(26)
+        self.request()
+        self.retire("s1")
+        self.assertEqual(self.hook(), "")
+        self.retire("s2", state="clearing")  # a reservation changes nothing
+        text = self.hook(session="s2")
+        self.assertIn("from the hub is waiting", text)
+
+    def test_waiting_notice_with_launch_record(self):  # hub-start-session R10
+        rid = self.request()
+        self.dispatch.mutate(rid, lambda r: r.update(started={"provider": "claude", "session_id": "L", "slug": "s",
+                                                              "worktree": self.wt, "name": "proj s", "at": 1.0,
+                                                              "relayed_by": None, "launch": "ok"}))
+        self.assertIn(rid, self.hook())
+        self.assertIn(rid, self.hook(session="s2", cwd=self.wt))
 
     def test_a_broken_dispatch_folder_leaves_the_hook_alone(self):
         self.request()

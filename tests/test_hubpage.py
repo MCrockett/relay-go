@@ -132,6 +132,17 @@ class RenderTest(unittest.TestCase):  # phone-artifact D3, D5, R4, R5, R7, R9
         self.assertNotIn(HOME, page)
         self.assertEqual(cards(page), 1)
 
+    def test_request_card_offers_start_and_retired_card(self):  # hub-start-session R17
+        request = {"n": 1, "kind": "request", "id": "qabc12", "repo": "thinkling", "first_line": "x",
+                   "wait_since": NOW - 60, "actions": ["start", "cancel"]}
+        gone = {"n": 2, "kind": "session", "provider": "claude", "session_id": "S1", "label": "proj",
+                "state": "retired", "retired": "proj proj (fresh)", "wait_since": NOW - 60, "actions": [],
+                "answer_here": False}
+        page = self.render([request, gone])
+        self.assertIn("relay dispatch --start qabc12 --relayed", page)
+        self.assertIn("retired, replaced by proj proj (fresh)", page)
+        self.assertEqual(cards(page), 2)
+
     def test_an_unsaved_digest_has_no_numbers(self):
         page = self.render([feature(1), session(2)], digest_id=None)
         self.assertIn("Not saved: actions need a new digest.", page)

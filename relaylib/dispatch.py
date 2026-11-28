@@ -271,8 +271,10 @@ def resolve_asker(value, hub, target_path):
     else:
         repo_path = target_repo(value)
         roots = _repo_roots(repo_path)
+        from . import retired
         found = [r for r in sessions.read_records()
                  if isinstance(r.get("cwd"), str) and _inside(r["cwd"], roots)
+                 and not retired.is_retired(r["provider"], r["session_id"])  # hub-start-session R18
                  and events.session_live(r["provider"], r["session_id"])]
         named = ", ".join(f"{r['provider']}:{r['session_id']}" for r in found)
         if not found:
@@ -391,6 +393,25 @@ def claim_blocks(claim, now):
     if now - claim.get("at", 0) > CLAIM_STALE_S:
         return False
     return events.session_live(claim.get("provider"), claim.get("session_id")) is not None
+
+
+def launch_record(record):
+    """The hub's launch record on a waiting request (hub-start-session R7), or None. A `started` without `launch`
+    is the record `relay take` writes and is never a launch."""
+    started = record.get("started")
+    return started if record.get("status") == "waiting" and isinstance(started, dict) and "launch" in started \
+        else None
+
+
+def launch_stale(started, now):
+    """True when a launch no longer blocks a new start: no live session record for it and 10 minutes or more
+    since it was made (hub-start-session D9, R2)."""
+    from . import events, retired
+    if not isinstance(started, dict) or "launch" not in started:
+        return False
+    at = started.get("at")
+    old = not isinstance(at, (int, float)) or now - at >= retired.GRACE_S
+    return old and events.session_live("claude", started.get("session_id")) is None
 
 
 def claim(request_id, me, slug, branch, now=None):

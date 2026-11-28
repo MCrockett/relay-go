@@ -1,0 +1,191 @@
+---
+{
+  "authors": {
+    "build": "claude",
+    "idea": "claude",
+    "plan": "claude",
+    "spec": "claude"
+  },
+  "branch": "feat/hub-start-session",
+  "extra_rounds": {
+    "spec": 1
+  },
+  "feature": "hub-start-session",
+  "history": {
+    "build": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2"
+        ],
+        "head": "97f977e49498fac6d66625ad0480ed2691ff7dbd",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ],
+    "plan": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2",
+          "R1-3"
+        ],
+        "head": "8ea3f8773ea7b4c530dc8387b5ca5b6adcc8ae28",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      },
+      {
+        "blocking_ids": [
+          "R2-1"
+        ],
+        "head": "fe65958c6e147f25643911211428a776ec4defbb",
+        "prior": {
+          "R1-1": "resolved",
+          "R1-2": "resolved",
+          "R1-3": "resolved"
+        },
+        "round": 2,
+        "verdict": "NO-GO"
+      }
+    ],
+    "spec": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2",
+          "R1-3",
+          "R1-4",
+          "R1-5"
+        ],
+        "head": "3228cff82fe0530c11090112399a40239bd38c87",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      },
+      {
+        "blocking_ids": [
+          "R1-2",
+          "R1-3",
+          "R2-1"
+        ],
+        "head": "06c5e47ea7a5fc599dce012c8105e9c6eb5a9e59",
+        "prior": {
+          "R1-1": "resolved",
+          "R1-2": "partial",
+          "R1-3": "partial",
+          "R1-4": "resolved",
+          "R1-5": "resolved"
+        },
+        "round": 2,
+        "verdict": "NO-GO"
+      },
+      {
+        "blocking_ids": [
+          "R3-1"
+        ],
+        "head": "80c00de5e3ae2eec6c04b9b38402bd3e5057fa69",
+        "prior": {
+          "R1-2": "resolved",
+          "R1-3": "resolved",
+          "R2-1": "resolved"
+        },
+        "round": 3,
+        "verdict": "NO-GO"
+      },
+      {
+        "blocking_ids": [
+          "R3-1"
+        ],
+        "head": "9f273bf0e15b06a68c883aab727ca08459db94c0",
+        "prior": {
+          "R3-1": "partial"
+        },
+        "round": 4,
+        "verdict": "NO-GO"
+      }
+    ]
+  },
+  "owner": {
+    "provider": "claude",
+    "session": "3896b642-2869-42b7-af41-c0181c7df612",
+    "since": "2026-11-28T10:32:16-05:00",
+    "worktree": "hub-start-session"
+  },
+  "owner_actions": [
+    {
+      "action": "owner asked for this through relay dispatch",
+      "at": "2026-11-28T09:00:36-05:00",
+      "relayed_by": "claude session b98b7951-453c-40f9-81ce-6e74b537d43e"
+    },
+    {
+      "action": "override extra-round (spec)",
+      "at": "2026-11-28T09:11:38-05:00",
+      "relayed_by": "claude session b98b7951-453c-40f9-81ce-6e74b537d43e"
+    },
+    {
+      "action": "owner joined spec",
+      "at": "2026-11-28T10:13:14-05:00"
+    }
+  ],
+  "pr": 49,
+  "refresh": false,
+  "repo": "relay-go",
+  "request": {
+    "asked_by": null,
+    "at": "2026-11-28T09:00:36-05:00",
+    "id": "qmx0h7k1c",
+    "relayed_by": "claude session b98b7951-453c-40f9-81ce-6e74b537d43e",
+    "requested_by": {
+      "provider": "claude",
+      "session_id": "b98b7951-453c-40f9-81ce-6e74b537d43e"
+    }
+  },
+  "retried": false,
+  "review_notes": {},
+  "reviewed": {
+    "build": {
+      "base_ref": "origin/develop",
+      "base_sha": "801a81516b20c7089f5672128f23c1fbb953331d",
+      "data_paths": [],
+      "head": "842dfd6ee79f9cf111c91920211d985d49aebe09",
+      "inputs": {
+        "plan": "c91999418e26e62c3800afd879dd0d706f5c638344edfa1d90beefecb5df34e4",
+        "spec": "3027af3d594d68ea75ea7e2ef41b38a183f431b8d97cf028ccb781066d0820ce"
+      },
+      "merge": "16e89efe037345ef9730c70ea0b9c66f287d134a031cac413b6293a0bb05e35e"
+    },
+    "plan": {
+      "inputs": {
+        "plan": "c91999418e26e62c3800afd879dd0d706f5c638344edfa1d90beefecb5df34e4",
+        "spec": "3027af3d594d68ea75ea7e2ef41b38a183f431b8d97cf028ccb781066d0820ce"
+      }
+    },
+    "spec": {
+      "inputs": {
+        "spec": "3027af3d594d68ea75ea7e2ef41b38a183f431b8d97cf028ccb781066d0820ce"
+      }
+    }
+  },
+  "rounds": {
+    "build": 2,
+    "plan": 3,
+    "spec": 5
+  },
+  "skipped": [],
+  "small": false,
+  "stage": "build",
+  "status": "ready-to-merge",
+  "updated": "2026-11-28T12:13:49-05:00",
+  "verdicts": {
+    "build": "GO",
+    "plan": "GO",
+    "spec": "GO"
+  }
+}
+---
+
+# Relay state
+
+Written by `relay`. Do not edit by hand.

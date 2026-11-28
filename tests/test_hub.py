@@ -357,7 +357,7 @@ class RequestItemsTest(HubHome):  # dispatch R9, R11, R23
         self.assertEqual([(i["n"], i["kind"]) for i in found], [(1, "feature"), (2, "request"), (3, "feature")])
         item = found[1]
         self.assertEqual((item["id"], item["repo"], item["repo_path"], item["actions"], item["wait_since"]),
-                         (r["id"], "thinkling", "/p/thinkling", ["cancel"], self.NOW - 500))
+                         (r["id"], "thinkling", "/p/thinkling", ["start", "cancel"], self.NOW - 500))
         self.assertEqual(hub.counts(data, found, hubs=set()), {"features": 0, "sessions": 0})
 
     def test_the_text_names_the_request_and_how_to_start_or_cancel_it(self):
@@ -369,6 +369,7 @@ class RequestItemsTest(HubHome):  # dispatch R9, R11, R23
         self.assertIn("cd /p/thinkling && claude", text)
         self.assertIn(f'take request {r["id"]}', text)
         self.assertIn(f"relay dispatch --cancel {r['id']} --relayed", text)
+        self.assertIn(f"or from here: relay dispatch --start {r['id']} --relayed", text)  # hub-start-session
         self.assertEqual(warnings, [])
         out = json.loads(self.digest({"rows": []}, as_json=True)[0])
         self.assertEqual(out["items"][0]["kind"], "request")
@@ -959,6 +960,92 @@ class NoteTest(unittest.TestCase):  # mobile-hub D5, D6, D8, R8, R11, R12
         self.assertEqual(self.relay("hub", "note", f"{d}.1", "again", "--relayed"), 0, self.err)
         self.assertIn("could not write the hub log", self.err)
         self.assertEqual(len(fake.wait(2)), 2)
+
+
+class HubClearTest(NoteTest):  # hub-start-session D5, R11, R14, R16, R17
+    def setUp(self):
+        super().setUp()
+        self.claude_log = os.path.join(self.tmp, "claude.log")
+        p = mock.patch.dict(os.environ, {"PATH": helpers.fake_claude(self.tmp) + os.pathsep + os.environ["PATH"],
+                                         "FAKE_LOG": self.claude_log})
+        p.start()
+        self.addCleanup(p.stop)
+        hub.register("claude", "hub1", [{"provider": "claude", "session_id": "hub1", "state": "working"}])
+
+    def test_clear_command_logs_and_prints(self):
+        self.record("S1", st="ended")
+        d = self.digest(self.session_item(1, "S1"))
+        self.assertEqual(self.relay("hub", "clear", f"{d}.1", "--relayed"), 0, self.err)
+        self.assertIn('"proj proj (fresh)"', self.out)
+        self.assertIn("proj (S1) is retired", self.out)
+        line = self.logged()[-1]
+        self.assertEqual((line["command"], line["target"], line["result"], line["relayed_by"]),
+                         ("clear", "claude:S1", "cleared", "claude session hub1"))
+        self.assertEqual(len(helpers.fake_claude_calls(self.claude_log)), 1)
+
+    def test_clear_needs_relayed_from_agent(self):
+        self.record("S1", st="ended")
+        d = self.digest(self.session_item(1, "S1"))
+        self.assertEqual(self.relay("hub", "clear", f"{d}.1"), 1)
+        self.assertIn("--relayed", self.err)
+        self.assertEqual(helpers.fake_claude_calls(self.claude_log), [])
+
+    def test_clear_refusal_logged(self):
+        self.record("S1", st="waiting", since_h=0)
+        d = self.digest(self.session_item(1, "S1"))
+        self.assertEqual(self.relay("hub", "clear", f"{d}.1", "--relayed"), 1)
+        self.assertIn("close proj in the Remote Control list first, then clear again", self.err)
+        self.assertTrue(self.logged()[-1]["result"].startswith("refused: close proj"))
+
+    def test_note_refuses_retired(self):  # R16
+        from relaylib import retired
+        self.record("S1")
+        with retired.locked():
+            retired.save({"claude:S1": {"provider": "claude", "session_id": "S1", "state": "retired",
+                                        "replaced_by": "N1", "replaced_by_name": "proj proj (fresh)",
+                                        "at": self.now, "retired_at": self.now}})
+        d = self.digest(self.session_item(1, "S1"))
+        self.assertEqual(self.relay("hub", "note", f"{d}.1", "hi", "--relayed"), 1)
+        self.assertIn("proj was retired; replaced by proj proj (fresh)", self.err)
+
+    def test_digest_collects_closed_retired_session(self):  # R17, A2
+        from relaylib import retired
+        self.record("S1", st="ended")
+        d = self.digest(self.session_item(1, "S1"))
+        self.assertEqual(self.relay("hub", "clear", f"{d}.1", "--relayed"), 0, self.err)
+        with retired.locked():  # an entry from an older relay, without a label
+            entries = retired.load()
+            entries["claude:S0"] = {"provider": "claude", "session_id": "S0", "state": "retired",
+                                    "replaced_by": "N0", "replaced_by_name": "proj x (fresh)", "at": self.now,
+                                    "retired_at": self.now}
+            retired.save(entries)
+        with mock.patch.object(hub, "load", return_value=({"rows": [], "other_sessions": []},
+                                                          {"from": "build", "seconds": 1})):
+            out, _ = hub.digest(HUB, records=[], as_json=True)
+            text, _ = hub.digest(HUB, records=[])
+        found = {i["session_id"]: i for i in json.loads(out)["items"]}
+        self.assertEqual((found["S1"]["state"], found["S1"]["actions"], found["S1"]["label"]),
+                         ("retired", [], "proj"))
+        self.assertEqual(found["S0"]["label"], "S0")
+        self.assertIn("proj · retired, replaced by proj proj (fresh)", text)
+        self.assertNotIn(ANSWER_HERE_TEXT, text)
+
+    def test_retired_session_still_listed_offers_nothing(self):  # R17
+        found = hub.items({"rows": [], "other_sessions": [
+            {"provider": "claude", "session_id": "S1", "label": "proj", "state": "waiting", "since": 1.0},
+            {"provider": "claude", "session_id": "S2", "label": "other", "state": "permission", "since": 2.0}]},
+            hubs=set(), retired_entries=[{"provider": "claude", "session_id": "S1", "state": "retired",
+                                          "replaced_by_name": "proj proj (fresh)"}])
+        s1, s2 = found
+        self.assertEqual((s1["retired"], s1["actions"], s1["answer_here"], s1["state"]),
+                         ("proj proj (fresh)", [], False, "retired"))
+        lines = hub._item_lines(s1, True, 10.0)
+        self.assertEqual(lines, ["1. proj · retired, replaced by proj proj (fresh)"])
+        self.assertEqual(s2["actions"], ["clear"])
+        self.assertEqual(len(found), 2)  # the retired one is not listed twice
+
+
+ANSWER_HERE_TEXT = hub.ANSWER_HERE
 
 
 class SkillTest(unittest.TestCase):  # mobile-hub R15
