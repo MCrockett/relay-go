@@ -41,11 +41,17 @@
   },
   "retried": false,
   "review_notes": {
+    "plan": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra out of usage: 5-hour limit used up until Sat 00:49, same provider as the author",
     "spec": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra out of usage: 5-hour limit used up until Sat 00:49, same provider as the author"
   },
   "reviewed": {
     "build": null,
-    "plan": null,
+    "plan": {
+      "inputs": {
+        "plan": "248ba4aaccdf5cbb4dcd36167060941f2fa1b8d01d510672dc0b8090b5ffbff1",
+        "spec": "895b830b7b5f944c2441f29df5e7231b079dbab3a6d1c617ea00ea4cfe163bbb"
+      }
+    },
     "spec": {
       "inputs": {
         "spec": "895b830b7b5f944c2441f29df5e7231b079dbab3a6d1c617ea00ea4cfe163bbb"
@@ -58,10 +64,11 @@
   },
   "skipped": [],
   "small": false,
-  "stage": "plan",
-  "status": "in-review",
-  "updated": "2026-11-27T21:37:33-05:00",
+  "stage": "build",
+  "status": "drafting",
+  "updated": "2026-11-27T21:39:06-05:00",
   "verdicts": {
+    "plan": "GO",
     "spec": "GO"
   }
 }
