@@ -23,7 +23,7 @@ When the owner tells you in this conversation to merge (for example "merge 23"),
 
 When you resume after waiting on the owner, run `relay status` before anything else: the PR may be merged. relay's hook also adds a one-line merge notice to your next turn when the dashboard has seen the merge.
 
-Around 60% of your context window: `relay handoff`, fill it in, `relay handoff --commit`, stop. The handoff covers every feature you hold in this repo, so stop all work here.
+Hand off only when the session has auto-compacted, when the system's low-context warning appears, or at a stage boundary where the owner asks for one. Never hand off on a guessed percentage: a session cannot see its own context use. Then: `relay handoff`, fill it in, `relay handoff --commit`, stop. The handoff covers every feature you hold in this repo, so stop all work here.
 
 One open PR per repo: `relay new` refuses while another feature has an open, unmerged PR. Tell the owner the PR is waiting for their merge. Pass `--stack` only if the owner asks you to start the next feature anyway.
 

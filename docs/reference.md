@@ -287,7 +287,7 @@ then `relay ui --background`) so it runs one version. Sessions need nothing.
 
 ## Handoffs
 
-At about 60% context, or when switching provider or machine: `relay handoff`, fill it in, `relay handoff --commit`. A handoff covers every feature that session holds in the repo (ownership is per repo). The next session runs `relay take`, which takes over all of them, including stacked PRs on other branches.
+After the session has auto-compacted, when the low-context warning appears, at a stage boundary where the owner asks for one, or when switching provider or machine: `relay handoff`, fill it in, `relay handoff --commit`. Sessions never hand off on a guessed percentage, because they cannot see their own context use. A handoff covers every feature that session holds in the repo (ownership is per repo). The next session runs `relay take`, which takes over all of them, including stacked PRs on other branches.
 
 ## Reviewer preferences
 
