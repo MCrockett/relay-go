@@ -12,6 +12,6 @@ description: Use when a relay feature is at the plan stage, to write docs/relay/
 5. `relay submit` commits the plan for you. To publish an edit under `docs/relay/<slug>/` at any other time, use `relay commit "docs: ..."`, not `git commit`: it commits only that folder and skips CI when the code has not changed.
 6. Codex only: if your sandbox blocks the Claude review's network access, request approval to run `relay submit` outside the sandbox.
 
-Around 60% of your context window: `relay handoff`, fill it in, `relay handoff --commit`, stop. The handoff covers every feature you hold in this repo, so stop all work here.
+Hand off only when the session has auto-compacted, when the system's low-context warning appears, or at a stage boundary where the owner asks for one. Never hand off on a guessed percentage: a session cannot see its own context use. Then: `relay handoff`, fill it in, `relay handoff --commit`, stop. The handoff covers every feature you hold in this repo, so stop all work here.
 
 Never pass `--same-provider` on your own: relay picks the reviewer from the preference table, including a fallback when a provider is out of usage. Only if the owner asks for a same-provider review in this conversation, pass `--same-provider --relayed`.
