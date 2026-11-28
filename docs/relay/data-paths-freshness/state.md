@@ -39,20 +39,29 @@
     }
   },
   "retried": false,
+  "review_notes": {
+    "spec": "fallback: claude:claude-fable-5-2 because codex:gpt-6-astra out of usage: 5-hour limit used up until Sat 00:49, same provider as the author"
+  },
   "reviewed": {
     "build": null,
     "plan": null,
-    "spec": null
+    "spec": {
+      "inputs": {
+        "spec": "895b830b7b5f944c2441f29df5e7231b079dbab3a6d1c617ea00ea4cfe163bbb"
+      }
+    }
   },
   "rounds": {
     "spec": 1
   },
   "skipped": [],
   "small": false,
-  "stage": "spec",
-  "status": "in-review",
-  "updated": "2026-11-27T21:34:47-05:00",
-  "verdicts": {}
+  "stage": "plan",
+  "status": "drafting",
+  "updated": "2026-11-27T21:36:40-05:00",
+  "verdicts": {
+    "spec": "GO"
+  }
 }
 ---
 
