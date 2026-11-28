@@ -37,6 +37,14 @@ def memo_active():
     return _MEMO.get() is not None
 
 
+def forget_memo():
+    """Empty the active read memo in place, after a fetch moved refs. In place: worker threads started from
+    copied contexts share the same dict."""
+    memo = _MEMO.get()
+    if memo is not None:
+        memo.clear()
+
+
 def _memo_key(kind, root, args):
     memo = _MEMO.get()
     if memo is None:
@@ -249,6 +257,9 @@ def fetch(root):
         raise RelayError(f"cannot fetch origin, so ownership cannot be confirmed: {e}")
     if p.returncode != 0:
         raise RelayError(f"cannot fetch origin, so ownership cannot be confirmed: {p.stderr.strip()}")
+    forget_memo()  # reads cached before the fetch would show the old origin refs (status-json-detail plan T3)
+    if scancache.active():
+        scancache.restamp(common_dir(root))
 
 
 def common_dir(root):

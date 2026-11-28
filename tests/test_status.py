@@ -1,7 +1,8 @@
-import argparse, io, json, os, shutil, tempfile, time, unittest
+import argparse, io, json, os, re, shutil, tempfile, time, unittest
 from contextlib import redirect_stdout
 from unittest import mock
-from relaylib import commands, freshness, gitops, localtests, sessions, state, status, waiting
+from relaylib import commands, freshness, gitops, localtests, merged, scancache, sessions, state, status, waiting
+from relaylib.errors import RelayError
 from tests import helpers
 
 
@@ -223,8 +224,9 @@ class StatusTest(StatusFixture):
         self.assertIn("\n    Answer the claude session · waiting 16h\n", text)
         self.assertIn("\n    Agent: How do you want to treat the pi window", text)
         self.assertEqual(data[0]["excerpt"]["source"], "agent")
-        self.assertEqual(len(data[0]["excerpt"]["text"]), 161)          # the excerpt only, never the full text
-        self.assertNotIn(question.strip(), json.dumps(data))
+        self.assertEqual(len(data[0]["excerpt"]["text"]), 161)          # the excerpt line stays clipped
+        self.assertEqual(data[0]["excerpt"]["full"], question)          # --json adds the full text (status-json-detail R1)
+        self.assertNotIn(question.strip(), text)
 
     def test_scan_with_claims_names_the_sessions_features_account_for(self):
         alpha = self.held("alpha", "drafting", "S1")
@@ -516,3 +518,188 @@ class StatusTest(StatusFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JsonDetailTest(StatusFixture):
+    """status-json-detail: excerpt.full, owner_action_items and one store per relay status run."""
+
+    def pushed(self, work, slug, base="develop", **over):
+        helpers.sh(work, "git", "switch", "-q", base)
+        helpers.sh(work, "git", "switch", "-q", "-c", f"feat/{slug}")
+        self.put(work, slug, stage="build", **over)
+        helpers.sh(work, "git", "add", "-A")
+        helpers.sh(work, "git", "commit", "-q", "-m", f"relay: {slug}")
+        helpers.sh(work, "git", "push", "-q", "-u", "origin", f"feat/{slug}")
+
+    def tree(self):
+        """A local feature, origin-only features (one merged, one stacked under another), all on one repo."""
+        origin, work = helpers.make_repo(self.projects)
+        self.pushed(work, "away", status="drafting", pr=7,
+                    owner_actions=[{"at": "2026-11-27T10:00:00-05:00", "action": "owner started"}])
+        self.pushed(work, "landed", status="ready-to-merge", pr=8)
+        self.pushed(work, "base", status="drafting")
+        self.pushed(work, "stacked", base="feat/base", status="drafting")  # carries base's state.md blob too
+        helpers.sh(work, "git", "switch", "-q", "develop")
+        self.put(work, "here", status="drafting", owner_actions=[
+            {"at": "2026-11-26T09:00:00-05:00", "action": "owner joined idea", "relayed_by": "hub"},
+            {"at": "2026-11-26T10:00:00-05:00", "action": "owner submitted spec", "via": {"channel": "x"}}])
+        return work
+
+    def merged_pr(self, pr):
+        real = merged.resolve
+        return mock.patch.object(merged, "resolve",
+                                 side_effect=lambda repo, st: ("merged", None) if st.get("pr") == pr else real(repo, st))
+
+    def json_rows(self, *extra):
+        return {r["feature"]: r for r in json.loads(self.run_cmd("status", "--json", "--all", *extra))}
+
+    def test_owner_action_items_list_each_action_with_its_time_only(self):
+        self.tree()
+        with self.merged_pr(8):
+            rows = self.json_rows()
+        self.assertEqual(rows["here"]["owner_action_items"], [
+            {"action": "owner joined idea", "at": "2026-11-26T09:00:00-05:00"},
+            {"action": "owner submitted spec", "at": "2026-11-26T10:00:00-05:00"}])
+        self.assertEqual(rows["away"]["owner_action_items"],
+                         [{"action": "owner started", "at": "2026-11-27T10:00:00-05:00"}])  # origin-only row
+        self.assertEqual(rows["landed"]["owner_action_items"], [{"action": "PR #8 merged on GitHub", "at": None}])
+        for row in rows.values():
+            self.assertEqual(len(row["owner_action_items"]), row["owner_actions"], row["feature"])
+
+    def test_a_merged_local_feature_ends_with_the_merge_item(self):
+        root = self.repo("alpha", {"one": {"stage": "build", "status": "ready-to-merge", "pr": 5, "owner_actions": [
+            {"at": "2026-11-26T09:00:00-05:00", "action": "owner started"}]}})
+        with self.merged_pr(5):
+            row = self.json_rows()["one"]
+        self.assertEqual(row["owner_action_items"][-1], {"action": "PR #5 merged on GitHub", "at": None})
+        self.assertEqual(row["owner_actions"], 2)
+        self.assertTrue(root)
+
+    def test_malformed_owner_actions_are_skipped_and_a_bad_time_is_null(self):
+        self.repo("alpha", {"one": {"owner_actions": [
+            {"action": "no time"}, {"action": "odd time", "at": 5}, "not a dict", {"at": "2026-11-26"},
+            {"action": 3, "at": "2026-11-26"}]}})
+        row = self.json_rows()["one"]
+        self.assertEqual(row["owner_action_items"], [{"action": "no time", "at": None},
+                                                     {"action": "odd time", "at": None}])
+
+    def test_an_unreadable_state_row_has_no_items(self):
+        root = self.repo("alpha", {})
+        helpers.write(state.state_path(root, "broken"), "not a state file\n")
+        rows = json.loads(self.run_cmd("status", "--json"))
+        bad = [r for r in rows if r["feature"] == "?"]
+        self.assertTrue(bad)
+        self.assertEqual((bad[0]["owner_action_items"], bad[0]["owner_actions"]), ([], 0))
+
+    def test_excerpt_full_keeps_the_whole_message_up_to_the_limit(self):
+        from relaylib import agentask
+        said = "First line of the question.\nSecond line.\n" + "word " * 2000
+        self.held("bottomsup", "nba", "S1")
+        self.session("S1", said=said)
+        data = json.loads(self.run_cmd("status", "--json"))
+        text = self.run_cmd("status")
+        excerpt = data[0]["excerpt"]
+        self.assertEqual(excerpt["full"], agentask.full(said))
+        self.assertEqual(len(excerpt["full"]), agentask.FULL)
+        self.assertIn("\nSecond line.", excerpt["full"])                   # line breaks kept
+        self.assertNotIn("\n", excerpt["text"])                            # text stays flattened
+        self.assertEqual(len(excerpt["text"]), 161)
+        self.assertNotIn("Second line.\nword", text)                       # the text output shows the excerpt only
+
+    def test_no_transcript_means_no_excerpt(self):
+        self.held("bottomsup", "nba", "S1")
+        self.session("S1")
+        self.assertIsNone(json.loads(self.run_cmd("status", "--json"))[0]["excerpt"])
+
+    def test_rows_are_the_same_with_and_without_the_run_store(self):
+        self.tree()
+        norm = lambda rows: sorted(json.dumps(r, sort_keys=True) for r in rows)
+        with self.merged_pr(8):
+            plain = norm(status.scan(self.projects))
+            with gitops.read_memo(), scancache.use(scancache.Store()):
+                stored = norm(status.scan(self.projects))
+        self.assertEqual(plain, stored)
+        self.assertEqual(len(plain), 5)
+
+    def test_status_reads_each_state_blob_once_and_never_by_git_show(self):
+        work = self.tree()
+        stacked_blob = helpers.sh(work, "git", "rev-parse", "origin/feat/stacked:docs/relay/base/state.md").strip()
+        self.assertEqual(stacked_blob, helpers.sh(work, "git", "rev-parse",
+                                                  "origin/feat/base:docs/relay/base/state.md").strip())
+        calls, asked = [], []
+        real_run, real_cat = gitops.run, gitops.cat_files
+
+        def run(args, cwd, *a, **k):
+            calls.append(list(args))
+            return real_run(args, cwd, *a, **k)
+
+        def cat(root, specs):
+            asked.extend(specs)
+            return real_cat(root, specs)
+        with mock.patch.object(gitops, "run", side_effect=run), mock.patch.object(gitops, "cat_files", side_effect=cat):
+            self.run_cmd("status", "--json")
+        shows = [c for c in calls if c[:2] == ["git", "show"] and any("state.md" in x for x in c)]
+        self.assertEqual(shows, [])
+        blobs = [s for s in asked if re.fullmatch(r"[0-9a-f]{40}", s)]
+        self.assertIn(stacked_blob, blobs)
+        self.assertEqual(len(blobs), len(set(blobs)))
+
+    def test_status_runs_its_scan_inside_a_store_and_memo(self):
+        self.repo("alpha", {"one": {}})
+        seen, real = [], status.scan_with_claims
+
+        def scan(*a, **k):
+            seen.append((scancache.active() is not None, gitops.memo_active()))
+            return real(*a, **k)
+        with mock.patch.object(status, "scan_with_claims", side_effect=scan):
+            self.run_cmd("status")
+            self.run_cmd("status", "--json")
+        self.assertEqual(seen, [(True, True), (True, True)])
+        self.assertIsNone(scancache.active())
+        self.assertFalse(gitops.memo_active())
+
+    def _broken(self, **patch):
+        """Rows of one status --json run with patch applied, then of a run without it."""
+        real = gitops.run
+
+        def run(args, cwd, *a, **k):  # git ls-tree fails, as on an unreadable object store
+            if list(args[:2]) == ["git", "ls-tree"]:
+                raise RelayError("git ls-tree failed")
+            return real(args, cwd, *a, **k)
+        with mock.patch.multiple(gitops, **patch) if patch else mock.patch.object(gitops, "run", side_effect=run):
+            broken = json.loads(self.run_cmd("status", "--json"))
+        return broken, json.loads(self.run_cmd("status", "--json"))
+
+    def test_a_failed_blob_read_flags_the_repo_for_that_run_only(self):
+        self.tree()
+        broken, after = self._broken(cat_files=mock.Mock(side_effect=RelayError("cat-file failed")))
+        self.assertTrue(all(r.get("scan_error") for r in broken if r["repo"] == "work"))
+        self.assertTrue(any("cannot read origin branches" in f for r in broken for f in r["flags"]))
+        self.assertFalse(any(r.get("scan_error") for r in after))
+        self.assertIn("away", [r["feature"] for r in after])
+
+    def test_a_failed_tree_listing_flags_the_repo_for_that_run_only(self):
+        self.tree()
+        broken, after = self._broken()
+        self.assertTrue(all(r.get("scan_error") for r in broken if r["repo"] == "work"))
+        self.assertFalse(any(r.get("scan_error") for r in after))
+
+    def test_a_repo_left_with_no_rows_shows_a_waiting_question_row(self):
+        origin, work = helpers.make_repo(self.projects)
+        self.pushed(work, "away", status="drafting")
+        helpers.sh(work, "git", "switch", "-q", "develop")
+        broken, after = self._broken(cat_files=mock.Mock(side_effect=RelayError("cat-file failed")))
+        self.assertEqual([(r["feature"], r["waiting_on_owner"]) for r in broken], [("?", True)])
+        self.assertEqual([r["feature"] for r in after], ["away"])
+
+
+class JsonDetailHubTest(unittest.TestCase):
+    def test_the_hub_item_ignores_the_new_row_fields(self):
+        from relaylib import hub
+        row = {"repo": "alpha", "feature": "one", "stage": "build", "status": "waiting-owner", "waiting_on_owner": True,
+               "asks": [{"kind": "answer", "text": "Answer", "session": "claude:S1"}], "flags": [], "pr": None,
+               "excerpt": {"source": "agent", "text": "short"}, "owner_actions": 1}
+        plain = hub._feature_item(dict(row))
+        richer = hub._feature_item(dict(row, excerpt=dict(row["excerpt"], full="short and the rest"),
+                                        owner_action_items=[{"action": "owner started", "at": None}]))
+        self.assertEqual(plain, richer)
