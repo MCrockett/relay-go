@@ -2,11 +2,13 @@
 worktrees, bring the main checkout to the base branch, delete the local branch, prune. A step that is not safe is
 skipped and reported with the command that would finish it; relay never forces one and never fails the merge."""
 import os
+import shutil
 
 from . import gitops
 from .errors import RelayError
 
 SHOW = 5  # paths listed per skipped step
+CACHE_DIRS = {"__pycache__", ".pytest_cache"}  # Python's own caches: safe to delete before removing a worktree
 
 
 class Result:
@@ -43,12 +45,55 @@ def _listed(paths):
     return shown + (f" and {len(paths) - SHOW} more" if len(paths) > SHOW else "")
 
 
-def _changes(path, ignored):
+def _entries(path, ignored):
+    """[(code, path)] from `git status --porcelain -z`. A rename's second (source) path is its own entry."""
     args = ["status", "--porcelain", "-z"] + (["--ignored"] if ignored else [])
     p = _git(path, *args)
     if p.returncode:
         raise RelayError((p.stderr or p.stdout).strip() or "git status failed")
-    return [entry[3:] for entry in p.stdout.split("\0") if entry]
+    return [(entry[:2], entry[3:]) for entry in p.stdout.split("\0") if entry]
+
+
+def _changes(path, ignored):
+    return [name for _, name in _entries(path, ignored)]
+
+
+def _cache_root(rel):
+    """The cache folder rel is in or is (up to and including its first cache part), or None."""
+    parts = rel.rstrip("/").split("/")
+    for i, part in enumerate(parts):
+        if part in CACHE_DIRS:
+            return "/".join(parts[:i + 1])
+    return None
+
+
+def _caches_only(top, entries):
+    """The cache folders to delete when every entry is an untracked or ignored Python cache, else None. A folder
+    git lists as one entry is walked on disk: anything in it outside a cache folder, or any link, means None."""
+    roots = set()
+    for code, rel in entries:
+        if code not in ("??", "!!"):
+            return None
+        root = _cache_root(rel)
+        if root:
+            roots.add(root)
+            continue
+        full = os.path.join(top, rel)
+        if not rel.endswith("/") or os.path.islink(full.rstrip("/")):
+            return None
+        for here, dirs, files in os.walk(full):
+            for d in list(dirs):
+                if d in CACHE_DIRS and not os.path.islink(os.path.join(here, d)):
+                    roots.add(os.path.relpath(os.path.join(here, d), top))
+                    dirs.remove(d)
+                elif os.path.islink(os.path.join(here, d)):
+                    return None
+            if files:
+                return None
+    for root in roots:
+        if os.path.islink(os.path.join(top, root)):
+            return None
+    return sorted(roots)
 
 
 def ignored_collisions(checkout, target):
@@ -112,10 +157,25 @@ def _run(r, repo, branch, base, pr_head, cwd, keep=None):
                       "it removes it when it next runs", f"worktree {wt['path']}")
             continue
         try:
-            files = _changes(wt["path"], ignored=True)
+            entries = _entries(wt["path"], ignored=True)
         except RelayError as e:
             r.skipped(f"kept worktree {wt['path']}: {e}", f"worktree {wt['path']}")
             continue
+        caches = _caches_only(wt["path"], entries) if entries else None
+        if caches:
+            try:
+                for root in caches:
+                    shutil.rmtree(os.path.join(wt["path"], root))
+            except OSError as e:
+                r.skipped(f"kept worktree {wt['path']}: cannot delete its Python caches ({e})", f"worktree {wt['path']}")
+                continue
+            r.done(f"deleted Python caches in {wt['path']} ({_listed(caches)})")
+            try:
+                entries = _entries(wt["path"], ignored=True)
+            except RelayError as e:
+                r.skipped(f"kept worktree {wt['path']}: {e}", f"worktree {wt['path']}")
+                continue
+        files = [name for _, name in entries]
         if files:
             r.skipped(f"kept worktree {wt['path']}: it has files git does not hold ({_listed(files)}). Check "
                       f"them, then run: git worktree remove --force {wt['path']}", f"worktree {wt['path']}")
