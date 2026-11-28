@@ -35,20 +35,27 @@
     }
   },
   "retried": false,
+  "review_notes": {},
   "reviewed": {
     "build": null,
     "plan": null,
-    "spec": null
+    "spec": {
+      "inputs": {
+        "spec": "79df77b9ac53c2a99b1019ab65bb37e85f76b3da9cabd0ef9aeacbdf8883f84d"
+      }
+    }
   },
   "rounds": {
     "spec": 1
   },
   "skipped": [],
   "small": false,
-  "stage": "spec",
-  "status": "in-review",
-  "updated": "2026-11-28T12:29:39-05:00",
-  "verdicts": {}
+  "stage": "plan",
+  "status": "drafting",
+  "updated": "2026-11-28T12:30:15-05:00",
+  "verdicts": {
+    "spec": "GO"
+  }
 }
 ---
 
