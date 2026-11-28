@@ -2,6 +2,7 @@
 {
   "authors": {
     "idea": "claude",
+    "plan": "claude",
     "spec": "claude"
   },
   "branch": "feat/config-path-case",
@@ -46,13 +47,14 @@
     }
   },
   "rounds": {
+    "plan": 1,
     "spec": 1
   },
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "drafting",
-  "updated": "2026-11-28T12:30:15-05:00",
+  "status": "in-review",
+  "updated": "2026-11-28T12:30:50-05:00",
   "verdicts": {
     "spec": "GO"
   }
