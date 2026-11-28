@@ -30,6 +30,10 @@
       "action": "owner asked for this through relay dispatch",
       "at": "2026-11-28T09:09:49-05:00",
       "relayed_by": "claude session b98b7951-453c-40f9-81ce-6e74b537d43e"
+    },
+    {
+      "action": "owner joined build",
+      "at": "2026-11-28T09:47:53-05:00"
     }
   ],
   "pr": 47,
@@ -53,7 +57,7 @@
     "spec": null
   },
   "rounds": {
-    "build": 1
+    "build": 2
   },
   "skipped": [
     "spec",
@@ -61,8 +65,8 @@
   ],
   "small": true,
   "stage": "build",
-  "status": "changes-requested",
-  "updated": "2026-11-28T09:44:38-05:00",
+  "status": "in-review",
+  "updated": "2026-11-28T09:47:53-05:00",
   "verdicts": {
     "build": "NO-GO"
   }
