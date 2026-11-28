@@ -145,3 +145,155 @@ def release_all(root, session_id, relayed_by):
             raise RelayError(f"could not release {slug}: {e}; released so far: {', '.join(done) or 'none'}")
         done.append(slug)
     return done
+
+
+# ---------------------------------------------------------------- clear: retire a closed session (R11 to R14)
+
+class _Lost(RelayError):
+    pass
+
+
+def _update(k, check, change):
+    """Under the retired lock: change the entry when `check(entry)` holds, else raise _Lost."""
+    from . import retired
+    with retired.locked():
+        entries = retired.load()
+        e = entries.get(k)
+        if not e or not check(e):
+            raise _Lost("already being cleared")
+        change(e)
+        retired.save(entries)
+        return e
+
+
+def _session_record(provider, session_id):
+    import json
+    from . import sessions
+    try:
+        with open(sessions.record_path(provider, session_id)) as f:
+            record = json.load(f)
+    except (OSError, ValueError):
+        return None
+    ok = sessions._valid(record) and (record["provider"], record["session_id"]) == (provider, session_id)
+    return record if ok else None
+
+
+def clear(item, relayed_by, now=None):
+    """Retire the closed session behind a digest item and start a fresh one in its folder. {session_id, name, old,
+    launch, released}; RelayError otherwise."""
+    from . import events, hub, retired
+    now = time.time() if now is None else now
+    if item.get("kind") != "session":  # R11
+        raise RelayError(f"item {item.get('n')} is not a session")
+    provider, old_id = item.get("provider"), item.get("session_id")
+    label = item.get("label") or old_id
+    if provider != "claude":
+        raise RelayError("clear starts Claude sessions only")
+    record = _session_record(provider, old_id)
+    cwd = record.get("cwd") if record else None
+    if not cwd or not os.path.isdir(cwd):
+        raise RelayError(f"{label}'s folder is gone")
+    if (provider, old_id) in hub.registered():
+        raise RelayError(f"{label} is a hub session")
+    if events.session_live(provider, old_id) is not None:
+        raise RelayError(f"close {label} in the Remote Control list first, then clear again")
+    k = retired.key(provider, old_id)
+    existing = retired.entry(provider, old_id)
+    if existing and existing.get("state") == "retired" and not retired.is_stale(existing, now):  # R16
+        raise RelayError(f"{label} was retired; replaced by {existing.get('replaced_by_name')}, which is still "
+                         "starting or running")
+    if shutil.which("claude") is None:
+        raise RelayError("claude is not on PATH; start the session at the Mac")
+    root = dispatch.main_checkout(cwd)
+    gitops.fetch(root)
+    new_id = str(uuid.uuid4())
+    name = f"{os.path.basename(root)} {label} (fresh)"
+    busy = RelayError(f"{label} is already being cleared")
+    try:
+        if existing and existing.get("state") == "retired":
+            _retry(root, k, label, new_id, name, relayed_by, now)
+        else:
+            _first(root, k, provider, old_id, label, new_id, name, relayed_by, now)
+    except _Lost:
+        raise busy
+    e = retired.entry(provider, old_id) or {}
+    handover = list(e.get("handover") or [])
+    outcome, reason = launch.run(launch.argv(name, new_id, launch.clear_prompt(old_id, handover)), cwd, new_id)
+
+    def record_launch(entry):  # R13: the entry stays retired whatever the launch did
+        entry["launch"] = outcome
+        if reason:
+            entry["launch_error"] = reason
+        else:
+            entry.pop("launch_error", None)
+    try:
+        _update(k, lambda entry: entry.get("replaced_by") == new_id, record_launch)
+    except _Lost:
+        pass  # a later clear took over; its own launch is recorded there
+    if outcome == "failed":
+        raise RelayError(reason)
+    return {"session_id": new_id, "name": name, "old": old_id, "label": label, "launch": outcome,
+            "released": handover}
+
+
+def _first(root, k, provider, old_id, label, new_id, name, relayed_by, now):
+    """Reserve (R11a), note what the fresh session must take, release it all (D8), then mark retired (R12)."""
+    from . import retired
+    with retired.locked():
+        entries = retired.load()
+        e = entries.get(k)
+        if e and (e.get("state") == "retired" or not retired.is_stale(e, now)):
+            raise _Lost("already being cleared")
+        entries[k] = {"provider": provider, "session_id": old_id, "label": label, "state": "clearing",
+                      "replaced_by": new_id, "replaced_by_name": name, "at": now, "relayed_by": relayed_by,
+                      "handover": list((e or {}).get("handover") or [])}  # a stale reservation's list is kept
+        retired.save(entries)
+    ours = lambda entry: entry.get("replaced_by") == new_id  # noqa: E731
+    held = held_features(root, old_id)
+    _update(k, ours, lambda entry: entry.update(handover=sorted(set(entry["handover"]) | set(held))))
+    release_all(root, old_id, relayed_by)  # a refusal leaves the entry clearing; it goes stale on its own
+    _update(k, ours, lambda entry: entry.update(state="retired", retired_at=now))
+
+
+def _retry(root, k, label, new_id, name, relayed_by, now):
+    """R13: the replacement never showed up. Release what it took, retire it too, and point at a new one. Until
+    the releases succeed, `replaced_by` keeps naming the stale replacement, so a failed retry loses nothing."""
+    from . import retired
+    with retired.locked():
+        entries = retired.load()
+        e = entries.get(k)
+        retry = (e or {}).get("retry")
+        fresh_retry = isinstance(retry, dict) and now - retry.get("at", 0) < retired.GRACE_S
+        if not e or e.get("state") != "retired" or not retired.is_stale(e, now) or fresh_retry:
+            raise _Lost("already being cleared")
+        e["retry"] = {"token": new_id, "at": now}
+        retired.save(entries)
+        stale_id = e.get("replaced_by")
+        stale_name = e.get("replaced_by_name")
+    ours = lambda entry: (entry.get("retry") or {}).get("token") == new_id  # noqa: E731
+    try:
+        held = held_features(root, stale_id) if stale_id else []
+        _update(k, ours, lambda entry: entry.update(handover=sorted(set(entry.get("handover") or []) | set(held))))
+        if stale_id:
+            release_all(root, stale_id, relayed_by)
+    except RelayError as err:
+        if not isinstance(err, _Lost):
+            try:
+                _update(k, ours, lambda entry: entry.pop("retry", None))
+            except _Lost:
+                pass
+        raise
+    with retired.locked():
+        entries = retired.load()
+        e = entries.get(k)
+        if not e or not ours(e):
+            raise _Lost("already being cleared")
+        if held:
+            entries[retired.key("claude", stale_id)] = {
+                "provider": "claude", "session_id": stale_id, "label": stale_name or stale_id, "state": "retired",
+                "replaced_by": new_id, "replaced_by_name": name, "at": now, "retired_at": now,
+                "relayed_by": relayed_by, "handover": []}
+        e.update(replaced_by=new_id, replaced_by_name=name, at=now)
+        for field in ("retry", "launch", "launch_error"):
+            e.pop(field, None)
+        retired.save(entries)

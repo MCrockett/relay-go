@@ -310,6 +310,224 @@ class ReleaseTest(Base):  # D8, R12
         self.assertIsNotNone(self.handoff_on_origin("a"))
 
 
+class ClearTest(ReleaseTest):  # R11 to R16
+    def setUp(self):
+        super().setUp()
+        self.closed("old")
+
+    def closed(self, sid, cwd=None):
+        helpers.live_session("claude", sid, cwd=cwd or self.repo, state="ended")
+
+    def item(self, sid="old", **over):
+        return {"kind": "session", "provider": "claude", "session_id": sid, "label": "proj", "n": 3, **over}
+
+    def entry(self, sid="old"):
+        from relaylib import retired
+        return retired.entry("claude", sid)
+
+    def put(self, sid="old", **fields):
+        from relaylib import retired
+        with retired.locked():
+            entries = retired.load()
+            entries[retired.key("claude", sid)] = {"provider": "claude", "session_id": sid, "label": "proj",
+                                                   "replaced_by": "r1", "replaced_by_name": "proj proj (fresh)",
+                                                   "relayed_by": None, "handover": [], **fields}
+            retired.save(entries)
+
+    def owner_actions(self, slug):
+        from relaylib import owneractions
+        helpers.sh(self.repo, "git", "fetch", "-q", "origin")
+        return [a for a in owneractions.published(self.repo, slug)[1]["owner_actions"] if "release" in a["action"]]
+
+    def test_clear_ok(self):  # R12, R13, R14
+        self.feature("a", "old")
+        out = hubstart.clear(self.item(), "claude session hub1")
+        self.assertEqual((out["old"], out["launch"], out["released"]), ("old", "ok", ["a"]))
+        self.assertIsNotNone(self.handoff_on_origin("a"))
+        [call] = self.calls()
+        self.assertEqual(call["cwd"], self.repo)
+        self.assertEqual(call["argv"][:5], ["--bg", "--remote-control", "proj proj (fresh)", "--session-id",
+                                            out["session_id"]])
+        self.assertIn("replace session old", call["argv"][-1])
+        self.assertIn("held: a.", call["argv"][-1])
+        e = self.entry()
+        self.assertEqual((e["state"], e["launch"], e["replaced_by"], e["label"]),
+                         ("retired", "ok", out["session_id"], "proj"))
+
+    def test_clear_refuses_live(self):  # R11
+        helpers.live_session("claude", "old", cwd=self.repo)
+        self.feature("a", "old")
+        with self.assertRaises(RelayError) as e:
+            hubstart.clear(self.item(), None)
+        self.assertEqual(str(e.exception), "close proj in the Remote Control list first, then clear again")
+        self.assertIsNone(self.handoff_on_origin("a"))
+        self.assertIsNone(self.entry())
+
+    def test_clear_refuses_hub_codex_gone_folder_and_other_kinds(self):  # R11
+        from relaylib import hub
+        os.makedirs(hub.folder(), exist_ok=True)
+        with open(os.path.join(hub.folder(), "sessions.json"), "w") as f:
+            f.write('[{"provider": "claude", "session_id": "old", "at": %f}]' % time.time())
+        with self.assertRaisesRegex(RelayError, "proj is a hub session"):
+            hubstart.clear(self.item(), None)
+        with self.assertRaisesRegex(RelayError, "Claude sessions only"):
+            hubstart.clear(self.item(provider="codex"), None)
+        self.closed("far", cwd=os.path.join(self.tmp, "gone"))
+        with self.assertRaisesRegex(RelayError, "proj's folder is gone"):
+            hubstart.clear(self.item("far"), None)
+        with self.assertRaisesRegex(RelayError, "item 3 is not a session"):
+            hubstart.clear({"kind": "feature", "n": 3}, None)
+        self.assertEqual(self.calls(), [])
+
+    def test_clear_uses_saved_digest_after_close(self):  # R11, Review Focus 5
+        from relaylib import hub
+        helpers.live_session("claude", "old", cwd=self.repo, state="waiting")
+        digest_id, _ = hub.save([self.item(n=1)], {"from": "built", "seconds": 1}, None)
+        self.closed("old")  # the owner closes it from the Remote Control list
+        item = hub.resolve(f"{digest_id}.1", None)
+        self.assertEqual(hubstart.clear(item, None)["launch"], "ok")
+
+    def test_clear_refuses_unpublished_feature(self):  # D8, Review Focus 3
+        self.feature("a", "old")
+        self.feature("b", "old", push=False)
+        with self.assertRaisesRegex(RelayError, "b is not published on origin"):
+            hubstart.clear(self.item(), None)
+        self.assertIsNone(self.handoff_on_origin("a"))
+        self.assertEqual(self.entry()["state"], "clearing")
+        self.assertEqual(self.calls(), [])
+
+    def test_second_clear_refused(self):  # R11a
+        self.put(state="clearing", at=time.time() - 120)
+        with self.assertRaisesRegex(RelayError, "proj is already being cleared"):
+            hubstart.clear(self.item(), None)
+        self.assertEqual(self.calls(), [])
+
+    def test_stale_clearing_replaced(self):  # R11a
+        self.put(state="clearing", at=time.time() - 660, handover=["kept"])
+        out = hubstart.clear(self.item(), None)
+        self.assertEqual(out["launch"], "ok")
+        self.assertEqual(out["released"], ["kept"])  # a stale reservation's handover is kept
+
+    def test_clear_failed_launch(self):  # R13
+        self.feature("a", "old")
+        self.env(FAKE_EXIT="1", FAKE_ERR="not logged in")
+        with self.assertRaisesRegex(RelayError, "not logged in"):
+            hubstart.clear(self.item(), None)
+        e = self.entry()
+        self.assertEqual((e["state"], e["launch"], e["launch_error"]), ("retired", "failed", "not logged in"))
+        self.assertIsNotNone(self.handoff_on_origin("a"))
+
+    def test_clear_unconfirmed(self):  # R13
+        self.env(FAKE_SLEEP="5")
+        with mock.patch.object(launch, "LAUNCH_WAIT_S", 1):
+            out = hubstart.clear(self.item(), None)
+        self.addCleanup(_kill_calls, self.log)
+        self.assertEqual(out["launch"], "unconfirmed")
+        self.assertEqual(self.entry()["launch"], "unconfirmed")
+
+    def test_clear_refuses_while_replacement_fresh(self):  # R16
+        self.put(state="retired", at=time.time() - 180, retired_at=time.time() - 180)
+        with self.assertRaisesRegex(RelayError, "proj was retired; replaced by proj proj \\(fresh\\)"):
+            hubstart.clear(self.item(), None)
+        helpers.live_session("claude", "r1")
+        self.put(state="retired", at=time.time() - 3600, retired_at=time.time() - 3600)
+        with self.assertRaisesRegex(RelayError, "proj was retired"):
+            hubstart.clear(self.item(), None)
+        self.assertEqual(self.calls(), [])
+
+    # retry (Task 7)
+    def fail_then_wait(self):
+        self.env(FAKE_EXIT="1")
+        with self.assertRaises(RelayError):
+            hubstart.clear(self.item(), None)
+        self.env(FAKE_EXIT="0")
+        first = self.entry()["replaced_by"]
+        self.put(**{**self.entry(), "at": time.time() - 660})  # 11 minutes later, no session showed up
+        return first
+
+    def test_clear_retry_after_failed_launch(self):  # R13, Review Focus 4
+        self.feature("a", "old")
+        self.fail_then_wait()
+        out = hubstart.clear(self.item(), None)
+        self.assertEqual(out["launch"], "ok")
+        self.assertEqual(len(self.owner_actions("a")), 1)  # not released twice
+        e = self.entry()
+        self.assertEqual((e["state"], e["launch"], e["replaced_by"]), ("retired", "ok", out["session_id"]))
+        self.assertIn("held: a.", self.calls()[-1]["argv"][-1])
+
+    def test_clear_retry_releases_stale_replacement(self):  # R13
+        first = self.fail_then_wait()
+        self.feature("c", first)  # the late replacement took a feature after all
+        out = hubstart.clear(self.item(), None)
+        self.assertIsNotNone(self.handoff_on_origin("c"))
+        stale = self.entry(first)
+        self.assertEqual((stale["state"], stale["replaced_by"], stale["label"]),
+                         ("retired", out["session_id"], "proj proj (fresh)"))
+        self.assertIn("c", out["released"])
+
+    def test_clear_retry_refuses_unpublished_on_replacement(self):
+        first = self.fail_then_wait()
+        self.feature("c", first, push=False)
+        with self.assertRaisesRegex(RelayError, "c is not published on origin"):
+            hubstart.clear(self.item(), None)
+        e = self.entry()
+        self.assertEqual(e["replaced_by"], first)
+        self.assertNotIn("retry", e)
+        self.assertEqual(len(self.calls()), 1)  # only the first, failed launch
+
+    def test_failed_retry_then_retry(self):  # R1-2
+        first = self.fail_then_wait()
+        work = self.feature("c", first, push=False)
+        with self.assertRaises(RelayError):
+            hubstart.clear(self.item(), None)
+        helpers.sh(work, "git", "push", "-qu", "origin", "HEAD")
+        out = hubstart.clear(self.item(), None)
+        self.assertEqual(out["launch"], "ok")
+        self.assertIsNotNone(self.handoff_on_origin("c"))
+
+    def test_partial_release_then_retry(self):
+        self.feature("a", "old")
+        self.feature("b", "old")
+        hook = helpers.hook(self.origin, "pre-receive",
+                            'while read o n r; do [ "$r" = refs/heads/feat/b ] && exit 1; done\nexit 0\n')
+        with self.assertRaisesRegex(RelayError, "could not release b"):
+            hubstart.clear(self.item(), None)
+        os.unlink(hook)
+        self.assertEqual(hubstart.held_features(self.repo, "old"), [])
+        self.put(**{**self.entry(), "at": time.time() - 660})
+        out = hubstart.clear(self.item(), None)
+        self.assertIn("held: a, b.", self.calls()[-1]["argv"][-1])
+        self.assertEqual(out["released"], ["a", "b"])
+
+    def test_concurrent_retries(self):  # R1-1
+        import threading
+        self.fail_then_wait()
+        gate, results = threading.Event(), []
+        real = launch.run
+
+        def slow(*args):
+            gate.wait(10)
+            return real(*args)
+
+        def go():
+            try:
+                results.append(hubstart.clear(self.item(), None)["launch"])
+            except RelayError as e:
+                results.append(str(e))
+        with mock.patch.object(launch, "run", side_effect=slow):
+            threads = [threading.Thread(target=go) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for _ in range(100):
+                if results:
+                    break
+                time.sleep(0.05)
+            gate.set()
+            for t in threads:
+                t.join(20)
+        self.assertEqual(sorted(results), ["ok", "proj is already being cleared"])
+
+
 def helpers_record(sid):
     from relaylib import sessions
     return sessions.record_path("claude", sid)
