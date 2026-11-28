@@ -7,7 +7,23 @@
   "branch": "feat/hub-start-session",
   "extra_rounds": {},
   "feature": "hub-start-session",
-  "history": {},
+  "history": {
+    "spec": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2",
+          "R1-3",
+          "R1-4",
+          "R1-5"
+        ],
+        "head": "3228cff82fe0530c11090112399a40239bd38c87",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ]
+  },
   "owner": {
     "provider": "claude",
     "session": "533a6442-fe90-46df-9213-a7a0e9b4b92f",
@@ -35,6 +51,7 @@
     }
   },
   "retried": false,
+  "review_notes": {},
   "reviewed": {
     "build": null,
     "plan": null,
@@ -46,9 +63,11 @@
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "in-review",
-  "updated": "2026-11-28T09:02:26-05:00",
-  "verdicts": {}
+  "status": "changes-requested",
+  "updated": "2026-11-28T09:03:48-05:00",
+  "verdicts": {
+    "spec": "NO-GO"
+  }
 }
 ---
 
