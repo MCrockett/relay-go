@@ -2,6 +2,7 @@
 {
   "authors": {
     "idea": "claude",
+    "plan": "claude",
     "spec": "claude"
   },
   "branch": "feat/data-paths-freshness",
@@ -52,13 +53,14 @@
     }
   },
   "rounds": {
+    "plan": 1,
     "spec": 1
   },
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "drafting",
-  "updated": "2026-11-27T21:36:40-05:00",
+  "status": "in-review",
+  "updated": "2026-11-27T21:37:33-05:00",
   "verdicts": {
     "spec": "GO"
   }
