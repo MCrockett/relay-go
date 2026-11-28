@@ -1,7 +1,8 @@
 ---
 {
   "authors": {
-    "idea": "claude"
+    "idea": "claude",
+    "spec": "claude"
   },
   "branch": "feat/config-path-case",
   "extra_rounds": {},
@@ -39,12 +40,14 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "spec": 1
+  },
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "drafting",
-  "updated": "2026-11-28T12:29:03-05:00",
+  "status": "in-review",
+  "updated": "2026-11-28T12:29:39-05:00",
   "verdicts": {}
 }
 ---
