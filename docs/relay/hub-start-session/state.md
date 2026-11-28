@@ -5,7 +5,9 @@
     "spec": "claude"
   },
   "branch": "feat/hub-start-session",
-  "extra_rounds": {},
+  "extra_rounds": {
+    "spec": 1
+  },
   "feature": "hub-start-session",
   "history": {
     "spec": [
@@ -76,6 +78,11 @@
       "action": "owner asked for this through relay dispatch",
       "at": "2026-11-28T09:00:36-05:00",
       "relayed_by": "claude session b98b7951-453c-40f9-81ce-6e74b537d43e"
+    },
+    {
+      "action": "override extra-round (spec)",
+      "at": "2026-11-28T09:11:38-05:00",
+      "relayed_by": "claude session b98b7951-453c-40f9-81ce-6e74b537d43e"
     }
   ],
   "pr": null,
@@ -104,8 +111,8 @@
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "waiting-owner",
-  "updated": "2026-11-28T09:09:02-05:00",
+  "status": "changes-requested",
+  "updated": "2026-11-28T09:11:38-05:00",
   "verdicts": {
     "spec": "NO-GO"
   }
