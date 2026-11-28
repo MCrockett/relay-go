@@ -243,3 +243,35 @@ def live_session(provider, sid, cwd=None, state="working"):
     with open(sessions.record_path(provider, sid), "w") as f:
         json.dump(record, f)
     return record
+
+
+FAKE_CLAUDE = '''#!/usr/bin/env python3
+import json, os, sys, time
+log = os.environ.get("FAKE_LOG")
+if log:
+    with open(log, "a") as f:
+        f.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "pid": os.getpid()}) + "\\n")
+if os.environ.get("FAKE_TOUCH"):
+    open(os.path.join(os.getcwd(), os.environ["FAKE_TOUCH"]), "w").close()
+if os.environ.get("FAKE_SLEEP"):
+    time.sleep(float(os.environ["FAKE_SLEEP"]))
+if os.environ.get("FAKE_ERR"):
+    sys.stderr.write(os.environ["FAKE_ERR"])
+sys.exit(int(os.environ.get("FAKE_EXIT", "0")))
+'''
+
+
+def fake_claude(directory):
+    """A folder holding a fake `claude` (hub-start-session) to put first on PATH. It logs argv, cwd and pid as JSON
+    to $FAKE_LOG; FAKE_TOUCH, FAKE_SLEEP, FAKE_ERR and FAKE_EXIT change what it does."""
+    folder = os.path.join(directory, "fakebin")
+    os.makedirs(folder, exist_ok=True)
+    fake_bin(folder, "claude", FAKE_CLAUDE)
+    return folder
+
+
+def fake_claude_calls(log):
+    if not os.path.exists(log):
+        return []
+    with open(log) as f:
+        return [json.loads(line) for line in f if line.strip()]
