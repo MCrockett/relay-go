@@ -1228,6 +1228,7 @@ def _dispatch_who_text(requested_by):
 
 
 def _dispatch_show_text(r):
+    from . import dispatch
     lines = [f"Request {r['id']} ({r['status']})",
              f"Repo: {r['repo']['name']} ({r['repo'].get('path')})",
              f"Slug suggested: {r['slug'] or 'none'}",
@@ -1246,7 +1247,10 @@ def _dispatch_show_text(r):
                       f"{claim.get('slug')} since {_dispatch_when(claim['at'])}"
                       + (" (publishing)" if claim.get("publishing") else "")]
     started = r.get("started")
-    if isinstance(started, dict):
+    if dispatch.launch_record(r):
+        lines += ["", f"Session starting as {started.get('slug')} in {started.get('worktree')}: {started.get('name')} "
+                      f"({started.get('session_id')}), {started.get('launch')}, since {_dispatch_when(started['at'])}"]
+    elif isinstance(started, dict):
         lines += ["", f"Started as {started.get('slug')} on {started.get('branch')} by {started.get('provider')} "
                       f"session {started.get('session_id')}, {_dispatch_when(started['at'])}"]
     return "\n".join(lines) + "\n"
@@ -1283,18 +1287,21 @@ def _dispatch_reconcile(record):
 def cmd_dispatch(args):
     """Record work for another repo (create), or cancel, list or show a request (dispatch R1 to R8, R13)."""
     from . import dispatch
-    chosen = [n for n, v in (("--cancel", args.cancel), ("--show", args.show), ("--list", args.list)) if v]
+    chosen = [n for n, v in (("--cancel", args.cancel), ("--show", args.show), ("--list", args.list),
+                             ("--start", args.start)) if v]
     if len(chosen) > 1:
         raise RelayError(f"{' and '.join(chosen)} cannot be used together")
     if args.json and "--list" not in chosen:
         raise RelayError("--json goes with --list")
     if chosen:
         extra = [n for n, v in (("a repo", args.repo), ("a request", args.request), ("--owner-said", args.owner_said),
-                                ("--slug", args.slug), ("--for", args.asker)) if v]
+                                ("--slug", args.slug if not args.start else None), ("--for", args.asker)) if v]
         if extra:
             raise RelayError(f"{chosen[0]} does not take {extra[0]}")
     if args.cancel:
         return _dispatch_cancel(args)
+    if args.start:
+        return _dispatch_start(args)
     if args.show:
         record = dispatch.read(args.show)
         if record is None:
@@ -1393,6 +1400,32 @@ def _dispatch_cancel(args):
     finally:
         _hub_logged(entry, result)
     print(f"relay: request {args.cancel} cancelled")
+    return 0
+
+
+def _dispatch_start(args):
+    """Start a Claude session for a waiting request (hub-start-session R1 to R9a)."""
+    from . import dispatch, hubstart
+    entry = {"command": "dispatch", "action": "start", "id": args.start, "repo": None}
+    result = "failed"
+    try:
+        relayed_by, _ = _dispatch_who(args)
+        entry["repo"] = ((dispatch.read(args.start) or {}).get("repo") or {}).get("name")
+        out = hubstart.start(args.start, args.slug, relayed_by)
+        result = "started" if out["launch"] == "ok" else "unconfirmed"
+        entry.update(session_id=out["session_id"], worktree=out["worktree"])
+    except RelayError as e:
+        result = f"refused: {e}"
+        raise
+    finally:
+        _hub_logged(entry, result)
+    if out["launch"] == "ok":
+        print(f"relay: started claude session {out['session_id']} in {out['worktree']}")
+    else:
+        print(f"relay: claude session {out['session_id']} may be starting in {out['worktree']}: claude --bg did not "
+              "finish within 60 seconds and was left running. If it does not show up, a later start is allowed "
+              "once 10 minutes have passed with no session")
+    print(f'relay: it is named "{out["name"]}" in the Remote Control list')
     return 0
 
 
@@ -1898,6 +1931,7 @@ def build_parser():
     dp.add_argument("--cancel", metavar="ID", help="cancel a waiting request")
     dp.add_argument("--list", action="store_true", help="the requests waiting or started on this machine")
     dp.add_argument("--show", metavar="ID", help="print one request in full")
+    dp.add_argument("--start", metavar="ID", help="start a Claude session for a waiting request (the hub, --relayed)")
     dp.add_argument("--json", action="store_true", help="with --list: JSON")
     dp.add_argument("--relayed", action="store_true",
                     help="agents only: the registered hub passes on what the owner asked for (recorded as relayed)")
