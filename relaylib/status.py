@@ -90,6 +90,16 @@ def _build_flags(repo_dir, st, fetched, ref=None, got=None):
     return flags
 
 
+def _action_items(st, was_merged):
+    """{action, at} per recorded owner action, plus the merge relay saw on GitHub, so the list matches the
+    owner_actions count (status-json-detail R2, R3). A malformed entry is skipped (F2)."""
+    items = [{"action": a["action"], "at": a["at"] if isinstance(a.get("at"), str) else None}
+             for a in st.get("owner_actions") or [] if isinstance(a, dict) and isinstance(a.get("action"), str)]
+    if was_merged:
+        items.append({"action": f"PR #{st.get('pr')} merged on GitHub", "at": None})
+    return items
+
+
 def finished(repo_dir, st):
     """(done, merged, hidden): done for a done stage or a merged, closed or gone PR; hidden is the reason a
     closed or gone feature left the inbox and status (merge-and-tidy D11, D12). An unreadable PR stays."""
@@ -142,6 +152,7 @@ def _row(repo_dir, slug, st, fetched):
         "verdict": (st.get("verdicts") or {}).get(st.get("stage"), ""),
         "pr": st.get("pr"), "flags": flags, "path": d,
         "owner_actions": len(st.get("owner_actions") or []) + (1 if was_merged else 0), "hidden": hidden,
+        "owner_action_items": _action_items(st, was_merged),
         "waiting_on_owner": (status in ("waiting-owner", "review-error")
                              or (status == "ready-to-merge" and not stale)
                              or any(f.startswith("handoff") and "take" in f for f in flags)),
@@ -211,6 +222,7 @@ def _remote_row(checkout, ref, slug, st, has_handoff, fetched):
         "verdict": (st.get("verdicts") or {}).get(st.get("stage"), ""),
         "pr": st.get("pr"), "flags": flags, "path": f"{ref}:{state.RELAY_DIR}/{slug}",
         "owner_actions": len(st.get("owner_actions") or []) + (1 if was_merged else 0), "hidden": hidden,
+        "owner_action_items": _action_items(st, was_merged),
         "waiting_on_owner": not done and (status in ("waiting-owner", "review-error")
                                           or (status == "ready-to-merge" and not stale) or has_handoff),
         "updated": st.get("updated", ""), "checkout": checkout,
@@ -233,7 +245,8 @@ def with_asks(row, st, ref, records, now, claims=None):
     if record and any(a["kind"] in ("answer", "approve") for a in asks):
         words = agentask.last_words(record["provider"], record["session_id"])
         if words:
-            excerpt = {"source": words["source"], "text": agentask.excerpt(words["text"])}
+            excerpt = {"source": words["source"], "text": agentask.excerpt(words["text"]),
+                       "full": agentask.full(words["text"])}  # --json only (status-json-detail R1)
     row.update(asks=asks, wait_since=waiting.since(asks), excerpt=excerpt, waiting_on_owner=bool(asks))
     if claims is not None and st is not None and row["stage"] != "done":
         owner = (st.get("owner") or {}).get("session")
@@ -249,7 +262,7 @@ def _error_row(checkout, error):
     name = os.path.basename(checkout)
     return {"repo": name, "feature": "?", "stage": "?", "status": "?", "round": 0,
             "owner": "", "verdict": "", "pr": None, "flags": [str(error)], "path": checkout,
-            "owner_actions": 0, "waiting_on_owner": True, "updated": "", "checkout": checkout}
+            "owner_actions": 0, "owner_action_items": [], "waiting_on_owner": True, "updated": "", "checkout": checkout}
 
 
 def scan_with_claims(root_dir, records=None, fetched=None):
@@ -419,7 +432,8 @@ def other_sessions(root, claimed, now=None):
 
 def cmd_status(args):
     root = projects_root()
-    rows, claimed = scan_with_claims(root)
+    with gitops.read_memo(), scancache.use(scancache.Store()):  # one run's store, dropped after (status-json-detail D1)
+        rows, claimed = scan_with_claims(root)
     waiting.one_ask_per_session(rows)  # here, not in the scan: the dashboard merges after its own enrichment
     hidden = [] if args.all else [r for r in rows if r.get("hidden")]
     if not args.all:

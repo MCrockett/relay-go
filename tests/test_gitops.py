@@ -509,3 +509,55 @@ class NetworkTimeoutTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"RELAY_GH_BIN": gh}), mock.patch.object(gitops, "GH_TIMEOUT_S", 1):
             with self.assertRaisesRegex(RelayError, "timed out"):
                 gitops.gh_json(self.work, ["pr", "view", "1", "--json", "state"])
+
+
+class FetchForgetsReadsTest(unittest.TestCase):
+    """status-json-detail plan T3: a fetch partway through a scan must not leave old origin refs cached."""
+
+    def setUp(self):
+        import shutil, tempfile
+        from tests import helpers
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.h = helpers
+        self.origin, self.work = helpers.make_repo(self.tmp)
+        helpers.sh(self.work, "git", "push", "-q", "origin", "develop:x")
+        helpers.sh(self.work, "git", "fetch", "-q", "origin")
+        self.other = helpers.clone(self.origin, os.path.join(self.tmp, "other"))
+
+    def push_from_other(self):
+        h = self.h
+        h.sh(self.other, "git", "fetch", "-q", "origin")
+        h.sh(self.other, "git", "switch", "-q", "-c", "x", "origin/x")
+        h.write(os.path.join(self.other, "more.txt"), "more\n")
+        h.sh(self.other, "git", "add", "more.txt")
+        h.sh(self.other, "git", "commit", "-q", "-m", "more")
+        h.sh(self.other, "git", "push", "-q", "origin", "x", "x:y")
+        return h.sh(self.other, "git", "rev-parse", "HEAD").strip()
+
+    def test_a_fetch_clears_the_read_memo(self):
+        with gitops.read_memo():
+            before = gitops.git(self.work, "rev-parse", "origin/x").stdout.strip()
+            new = self.push_from_other()
+            gitops.fetch(self.work)
+            self.assertNotEqual(before, new)
+            self.assertEqual(gitops.git(self.work, "rev-parse", "origin/x").stdout.strip(), new)
+
+    def test_a_fetch_inside_a_store_rereads_origin_refs(self):
+        from relaylib import scancache
+        with gitops.read_memo(), scancache.use(scancache.Store()):
+            gitops.head_sha(self.work, "origin/x")
+            self.assertNotIn("origin/y", gitops.remote_branches(self.work))
+            new = self.push_from_other()
+            gitops.fetch(self.work)
+            self.assertEqual(gitops.head_sha(self.work, "origin/x"), new)
+            self.assertIn("origin/y", gitops.remote_branches(self.work))
+
+    def test_forget_memo_empties_the_shared_dict_in_place(self):
+        with gitops.read_memo():
+            memo = gitops._MEMO.get()
+            memo["k"] = 1
+            gitops.forget_memo()
+            self.assertIs(gitops._MEMO.get(), memo)
+            self.assertEqual(memo, {})
+        gitops.forget_memo()  # no memo: nothing to do
