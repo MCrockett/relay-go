@@ -154,6 +154,8 @@ copy of the repo on this machine:
 
 - removes each worktree that has the feature branch checked out, but only one with nothing git does not hold:
   no uncommitted, untracked or ignored files (ignored files can be local data such as `.env` or a database).
+  Python's own caches (`__pycache__/` and `.pytest_cache/` folders) do not count: when they are all that is
+  left, relay deletes them and removes the worktree. Next to any other leftover they stay, and nothing is deleted.
   Otherwise it lists the files and the `git worktree remove --force <path>` you can run after checking them;
 - switches the main checkout from the feature branch to the base branch and pulls it, when it is clean and
   the move would not overwrite an ignored file. On another branch, the main checkout stays put and the local

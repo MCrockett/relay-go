@@ -73,6 +73,59 @@ class TidyTest(unittest.TestCase):
                 self.assertIn("kept local branch feat/x: a worktree still has it checked out", r.lines)
                 helpers.sh(self.work, "git", "worktree", "remove", "--force", path)
 
+    def test_a_worktree_with_only_python_caches_is_removed(self):
+        layouts = {
+            "untracked pycache": ["__pycache__/app.cpython-311.pyc"],
+            "nested pycache in a tracked folder": ["sub/keep.txt!", "sub/__pycache__/m.cpython-311.pyc"],
+            "pytest cache": [".pytest_cache/v/cache/nodeids", ".pytest_cache/README.md"],
+            "new folder holding only caches": ["newpkg/__pycache__/a.pyc", "newpkg/deep/__pycache__/b.pyc"],
+            "ignored pycache": ["logs/__pycache__/x.pyc"],                 # logs is ignored in .gitignore
+        }
+        for name, files in layouts.items():
+            with self.subTest(name):
+                self.setUp()
+                tracked = [f[:-1] for f in files if f.endswith("!")]
+                for f in tracked:
+                    helpers.write(os.path.join(self.work, f), "t\n")
+                    helpers.sh(self.work, "git", "switch", "-q", "feat/x")
+                    self.commit(self.work, f, "tracked")
+                path = self.linked()
+                for f in files:
+                    if not f.endswith("!"):
+                        helpers.write(os.path.join(path, f), "cache\n")
+                r = self.tidy()
+                self.assertFalse(os.path.exists(path), r.lines)
+                self.assertTrue(any(l.startswith(f"deleted Python caches in {path}") for l in r.lines))
+                self.assertIn(f"removed worktree {path}", r.lines)
+                if not tracked:  # the tracked case commits after the merge, so its branch is rightly kept
+                    self.assertIn("deleted local branch feat/x", r.lines)
+
+    def test_caches_next_to_any_other_leftover_keep_the_worktree_and_are_not_deleted(self):
+        others = {"untracked file": lambda p: helpers.write(os.path.join(p, "kpi", "morning.json"), "{}\n"),
+                  "ignored file": lambda p: helpers.write(os.path.join(p, "local.db"), "rows\n"),
+                  "edited file": lambda p: helpers.write(os.path.join(p, "app.py"), "print(2)\n"),
+                  "file beside a cache in a new folder": lambda p: helpers.write(os.path.join(p, "newpkg", "x.py"), "x\n")}
+        for name, setup in others.items():
+            with self.subTest(name):
+                self.setUp()
+                path = self.linked()
+                helpers.write(os.path.join(path, "newpkg", "__pycache__", "a.pyc"), "cache\n")
+                setup(path)
+                r = self.tidy()
+                self.assertTrue(os.path.isfile(os.path.join(path, "newpkg", "__pycache__", "a.pyc")))
+                (line,) = [l for l in r.lines if l.startswith("kept worktree")]
+                self.assertIn("files git does not hold", line)
+                self.assertFalse(any(l.startswith("deleted Python caches") for l in r.lines))
+
+    def test_a_link_named_like_a_cache_keeps_the_worktree(self):
+        path = self.linked()
+        outside = os.path.join(self.tmp, "outside")
+        helpers.write(os.path.join(outside, "keep.txt"), "mine\n")
+        os.symlink(outside, os.path.join(path, "__pycache__"))
+        r = self.tidy()
+        self.assertTrue(os.path.isfile(os.path.join(outside, "keep.txt")))
+        self.assertFalse(any(l.startswith("deleted Python caches") for l in r.lines))
+
     def test_ignored_file_paths_are_listed(self):
         path = self.linked()
         helpers.write(os.path.join(path, "local.db"), "rows\n")
