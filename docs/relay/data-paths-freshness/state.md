@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/data-paths-freshness",
   "extra_rounds": {},
   "feature": "data-paths-freshness",
@@ -44,9 +46,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-11-27T21:33:18-05:00",
+  "updated": "2026-11-27T21:33:36-05:00",
   "verdicts": {}
 }
 ---
