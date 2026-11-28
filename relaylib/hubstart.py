@@ -178,6 +178,18 @@ def _session_record(provider, session_id):
     return record if ok else None
 
 
+def _live_in_folder(cwd, other_than):
+    """`<provider> session <id>` of a live session whose folder is `cwd`, or None."""
+    from . import events, sessions
+    here = os.path.realpath(cwd)
+    for r in sessions.read_records():
+        pair = (r["provider"], r["session_id"])
+        if (pair != other_than and isinstance(r.get("cwd"), str) and os.path.realpath(r["cwd"]) == here
+                and events.session_live(*pair) is not None):
+            return f"{pair[0]} session {pair[1]}"
+    return None
+
+
 def clear(item, relayed_by, now=None):
     """Retire the closed session behind a digest item and start a fresh one in its folder. {session_id, name, old,
     launch, released}; RelayError otherwise."""
@@ -202,6 +214,15 @@ def clear(item, relayed_by, now=None):
     if existing and existing.get("state") == "retired" and not retired.is_stale(existing, now):  # R16
         raise RelayError(f"{label} was retired; replaced by {existing.get('replaced_by_name')}, which is still "
                          "starting or running")
+    if existing and existing.get("state") == "retired":
+        later = retired.entry(provider, existing.get("replaced_by"))
+        if later:  # A was cleared into B and B into C: only the newest in the chain may be cleared again
+            raise RelayError(f"{label}'s replacement {existing.get('replaced_by_name')} was cleared too; clear the "
+                             "newest session instead")
+    sharing = _live_in_folder(cwd, (provider, old_id))
+    if sharing:  # two sessions never share a folder (D6)
+        raise RelayError(f"another session is running in {cwd} ({sharing}); close it in the Remote Control list "
+                         "first, then clear again")
     if shutil.which("claude") is None:
         raise RelayError("claude is not on PATH; start the session at the Mac")
     root = dispatch.main_checkout(cwd)

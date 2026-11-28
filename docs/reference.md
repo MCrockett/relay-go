@@ -586,7 +586,8 @@ folder or the branch `feat/<slug>` already exists. Then it runs, with no shell, 
 
     claude --bg --remote-control "<repo> <slug>" --session-id <new uuid> "<prompt>"
 
-The prompt tells the session to read the request and run `relay take --request <id> --slug <slug>`. relay passes
+The prompt tells the session to read the request and run `relay take --request <id> --slug <slug>`. The session
+gets none of the hub's own identity variables: relay sets `RELAY_SESSION` to the new id. relay passes
 no permission flag, so the session uses your normal settings and any permission prompt shows in your Remote
 Control list and on the hub. relay prints the session id, the worktree and the Remote Control name, and records
 them on the request as its launch. Every session in the repo is still told about the request until one takes it,
@@ -602,7 +603,7 @@ if the earlier session already started the feature there.
 `relay hub clear <digest ref> --relayed` replaces the Claude session behind a digest item. Close that session in
 the Remote Control list first: clear refuses while it is live, so two sessions never share a folder. relay never
 stops, signals or types into a session. It also refuses a hub session, a session whose folder is gone, and a
-Codex session. relay reserves the clear in `~/.relay/sessions/retired.json`, so a second clear within 10 minutes
+Codex session, and it refuses while any other live session works in that folder. Once a session's replacement has itself been cleared, only the newest session in that chain can be cleared. relay reserves the clear in `~/.relay/sessions/retired.json`, so a second clear within 10 minutes
 is refused. It checks that every feature the old session holds is published on origin and refuses, naming the
 feature, if one is not. Then it releases them all (the owner release, recorded as relayed), marks the old session
 retired, and starts a fresh session the same way in the old session's folder, named `<repo> <label> (fresh)`. Its

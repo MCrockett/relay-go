@@ -219,7 +219,7 @@ def _session_item(entry, retired_entries=None):
             "actions": ["clear"] if entry.get("provider") == "claude" else []}
     gone = (retired_entries or {}).get((item["provider"], item["session_id"]))
     if gone:
-        item.update(retired=gone.get("replaced_by_name"), actions=[], answer_here=False)
+        item.update(state="retired", retired=gone.get("replaced_by_name"), actions=[], answer_here=False)
     return item
 
 

@@ -250,7 +250,9 @@ import json, os, sys, time
 log = os.environ.get("FAKE_LOG")
 if log:
     with open(log, "a") as f:
-        f.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "pid": os.getpid()}) + "\\n")
+        env = {k: os.environ.get(k) for k in ("RELAY_PROVIDER", "RELAY_SESSION", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID",
+                                               "CODEX_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_CODE_MESSAGING_SOCKET")}
+        f.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "pid": os.getpid(), "env": env}) + "\\n")
 if os.environ.get("FAKE_TOUCH"):
     open(os.path.join(os.getcwd(), os.environ["FAKE_TOUCH"]), "w").close()
 if os.environ.get("FAKE_SLEEP"):

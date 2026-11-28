@@ -435,6 +435,28 @@ class ClearTest(ReleaseTest):  # R11 to R16
             hubstart.clear(self.item(), None)
         self.assertEqual(self.calls(), [])
 
+    def test_chain_a_b_c_with_c_live_refused(self):  # build R1-2
+        old = time.time() - 3600
+        self.put("old", state="retired", replaced_by="B", at=old, retired_at=old)
+        self.put("B", state="retired", replaced_by="C", replaced_by_name="proj proj (fresh) (fresh)", at=old,
+                 retired_at=old)
+        helpers.live_session("claude", "C", cwd=os.path.join(self.tmp, "elsewhere"))
+        from relaylib import retired
+        self.assertFalse(retired.is_stale(self.entry(), time.time()))
+        with self.assertRaisesRegex(RelayError, "proj was retired"):
+            hubstart.clear(self.item(), None)
+        os.unlink(helpers_record("C"))  # C is gone too: still only the newest may be cleared
+        with self.assertRaisesRegex(RelayError, "was cleared too; clear the newest session instead"):
+            hubstart.clear(self.item(), None)
+        self.assertEqual(self.calls(), [])
+
+    def test_clear_refuses_another_live_session_in_the_folder(self):  # D6
+        helpers.live_session("claude", "other", cwd=self.repo)
+        with self.assertRaisesRegex(RelayError, "another session is running in .*claude session other"):
+            hubstart.clear(self.item(), None)
+        self.assertIsNone(self.entry())
+        self.assertEqual(self.calls(), [])
+
     # retry (Task 7)
     def fail_then_wait(self):
         self.env(FAKE_EXIT="1")

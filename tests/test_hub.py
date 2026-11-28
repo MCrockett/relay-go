@@ -1037,7 +1037,10 @@ class HubClearTest(NoteTest):  # hub-start-session D5, R11, R14, R16, R17
             hubs=set(), retired_entries=[{"provider": "claude", "session_id": "S1", "state": "retired",
                                           "replaced_by_name": "proj proj (fresh)"}])
         s1, s2 = found
-        self.assertEqual((s1["retired"], s1["actions"], s1["answer_here"]), ("proj proj (fresh)", [], False))
+        self.assertEqual((s1["retired"], s1["actions"], s1["answer_here"], s1["state"]),
+                         ("proj proj (fresh)", [], False, "retired"))
+        lines = hub._item_lines(s1, True, 10.0)
+        self.assertEqual(lines, ["1. proj · retired, replaced by proj proj (fresh)"])
         self.assertEqual(s2["actions"], ["clear"])
         self.assertEqual(len(found), 2)  # the retired one is not listed twice
 

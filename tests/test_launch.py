@@ -38,6 +38,20 @@ class LaunchTest(unittest.TestCase):
         self.assertEqual(call["argv"], ["--bg", "--remote-control", "n", "--session-id", "u", "p"])
         self.assertEqual(call["cwd"], self.cwd)
 
+    def test_child_is_not_the_hub(self):  # build R1-1
+        hubs = ({"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "hub", "RELAY_PROVIDER": "claude",
+                 "RELAY_SESSION": "hub", "CLAUDE_CODE_MESSAGING_SOCKET": "/tmp/hub.sock"},
+                {"CODEX_THREAD_ID": "hubx", "CODEX_SESSION_ID": "hubx", "RELAY_PROVIDER": "codex",
+                 "RELAY_SESSION": "hubx"})
+        for n, env in enumerate(hubs):
+            with mock.patch.dict(os.environ, env):
+                self.assertEqual(launch.run(launch.argv("n", f"new{n}", "p"), self.cwd, f"new{n}"), ("ok", None))
+            got = helpers.fake_claude_calls(self.log)[-1]["env"]
+            self.assertEqual((got["RELAY_PROVIDER"], got["RELAY_SESSION"]), ("claude", f"new{n}"))
+            for k in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID",
+                      "CLAUDE_CODE_MESSAGING_SOCKET"):
+                self.assertIsNone(got[k], k)
+
     def test_run_failed_first_line(self):  # R9
         self.env(FAKE_EXIT="3", FAKE_ERR="\nnot logged in\nmore")
         self.assertEqual(launch.run(launch.argv("n", "u", "p"), self.cwd, "u"), ("failed", "not logged in"))

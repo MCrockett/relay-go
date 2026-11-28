@@ -60,12 +60,23 @@ def _live(provider, session_id):
     return bool(session_id) and events.session_live(provider, session_id) is not None
 
 
-def is_stale(e, now):
-    """The replacement never showed up: no live record for it, and 10 minutes or more since `at` (D9)."""
-    at = e.get("at")
-    if not isinstance(at, (int, float)):
-        return True
-    return now - at >= GRACE_S and not _live(e.get("provider"), e.get("replaced_by"))
+def is_stale(e, now, entries=None):
+    """The replacement never showed up: no live record for it, and 10 minutes or more since `at` (D9). A
+    replacement that was itself cleared counts only if its own replacement, and so on down the chain, is stale
+    too: after A into B into C, C running keeps A's entry from going stale."""
+    entries = load() if entries is None else entries
+    seen = set()
+    while True:
+        at = e.get("at")
+        if isinstance(at, (int, float)) and now - at < GRACE_S:
+            return False
+        if _live(e.get("provider"), e.get("replaced_by")):
+            return False
+        nxt = entries.get(key(e.get("provider"), e.get("replaced_by")))
+        if not isinstance(nxt, dict) or nxt.get("session_id") in seen:
+            return True
+        seen.add(e.get("session_id"))
+        e = nxt
 
 
 def is_retired(provider, session_id):

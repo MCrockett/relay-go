@@ -5,12 +5,23 @@ in the folder the session should work in. It passes no permission flag: the sess
 import os
 import subprocess
 
-from . import gitops
+from . import gitops, identity
 from .config import relay_home
 from .errors import RelayError
 
 BYPASS = ("--permission-mode", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions")
 LAUNCH_WAIT_S = 60  # R9a: after this, the launch is unconfirmed and the process is left running
+# The hub's own inbox socket: a child that kept it would record the hub's inbox as its own.
+STRIP = identity.STRIP_FOR_CHILD + ("CLAUDE_CODE_MESSAGING_SOCKET",)
+
+
+def child_env(env, session_id):
+    """The launching hub's environment without its agent identity, bound to the new session's id, so relay in
+    the new session never acts as the hub."""
+    out = {k: v for k, v in env.items() if k not in STRIP}
+    out["RELAY_PROVIDER"] = "claude"
+    out["RELAY_SESSION"] = session_id
+    return out
 
 
 def argv(name, session_id, prompt):
@@ -34,7 +45,7 @@ def run(args, cwd, session_id):
     try:
         with open(out, "w") as fo, open(err, "w") as fe:
             proc = subprocess.Popen(args, cwd=cwd, stdin=subprocess.DEVNULL, stdout=fo, stderr=fe,
-                                    start_new_session=True)
+                                    env=child_env(dict(os.environ), session_id), start_new_session=True)
     except OSError as e:
         return "failed", f"cannot run claude: {e}"
     try:
