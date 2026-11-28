@@ -90,7 +90,7 @@
     }
   ],
   "pr": null,
-  "refresh": true,
+  "refresh": false,
   "repo": "relay-go",
   "request": {
     "asked_by": null,
@@ -109,7 +109,7 @@
     "plan": null,
     "spec": {
       "inputs": {
-        "spec": "4fd5a314c39f4652515be0038ab87c2f99b2aa6c0a3fe1f5fecc54071df8aec8"
+        "spec": "3027af3d594d68ea75ea7e2ef41b38a183f431b8d97cf028ccb781066d0820ce"
       }
     }
   },
@@ -118,9 +118,9 @@
   },
   "skipped": [],
   "small": false,
-  "stage": "spec",
-  "status": "in-review",
-  "updated": "2026-11-28T10:33:40-05:00",
+  "stage": "plan",
+  "status": "drafting",
+  "updated": "2026-11-28T10:34:54-05:00",
   "verdicts": {
     "spec": "GO"
   }
