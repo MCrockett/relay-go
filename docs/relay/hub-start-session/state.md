@@ -90,7 +90,7 @@
     }
   ],
   "pr": null,
-  "refresh": false,
+  "refresh": true,
   "repo": "relay-go",
   "request": {
     "asked_by": null,
@@ -118,9 +118,9 @@
   },
   "skipped": [],
   "small": false,
-  "stage": "plan",
-  "status": "drafting",
-  "updated": "2026-11-28T10:32:30-05:00",
+  "stage": "spec",
+  "status": "in-review",
+  "updated": "2026-11-28T10:33:40-05:00",
   "verdicts": {
     "spec": "GO"
   }
