@@ -48,7 +48,7 @@
   - `is_retired(provider, session_id) -> bool`: an entry with `state == "retired"`. Never raises (any error is False).
   - `prune(now: float) -> int`: under the lock, drop `retired` entries with `now - retired_at >= 7 * 86400` whose old session is not live, and `clearing` entries that are stale and with `now - at >= 7 * 86400`. Returns how many went.
   - `GRACE_S = 600`, `KEEP_S = 7 * 86400`.
-- Entry shape: `{provider, session_id, state: "clearing"|"retired", replaced_by, replaced_by_name, at, relayed_by}`, plus `retired_at` once retired and `launch: "ok"|"failed"|"unconfirmed"` plus `launch_error` after a launch. `replaced_by_name` is the new session's Remote Control name, kept for the digest (R17).
+- Entry shape: `{provider, session_id, label, state: "clearing"|"retired", replaced_by, replaced_by_name, at, relayed_by}`, plus `retired_at` and `released` once retired, `launch: "ok"|"failed"|"unconfirmed"` plus `launch_error` after a launch, and `retry: {token, at}` while a retry runs (Task 7). `replaced_by_name` is the new session's Remote Control name, kept for the digest (R17).
 
 - [ ] **Step 1: Write the failing tests** in `tests/test_retired.py`, with `RELAY_HOME` set to a temp folder as other tests do:
   - `test_missing_file_is_empty`: `load() == {}`, `is_retired("claude", "a") is False`.
@@ -116,7 +116,7 @@ Covers: D1, D3, R5, R6, R9 (reasons, pristine removal), R9a (no kill, no pipes),
   1. R1: read the record (`no request <id> on this machine`), status `waiting` (`dispatch._not_waiting`), slug from `slug or record["slug"]` through `check_slug`, else the exact R1 message.
   2. R3: `shutil.which("claude")` is None: `claude is not on PATH; start the session at the Mac`.
   3. R4: `gitops.fetch(root)` on `record["repo"]["path"]`, `base = basebranch.choose(root)[0]`, `main = dispatch.main_checkout(root)`, `path = launch.worktree_path(main, slug)`.
-  4. Read the old `started` (a dict with a `launch` key, else None). If old and its worktree exists: R4a. `docs/relay/<slug>/state.md` there: refuse with the exact R4a text. Else reuse (skip the path and branch checks). Otherwise (first start, or the old worktree is gone): refuse if `path` exists, if `feat/<slug>` is in `gitops.local_branches(main)`, or if `origin/feat/<slug>` exists.
+  4. Read the old `started` (a dict with a `launch` key, else None). If old and its recorded `worktree` exists: R4a, on the recorded path and recorded slug, not the ones computed in step 3. A `--slug` that differs from the recorded slug refuses `request <id> was started as <recorded slug> in <worktree>; run it again with that slug`. `docs/relay/<slug>/state.md` there: refuse with the exact R4a text. Else reuse that path (skip the path and branch checks). Otherwise (first start, or the old worktree is gone): refuse if `path` exists, if `feat/<slug>` is in `gitops.local_branches(main)`, or if `origin/feat/<slug>` exists.
   5. R2 and R7 in one `dispatch.mutate`: still `waiting`; `claim_blocks(record.get("claim"), now)` refuses (`request <id> is being started by <provider> session <id>`); a `started` with `launch` that is not `launch_stale` refuses (`request <id> already has a session starting: <name> (<session id>); try again after <HH:MM>`); the `started` must equal the one read in step 4, else refuse `request <id> changed; run it again`. Then write `started = {provider: "claude", session_id: str(uuid.uuid4()), slug, worktree: path, name: f"{repo} {slug}", at: now, relayed_by, launch: "pending"}`.
   6. Make the worktree when not reused. If that fails: clear `started` (mutate, only when its `session_id` is ours) and refuse with the git error.
   7. `launch.run(launch.argv(name, sid, launch.start_prompt(id, slug)), path, sid)`.
@@ -129,8 +129,10 @@ Covers: D1, D3, R5, R6, R9 (reasons, pristine removal), R9a (no kill, no pipes),
   - `test_refuses_without_claude`: PATH without claude: refusal names PATH; no worktree; no `started` (R3).
   - `test_refuses_existing_path_or_branch`: three cases (path exists, local `feat/<slug>`, `origin/feat/<slug>`): refusal, the fake never ran, no `started` (R4).
   - `test_refuses_fetch_failure`: origin removed: refusal, nothing changed (R4).
+  - `test_refuses_unresolved_base`: no origin/develop, origin/HEAD unset and no config: the `basebranch.choose` refusal; and `[relay] base_branch = "nope"` in the repo config: the `no origin/nope` refusal. Both change nothing (R4).
   - `test_refuses_live_claim`: `helpers.live_session` plus a fresh claim on the record: refusal (R2).
-  - `test_refuses_fresh_started`: a `started` with `launch: "pending"` 5 minutes old: refusal; 10 minutes old with no live record: goes ahead (R2, D9).
+  - `test_refuses_fresh_started`: a `started` with `launch: "pending"` 5 minutes old: refusal; 10 minutes old with no live record: goes ahead; 30 minutes old with `helpers.live_session` for its id: refusal (R2, D9).
+  - `test_restart_with_other_slug_refused`: a stale `started` whose worktree exists, run with a different `--slug`: refusal naming the recorded slug; the fake never ran.
   - `test_failed_launch_cleans_up`: `FAKE_EXIT=1 FAKE_ERR=boom`: refusal text `boom`; worktree gone; no `started`; still `waiting` (R9).
   - `test_failed_launch_keeps_dirty_worktree`: the fake writes a file into its cwd then exits 1: the worktree stays (R9).
   - `test_unconfirmed`: `LAUNCH_WAIT_S` patched to 1, `FAKE_SLEEP=5`: returns `unconfirmed`; worktree kept; `started.launch == "unconfirmed"` (R9a).
@@ -176,12 +178,13 @@ Covers: D5, R8, R9a (report), R10 (take still works; notices unchanged, see Task
 
 **Interfaces:**
 - Consumes: `ownership.collect(root)`, `owneractions.published(repo, slug)`, `owneractions.fingerprint(repo, slug)`, `owneractions.run_override(repo, slug, "release", seen, relayed_by=..., via="hub")`, `state.HOLDING_STATUSES`.
+- Note: `apply_override(..., "release")` publishes a handoff and keeps the `owner` field; the session counts as released through `ownership.released_sessions`. So "held" means not yet released that way.
 - Produces:
-  - `held_features(root: str, session_id: str) -> list[str]`: sorted slugs of claims (worktree or origin) owned by `session_id`, with a holding status and not done.
+  - `held_features(root: str, session_id: str) -> list[str]`: `[]` when `session_id` is in `ownership.released_sessions(claims)`; else sorted slugs of claims (worktree or origin) owned by `session_id`, with a holding status and not done.
   - `release_all(root: str, session_id: str, relayed_by: str | None) -> list[str]`: first, for every held slug, `owneractions.published(root, slug)` must succeed, else refuse `<slug> is not published on origin; push its branch first` before any release (D8). Then release each in order; a failure refuses with `could not release <slug>: <error>; released so far: <list or none>` (R12). Returns the released slugs.
 
 - [ ] **Step 1: Write the failing tests**:
-  - `test_release_all_releases_every_held_feature`: two published features owned by session `old`: both now have no owner on origin and an owner action `release` relayed by the given text.
+  - `test_release_all_releases_every_held_feature`: two published features owned by session `old`: each origin branch now has a published `handoff.md` and an owner action `release` relayed by the given text; `held_features(root, "old") == []`; `ownership.check_can_write(root, "new")` does not raise (another session may take them).
   - `test_release_all_refuses_unpublished_first`: one published and one only in a local worktree: refusal names the local one; the published one is still owned (D8).
   - `test_release_all_partial_failure`: the second release fails (use `helpers.reject_pushes` after the first): refusal names it and says the first was released.
 - [ ] **Step 2: Run** `python3.11 -m unittest tests.test_hubstart -v`. Expected: the new tests FAIL.
@@ -218,6 +221,7 @@ Covers: D8, R12 (release part).
   - `test_second_clear_refused`: a `clearing` entry 2 minutes old: `<label> is already being cleared` (R11a).
   - `test_stale_clearing_replaced`: a `clearing` entry 11 minutes old with no live replacement: clear goes ahead (R11a).
   - `test_clear_failed_launch`: `FAKE_EXIT=1`: refusal with the reason; entry `retired`, `launch: "failed"`; feature stays released (R13).
+  - `test_clear_unconfirmed`: `LAUNCH_WAIT_S` patched to 1, `FAKE_SLEEP=5`: returns `launch: "unconfirmed"`; entry `retired`, `launch: "unconfirmed"`; nothing deleted (R13).
   - `test_clear_refuses_while_replacement_fresh`: a retired entry 3 minutes old: R16 refusal naming the replacement.
 - [ ] **Step 2: Run** `python3.11 -m unittest tests.test_hubstart -v`. Expected: the new tests FAIL.
 - [ ] **Step 3: Implement** `clear` in the order above.
@@ -234,16 +238,19 @@ Covers: D6, D7 (clear name), D8, R11, R11a, R12, R13 (first launch), R14, R16 (c
 
 **Interfaces:**
 - Consumes: Task 6.
-- Produces: in `clear`, when the old session's entry is `retired` and stale (R16 step 2 passed):
-  1. Under the lock, keep `state: "retired"` and set a new `replaced_by`, `replaced_by_name`, `at = now`, and drop `launch` (the reservation, so a second retry within 10 minutes refuses with `<label> is already being cleared`). The old session is never set back to `clearing`, so it never gets notices again.
-  2. `gitops.fetch(root)`; `held = held_features(root, stale_id)` for the stale replacement's id. When not empty: `release_all(root, stale_id, relayed_by)` and write a retired entry for the stale replacement `{provider: "claude", session_id: stale_id, state: "retired", replaced_by: new_id, replaced_by_name, at, retired_at, relayed_by}`.
-  3. Launch as in Task 6 steps 6 and 7. The prompt lists the old session's released slugs from the first clear (kept in the entry as `released`) plus any from step 2.
+- Produces: in `clear`, when the old session's entry is `retired` (R16 step 2 passed on a first read):
+  1. Reserve under `retired.locked()`: re-read the entry. Refuse unless it is still `retired`, `retired.is_stale(entry, now)` holds, and it has no `retry` field younger than `GRACE_S` (`<label> is already being cleared`). Then set only `retry = {"token": new_id, "at": now}`. `replaced_by` is not changed yet, so it still names the session that may hold the features. The old session stays `retired` throughout, so it never gets notices again.
+  2. `gitops.fetch(root)`; `stale_id = entry["replaced_by"]`; `release_all(root, stale_id, relayed_by)` (it returns `[]` when that session holds nothing). A refusal here clears `retry` under the lock (only when its token is ours) and refuses; `replaced_by` still names `stale_id`, so the next retry releases what is left.
+  3. Under the lock, check `retry.token` is still ours, else refuse `<label> is already being cleared`. Write a retired entry for `stale_id` when it held anything: `{provider: "claude", session_id: stale_id, state: "retired", replaced_by: new_id, replaced_by_name, at: now, retired_at: now, relayed_by}`. Then on the old entry set `replaced_by = new_id`, `replaced_by_name`, `at = now`, add the slugs to `released`, drop `retry` and `launch`.
+  4. Launch as in Task 6 steps 6 and 7. The prompt lists every slug in the entry's `released`.
 - Add `released: [slugs]` to the entry in Task 6 step 5 so the retry can name them.
 
 - [ ] **Step 1: Write the failing tests**:
   - `test_clear_retry_after_failed_launch`: first clear fails to launch; move the clock 11 minutes; second clear launches; the old feature is not released twice (one `release` owner action); entry `launch: "ok"` with the new `replaced_by` (R13, Review Focus 4).
-  - `test_clear_retry_releases_stale_replacement`: after the first clear, the stale replacement id takes the feature (set its owner on origin to that id); retry releases it and writes a retired entry for that id (R13).
-  - `test_clear_retry_refuses_unpublished_on_replacement`: the stale replacement holds a local-only feature: refusal names it; nothing launched.
+  - `test_clear_retry_releases_stale_replacement`: after the first clear, the stale replacement id takes the feature (publish a state with its id as owner and no handoff); retry releases it and writes a retired entry for that id (R13).
+  - `test_clear_retry_refuses_unpublished_on_replacement`: the stale replacement holds a local-only feature: refusal names it; nothing launched; the entry's `replaced_by` is still the stale id and `retry` is gone.
+  - `test_failed_retry_then_retry`: as above, then push the feature's branch and retry again: the stale replacement's feature is released and the launch goes ahead (R1-2).
+  - `test_concurrent_retries`: two threads call `clear` on the same stale entry, with `launch.run` patched to wait on a `threading.Event` for the first caller: exactly one launches and the other refuses `is already being cleared` (R1-1).
 - [ ] **Step 2: Run** `python3.11 -m unittest tests.test_hubstart -v`. Expected: the new tests FAIL.
 - [ ] **Step 3: Implement** the retry path.
 - [ ] **Step 4: Run** the same command. Expected: PASS.
@@ -265,7 +272,8 @@ Covers: R13 (retry), R16 (relaunch only).
   - `sessions.capture`: skip both `merged_features` and `waiting_requests` notices when `retired.is_retired(provider, session_id)` (R15).
   - `sessions.prune`: also call `retired.prune(now)` (R19).
   - `dispatch.resolve_asker`: the repo search skips `retired.is_retired` sessions (R18).
-  - `hub._session_item`: when the session is retired, `retired = entry["replaced_by_name"]` and `answer_here = False`; `_item_lines` prints `<label> · retired, replaced by <name>` with no other lines (R17). Other session items get `actions: ["clear"]` when the provider is `claude`.
+  - Retired sessions reach the digest by their own path, because `othersessions.listed` drops closed sessions and a cleared session is always closed. `hub.items(data, hubs=None, requests=(), retired_entries=())` adds one session item per entry with `state == "retired"` and `retired_at` within the last 24 hours (the life of a saved digest, `hub.KEEP_S`), unless that session is already an item. `hub.digest` passes `retired.load().values()`; a read error becomes a digest warning like the dispatch one. The item is `{"kind": "session", "provider", "session_id", "label": entry["label"], "state": "retired", "retired": entry["replaced_by_name"], "wait_since": entry["retired_at"], "actions": [], "answer_here": False}`. `hubstart.clear` stores `label` (the digest item's label) in the entry for this. A retired session that is still listed in `other_sessions` gets the same `retired` and `actions: []`.
+  - `_item_lines` prints a retired item as `<n>. <label> · retired, replaced by <name>` with no other lines (R17). Other Claude session items get `actions: ["clear"]`.
   - `hub._request_item`: `actions: ["start", "cancel"]`; `_item_lines` prints `start: relay dispatch --start <id> --relayed` in place of the `cd ... && claude` line, and keeps the cancel line.
 
 - [ ] **Step 1: Write the failing tests**:
@@ -273,6 +281,7 @@ Covers: R13 (retry), R16 (relaunch only).
   - `test_hub.py::test_clear_needs_relayed_from_agent`: an agent env without `--relayed` refuses.
   - `test_hub.py::test_note_refuses_retired`: refusal names the replacement (R16).
   - `test_hub.py::test_digest_shows_retired`: the item reads `retired, replaced by <name>`, no actions, no answer line (R17).
+  - `test_hub.py::test_digest_collects_closed_retired_session`: full path. A session record with state `ended` (so `othersessions.listed` leaves it out) and a retired entry for it from `hubstart.clear` with the fake `claude`: `hub.digest(None, as_json=True)` lists it as retired; with `retired_at` 25 hours old it is not listed (R17, A2).
   - `test_hub.py::test_request_item_offers_start`: actions `["start", "cancel"]` and the start line.
   - `test_notify.py::test_retired_session_gets_no_notices`: a retired session's `UserPromptSubmit` gets no request or merge notice; the same session with a `clearing` entry still does (R15). `test_waiting_notice_with_launch_record`: a waiting request with a `started` launch record still notices every session in the repo (R10).
   - `test_dispatch.py::test_resolve_asker_skips_retired`: a repo with one live retired session and one live other: resolves to the other (R18).
