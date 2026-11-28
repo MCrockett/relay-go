@@ -9,3 +9,18 @@ Let the hub start (and retire) sessions on the owner's go. Today every dispatche
 ## Owner's words
 
 > yes, dispatch it to relay-go
+
+## Problem
+
+A dispatched request sits in `relay dispatch` until the owner opens a Claude session in the target repo at the Mac. Every other step (dispatch, review, merge) already works from the phone through the hub. Starting the session is the one gap.
+
+## Who it is for
+
+The owner, driving relay from the phone through the hub session over Remote Control.
+
+## What success looks like
+
+- The owner tells the hub "start it" (or similar) and, within a minute, a new Claude session appears in their Remote Control list, working in a worktree of the target repo, already running `relay take` on the request.
+- The new session runs under the owner's normal permission settings. relay never passes a bypass mode and never starts a session without the owner's typed words.
+- "Clear" for a session means relay starts a fresh one and marks the old one retired, so dispatch stops routing to it. relay never kills or types into the old one; the owner closes it.
+- If the launch fails, the hub gets a plain reason, and the request stays waiting as it is today.
