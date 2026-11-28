@@ -393,6 +393,25 @@ def claim_blocks(claim, now):
     return events.session_live(claim.get("provider"), claim.get("session_id")) is not None
 
 
+def launch_record(record):
+    """The hub's launch record on a waiting request (hub-start-session R7), or None. A `started` without `launch`
+    is the record `relay take` writes and is never a launch."""
+    started = record.get("started")
+    return started if record.get("status") == "waiting" and isinstance(started, dict) and "launch" in started \
+        else None
+
+
+def launch_stale(started, now):
+    """True when a launch no longer blocks a new start: no live session record for it and 10 minutes or more
+    since it was made (hub-start-session D9, R2)."""
+    from . import events, retired
+    if not isinstance(started, dict) or "launch" not in started:
+        return False
+    at = started.get("at")
+    old = not isinstance(at, (int, float)) or now - at >= retired.GRACE_S
+    return old and events.session_live("claude", started.get("session_id")) is None
+
+
 def claim(request_id, me, slug, branch, now=None):
     """Claim a waiting request for this session; refused while another session's claim may not be taken over."""
     now = time.time() if now is None else now
