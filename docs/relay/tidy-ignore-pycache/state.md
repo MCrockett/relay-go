@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "build": "claude"
+  },
   "branch": "fix/tidy-ignore-pycache",
   "extra_rounds": {},
   "feature": "tidy-ignore-pycache",
@@ -18,7 +20,7 @@
       "relayed_by": "claude session b98b7951-453c-40f9-81ce-6e74b537d43e"
     }
   ],
-  "pr": null,
+  "pr": 46,
   "refresh": false,
   "repo": "relay-go",
   "request": {
@@ -37,15 +39,17 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "build": 1
+  },
   "skipped": [
     "spec",
     "plan"
   ],
   "small": true,
   "stage": "build",
-  "status": "drafting",
-  "updated": "2026-11-27T23:17:27-05:00",
+  "status": "in-review",
+  "updated": "2026-11-27T23:41:17-05:00",
   "verdicts": {}
 }
 ---
