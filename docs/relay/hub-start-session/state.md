@@ -107,18 +107,22 @@
   "reviewed": {
     "build": null,
     "plan": null,
-    "spec": null
+    "spec": {
+      "inputs": {
+        "spec": "4fd5a314c39f4652515be0038ab87c2f99b2aa6c0a3fe1f5fecc54071df8aec8"
+      }
+    }
   },
   "rounds": {
     "spec": 5
   },
   "skipped": [],
   "small": false,
-  "stage": "spec",
-  "status": "in-review",
-  "updated": "2026-11-28T10:13:14-05:00",
+  "stage": "plan",
+  "status": "drafting",
+  "updated": "2026-11-28T10:14:32-05:00",
   "verdicts": {
-    "spec": "NO-GO"
+    "spec": "GO"
   }
 }
 ---
