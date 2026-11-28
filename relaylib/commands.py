@@ -444,9 +444,12 @@ def start_feature(args):
             raise RelayError(f"{', '.join(open_prs)} has an open PR that is not merged yet. One open PR per repo "
                              "(an owner rule): finish or merge that first. Pass --stack only if the owner asked "
                              "for another feature to start before it merges.")
-        base = f"origin/{args.base}"
-        if gitops.git(root, "rev-parse", "--verify", "-q", base, check=False).returncode != 0:
-            raise RelayError(f"no {base} to branch from; pass --base <branch>")
+        from . import basebranch
+        base_name, base_why, base_warning = basebranch.choose(root, args.base)
+        base = f"origin/{base_name}"
+        print(f"relay: starting from {base} ({base_why})")
+        if base_warning:
+            print(f"relay: warning: {base_warning}", file=sys.stderr)
         if gitops.ls_files(root, base, f"{state.RELAY_DIR}/{slug}"):
             raise RelayError(f"feature {slug} already exists on {base}; pick another slug")
         branch = f"{args.type}/{slug}"
@@ -1455,7 +1458,7 @@ def _take_request(args):
         raise RelayError(f"request {args.request} has no slug; run relay new <slug> --request {args.request}")
     return start_feature(argparse.Namespace(
         slug=slug, small=args.small, type=args.type or "feat", idea=None, idea_file=None, by=args.by, with_owner=False,
-        base="develop", stack=False, request=args.request))
+        base=None, stack=False, request=args.request))
 
 
 def cmd_take(args):
@@ -1760,7 +1763,8 @@ def build_parser():
     n.add_argument("--by", help="claude, codex or owner, when detection is ambiguous")
     n.add_argument("--with-owner", action="store_true", help="the owner took part in shaping the idea")
     n.add_argument("--request", metavar="ID", help="start from a dispatch request (its text becomes the idea)")
-    n.add_argument("--base", default="develop", help="branch on origin to start from (default develop)")
+    n.add_argument("--base", help="branch on origin to start from (default: [relay] base_branch in "
+                   "docs/relay/config.toml, else origin/develop unless stale, else origin/HEAD)")
     n.add_argument("--stack", action="store_true",
                    help="start while another feature's PR is open; only when the owner asked for it")
     a = add("adopt", cmd_adopt, "bring an existing open PR (made before relay) into relay at the build stage")

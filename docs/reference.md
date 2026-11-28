@@ -5,7 +5,7 @@ The full manual: setup, every command, CI modes, the dashboard and the hub. The 
 ## Requirements
 
 - Python 3.11 or later (standard library only; `bin/relay` runs `python3.11`).
-- git, and the GitHub CLI `gh`, logged in. Each project needs a GitHub remote named `origin`. Features start from `develop` by default (`relay new --base` picks another branch).
+- git, and the GitHub CLI `gh`, logged in. Each project needs a GitHub remote named `origin`. Features start from the repo's base branch (see "Base branch" under Settings; `relay new --base` picks another).
 - Claude Code (`claude`) and Codex (`codex`), both installed and logged in. relay runs them headless for reviews and never stores credentials; it uses your existing logins.
 - macOS for notifications and the SwiftBar menu. Everything else, the dashboard included, is plain Python and git. The test suite runs on Linux in CI.
 - Or Docker, with all of the above in one image: see Running in Docker.
@@ -287,7 +287,7 @@ then `relay ui --background`) so it runs one version. Sessions need nothing.
 
 ## Handoffs
 
-At about 60% context, or when switching provider or machine: `relay handoff`, fill it in, `relay handoff --commit`. A handoff covers every feature that session holds in the repo (ownership is per repo). The next session runs `relay take`, which takes over all of them, including stacked PRs on other branches.
+After the session has auto-compacted, when the low-context warning appears, at a stage boundary where the owner asks for one, or when switching provider or machine: `relay handoff`, fill it in, `relay handoff --commit`. Sessions never hand off on a guessed percentage, because they cannot see their own context use. A handoff covers every feature that session holds in the repo (ownership is per repo). The next session runs `relay take`, which takes over all of them, including stacked PRs on other branches.
 
 ## Reviewer preferences
 
@@ -318,6 +318,23 @@ installed for every relay user. Keep them in a folder of your own, link them int
 `relay rule "Releases follow the ios-release skill"` reaches the author through `relay rules` and the reviewer
 through every review prompt; the release review checks that a release follows the runbook its rules name. Use
 `relay rule --global` for a skill that applies to every project.
+
+### Base branch: where new features start
+
+`relay new` and `relay take` branch from origin. They pick the branch in this order and print which one and why:
+
+1. `--base <branch>` on `relay new`.
+2. `[relay] base_branch` in the repo's own `docs/relay/config.toml` (not the owner's `~/.relay/config.toml`).
+3. `origin/develop`, when it has work of its own (commits `origin/HEAD` lacks) and is not stale (`origin/HEAD` has commits it lacks and its tip is 14 or more days older). A `develop` that is only behind is skipped.
+4. `origin/HEAD`, the GitHub default branch.
+
+Many repos keep `main` as the GitHub default but work on `develop`, so step 3 keeps them on `develop`. A repo whose
+`develop` was left behind (work moved to `main`) starts from `main`. When the chosen branch is itself stale
+against `origin/HEAD`, relay warns, so a wrong `base_branch` shows at once. Set it to be explicit:
+
+    # docs/relay/config.toml
+    [relay]
+    base_branch = "develop"
 
 ### Data paths: base commits that do not stale a GO
 

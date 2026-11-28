@@ -16,6 +16,6 @@ description: Use when starting a new feature or product in a repo whose AGENTS.m
 Always:
 - Run `relay rules` and follow the rules it prints.
 - From `relay new` on, you are the only writer in this repo until you hand off.
-- Around 60% of your context window: run `relay handoff`, fill in every section, run `relay handoff --commit`, and stop. The handoff covers every feature you hold in this repo, so stop all work here.
+- Hand off only when the session has auto-compacted, when the system's low-context warning appears, or at a stage boundary where the owner asks for one. Never hand off on a guessed percentage: a session cannot see its own context use. Then run `relay handoff`, fill in every section, run `relay handoff --commit`, and stop. The handoff covers every feature you hold in this repo, so stop all work here.
 
 One open PR per repo: `relay new` refuses while another feature has an open, unmerged PR. Tell the owner the PR is waiting for their merge. Pass `--stack` only if the owner asks you to start the next feature anyway.

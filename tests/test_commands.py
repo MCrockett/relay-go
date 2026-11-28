@@ -708,6 +708,33 @@ class CommandsTest(unittest.TestCase):
         self.assertEqual(self.relay("new", "other", "--idea", "x", "--base", "nope"), 1)
         self.assertIn("origin/nope", self.last_err)
 
+    def _main_default_ahead_of_develop(self, days_ahead):
+        """origin gets a main that is develop plus one commit `days_ahead` days later, and origin/HEAD -> main."""
+        import time
+        helpers.sh(self.work, "git", "switch", "-q", "-c", "main")
+        helpers.write(os.path.join(self.work, "release.txt"), "on main\n")
+        helpers.sh(self.work, "git", "add", "release.txt")
+        stamp = f"@{int(time.time()) + days_ahead * 86400} +0000"
+        with mock.patch.dict(os.environ, {"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp}):
+            helpers.sh(self.work, "git", "commit", "-q", "-m", "release")
+        helpers.sh(self.work, "git", "push", "-q", "origin", "main")
+        helpers.sh(self.work, "git", "switch", "-q", "develop")
+        helpers.sh(self.work, "git", "remote", "set-head", "origin", "main")
+
+    def test_new_starts_from_main_when_develop_is_stale_and_main_is_the_default(self):
+        self._main_default_ahead_of_develop(60)
+        self.assertEqual(self.relay("new", "demo", "--idea", "x"), 0, self.last_err)
+        tree = helpers.sh(self.work, "git", "ls-tree", "-r", "--name-only", "origin/feat/demo")
+        self.assertIn("release.txt", tree)
+
+    def test_new_keeps_develop_when_config_names_it_and_warns_that_it_is_stale(self):
+        self._main_default_ahead_of_develop(60)
+        helpers.write(os.path.join(self.work, "docs", "relay", "config.toml"), '[relay]\nbase_branch = "develop"\n')
+        self.assertEqual(self.relay("new", "demo", "--idea", "x"), 0, self.last_err)
+        tree = helpers.sh(self.work, "git", "ls-tree", "-r", "--name-only", "origin/feat/demo")
+        self.assertNotIn("release.txt", tree)
+        self.assertIn("days behind origin/main", self.last_err)
+
     def test_new_backs_off_when_a_rival_claim_lands_during_publish(self):
         other = helpers.clone(self.origin, os.path.join(self.tmp, "other"))
         os.chdir(other)

@@ -16,6 +16,6 @@ description: Use when a relay feature is at the spec stage (relay status shows s
    - Review error: run `relay review` once; if it fails again, tell the owner.
 5. Codex only: `relay submit` launches Claude, which needs network access. If your sandbox blocks it, request approval to run `relay submit` outside the sandbox.
 
-Around 60% of your context window: `relay handoff`, fill it in, `relay handoff --commit`, stop. The handoff covers every feature you hold in this repo, so stop all work here.
+Hand off only when the session has auto-compacted, when the system's low-context warning appears, or at a stage boundary where the owner asks for one. Never hand off on a guessed percentage: a session cannot see its own context use. Then: `relay handoff`, fill it in, `relay handoff --commit`, stop. The handoff covers every feature you hold in this repo, so stop all work here.
 
 Never pass `--same-provider` on your own: relay picks the reviewer from the preference table, including a fallback when a provider is out of usage. Only if the owner asks for a same-provider review in this conversation, pass `--same-provider --relayed`.
