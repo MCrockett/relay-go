@@ -250,6 +250,66 @@ class StartTest(Base):
         self.assertNotIn("launch", record["started"])
 
 
+class ReleaseTest(Base):  # D8, R12
+    def feature(self, slug, sid, push=True):
+        """A feature owned by claude session `sid` on feat/<slug>, published to origin unless push is False."""
+        from relaylib import state
+        work = os.path.join(self.tmp, "w-" + slug)
+        helpers.sh(self.tmp, "git", "clone", "-q", self.origin, work)
+        helpers._identify(work)
+        helpers.sh(work, "git", "switch", "-qc", f"feat/{slug}")
+        st = state.new_state(slug, "proj", {"provider": "claude", "session": sid}, f"feat/{slug}")
+        st.update(stage="spec", status="drafting")
+        state.write_state(state.state_path(work, slug), st)
+        helpers.sh(work, "git", "add", ".")
+        helpers.sh(work, "git", "commit", "-qm", slug)
+        if push:
+            helpers.sh(work, "git", "push", "-qu", "origin", "HEAD")
+        else:  # only in a worktree of the repo: a local claim
+            helpers.sh(self.repo, "git", "fetch", "-q", work, f"feat/{slug}:feat/{slug}")
+            helpers.sh(self.repo, "git", "worktree", "add", "-q", os.path.join(self.tmp, "lw-" + slug), f"feat/{slug}")
+        return work
+
+    def handoff_on_origin(self, slug):
+        helpers.sh(self.repo, "git", "fetch", "-q", "origin")
+        return gitops.show(self.repo, f"origin/feat/{slug}", f"docs/relay/{slug}/handoff.md")
+
+    def test_release_all_releases_every_held_feature(self):
+        from relaylib import ownership, owneractions
+        self.feature("a", "old")
+        self.feature("b", "old")
+        self.assertEqual(hubstart.held_features(self.repo, "old"), ["a", "b"])
+        self.assertEqual(hubstart.release_all(self.repo, "old", "claude session hub1"), ["a", "b"])
+        for slug in ("a", "b"):
+            self.assertIn("Released by the owner", self.handoff_on_origin(slug))
+            _, st = owneractions.published(self.repo, slug)
+            self.assertEqual(st["owner_actions"][-1]["relayed_by"], "claude session hub1")
+            self.assertIn("release", st["owner_actions"][-1]["action"])
+        self.assertEqual(hubstart.held_features(self.repo, "old"), [])
+        ownership.check_can_write(self.repo, "new")  # another session may take them now
+
+    def test_release_all_nothing_held(self):
+        self.assertEqual(hubstart.release_all(self.repo, "old", None), [])
+
+    def test_release_all_refuses_unpublished_first(self):
+        self.feature("a", "old")
+        self.feature("b", "old", push=False)
+        with self.assertRaisesRegex(RelayError, "b is not published on origin; push its branch first"):
+            hubstart.release_all(self.repo, "old", None)
+        self.assertIsNone(self.handoff_on_origin("a"))
+
+    def test_release_all_partial_failure(self):
+        self.feature("a", "old")
+        self.feature("b", "old")
+        helpers.hook(self.origin, "pre-receive",
+                     'while read o n r; do [ "$r" = refs/heads/feat/b ] && echo "no b" >&2 && exit 1; done\nexit 0\n')
+        with self.assertRaises(RelayError) as e:
+            hubstart.release_all(self.repo, "old", None)
+        self.assertIn("could not release b:", str(e.exception))
+        self.assertIn("released so far: a", str(e.exception))
+        self.assertIsNotNone(self.handoff_on_origin("a"))
+
+
 def helpers_record(sid):
     from relaylib import sessions
     return sessions.record_path("claude", sid)

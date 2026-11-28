@@ -111,3 +111,37 @@ def start(request_id, slug, relayed_by, now=None):
         raise RelayError(reason)
     _set_launch(request_id, sid, outcome)
     return {"session_id": sid, "worktree": path, "name": name, "launch": outcome, "reused": reused}
+
+
+# ---------------------------------------------------------------- releasing a retired session's features (D8)
+
+def held_features(root, session_id, claims=None):
+    """Slugs the session still holds in this repo. A release publishes a handoff and keeps the owner field, and one
+    published handoff releases every feature the session holds (ownership.released_sessions), so a released
+    session holds nothing."""
+    from . import ownership, state
+    claims = ownership.collect(root) if claims is None else claims
+    if session_id in ownership.released_sessions(claims):
+        return []
+    return sorted({c.slug for c in claims if c.owner.get("session") == session_id
+                   and c.status in state.HOLDING_STATUSES and not c.done})
+
+
+def release_all(root, session_id, relayed_by):
+    """Release every feature the session holds, after checking each is published (D8, R12). The released slugs."""
+    from . import owneractions
+    held = held_features(root, session_id)
+    for slug in held:  # check them all before releasing any
+        try:
+            owneractions.published(root, slug)
+        except RelayError:
+            raise RelayError(f"{slug} is not published on origin; push its branch first")
+    done = []
+    for slug in held:
+        try:
+            owneractions.run_override(root, slug, "release", owneractions.fingerprint(root, slug),
+                                      relayed_by=relayed_by)
+        except RelayError as e:
+            raise RelayError(f"could not release {slug}: {e}; released so far: {', '.join(done) or 'none'}")
+        done.append(slug)
+    return done
