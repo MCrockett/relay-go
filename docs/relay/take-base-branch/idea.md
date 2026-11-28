@@ -9,3 +9,7 @@ Bug: relay take / relay new branch from origin/develop whenever it exists, even 
 ## Owner's words
 
 > yes, dispatch the relay bug
+
+## Owner decision, 2026-11-28
+
+Asked in this session after the first build review, the owner chose the smart fallback over plain `origin/HEAD`: many repos keep `main` as the GitHub default but work on `develop` (isitev, burned-web, chain-rules-reddit, foodparse, relay-jira and others), and plain `origin/HEAD` would start them from `main`. The order is `--base`, then `[relay] base_branch`, then `origin/develop` when it has commits of its own and is not 14+ days behind `origin/HEAD`, then `origin/HEAD`.
