@@ -1,6 +1,8 @@
 ---
 {
-  "authors": {},
+  "authors": {
+    "idea": "claude"
+  },
   "branch": "feat/config-path-case",
   "extra_rounds": {},
   "feature": "config-path-case",
@@ -40,9 +42,9 @@
   "rounds": {},
   "skipped": [],
   "small": false,
-  "stage": "idea",
+  "stage": "spec",
   "status": "drafting",
-  "updated": "2026-11-28T12:27:34-05:00",
+  "updated": "2026-11-28T12:29:03-05:00",
   "verdicts": {}
 }
 ---
