@@ -210,18 +210,39 @@ def _feature_item(row):
             "answer_here": bool(session and session["state"] == "permission"), "seen": row.get("seen")}
 
 
-def _session_item(entry):
+def _session_item(entry, retired_entries=None):
     tools = list(entry.get("pending_tools") or [])
-    return {"kind": "session", "provider": entry.get("provider"), "session_id": entry.get("session_id"),
+    item = {"kind": "session", "provider": entry.get("provider"), "session_id": entry.get("session_id"),
             "label": entry.get("label"), "state": entry.get("state"), "pending_tools": tools,
             "wait_since": entry.get("since"), "excerpt": (entry.get("excerpt") or {}).get("text"),
-            "answer_here": entry.get("state") == "permission" or bool(QUESTION_TOOLS & set(tools))}
+            "answer_here": entry.get("state") == "permission" or bool(QUESTION_TOOLS & set(tools)),
+            "actions": ["clear"] if entry.get("provider") == "claude" else []}
+    gone = (retired_entries or {}).get((item["provider"], item["session_id"]))
+    if gone:
+        item.update(retired=gone.get("replaced_by_name"), actions=[], answer_here=False)
+    return item
+
+
+def _retired_item(e):
+    """A session the owner retired (hub-start-session R17). It is closed, so other_sessions never lists it."""
+    return {"kind": "session", "provider": e.get("provider"), "session_id": e.get("session_id"),
+            "label": e.get("label") or e.get("session_id"), "state": "retired",
+            "retired": e.get("replaced_by_name"), "pending_tools": [], "excerpt": None,
+            "wait_since": _num(e.get("retired_at")), "actions": [], "answer_here": False}
+
+
+def _retired_map(retired_entries):
+    out = {}
+    for e in retired_entries or ():
+        if isinstance(e, dict) and e.get("state") == "retired" and isinstance(e.get("session_id"), str):
+            out[(e.get("provider"), e["session_id"])] = e
+    return out
 
 
 def _request_item(record):
     return {"kind": "request", "id": record["id"], "repo": record["repo"].get("name"),
             "repo_path": record["repo"].get("path"), "first_line": _first_line(record), "wait_since":
-            record["created_at"], "actions": ["cancel"]}
+            record["created_at"], "actions": ["start", "cancel"]}
 
 
 def _first_line(record):
@@ -296,7 +317,7 @@ def _without_hubs(row, hubs):
     return dict(row, asks=kept, waiting_on_owner=bool(kept), wait_since=min(times) if times else None)
 
 
-def items(data, hubs=None, requests=()):
+def items(data, hubs=None, requests=(), retired_entries=()):
     """The digest's items, oldest wait first, numbered from 1 (D2, R1 to R3). Hub sessions are left out even
     when a snapshot cached before they registered lists them, and so are asks that wait on one. `requests` are
     the dispatch records; each waiting one is an item of kind request (dispatch R9)."""
@@ -304,8 +325,11 @@ def items(data, hubs=None, requests=()):
     data = _clean(data)
     rows = [_without_hubs(r, hubs) for r in data.get("rows") or []]
     out = [_feature_item(r) for r in rows if r.get("error") or _feature_wanted(r)]
-    out += [_session_item(e) for e in data.get("other_sessions") or []
+    gone = _retired_map(retired_entries)
+    out += [_session_item(e, gone) for e in data.get("other_sessions") or []
             if (e.get("provider"), e.get("session_id")) not in hubs]
+    listed = {(i["provider"], i["session_id"]) for i in out if i["kind"] == "session"}
+    out += [_retired_item(e) for pair, e in gone.items() if pair not in listed and pair not in hubs]
     out += [_request_item(r) for r in requests if r.get("status") == "waiting"]
     out.sort(key=_order)
     for n, item in enumerate(out, 1):
@@ -486,7 +510,10 @@ def _item_lines(item, numbered, now):
             lines += _wrap(item["first_line"], "    ")
         if item.get("repo_path"):
             lines += _wrap(f'start: cd {item["repo_path"]} && claude, then say "take request {item["id"]}"', "    ")
+        lines += _wrap(f"or from here: relay dispatch --start {item['id']} --relayed", "    ")
         lines += _wrap(f"cancel: relay dispatch --cancel {item['id']} --relayed", "    ")
+    elif item["kind"] == "session" and item.get("state") == "retired":
+        return _wrap(f"{lead}{item['label']} · retired, replaced by {item.get('retired') or 'a fresh session'}", "")
     elif item["kind"] == "session":
         state = "" if item["state"] == "waiting" and wait else f" · {item['state']}"  # "waiting 40m" says it
         lines = _wrap(f"{lead}{item['label']} · {item['provider']} session{state}{wait}", "")
@@ -674,7 +701,13 @@ def digest(session, records=None, as_json=False, now=None, page=False):
         requests, unreadable = [], []
         warnings.append(f"could not read dispatch requests: {e}")
     warnings += [f"could not read dispatch request file {path}" for path in unreadable]
-    found = items(data, requests=requests)
+    try:
+        from . import retired
+        retired_entries = list(retired.load().values())
+    except Exception as e:
+        retired_entries = []
+        warnings.append(f"could not read retired sessions: {e}")
+    found = items(data, requests=requests, retired_entries=retired_entries)
     c = counts(data, found)
     view = usage_view(data)
     digest_id, warning = save(found, source, session, now)

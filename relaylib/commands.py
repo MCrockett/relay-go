@@ -1076,6 +1076,8 @@ def cmd_hub(args):
         return cmd_hub_note(args)
     if args.hub_cmd == "act":
         return cmd_hub_act(args)
+    if args.hub_cmd == "clear":
+        return cmd_hub_clear(args)
     if args.hub_cmd == "page-url":
         return cmd_hub_page_url(args)
     out, warnings = hub.digest(_hub_session(dict(os.environ), args.by), as_json=args.json, page=args.page)
@@ -1110,7 +1112,7 @@ def _hub_logged(entry, result):
 
 
 def cmd_hub_note(args):
-    from . import hub, notes
+    from . import hub, notes, retired
     entry = {"command": "note", "ref": args.ref, "target": None, "action": None, "relayed_by": None}
     result = "failed"
     try:
@@ -1118,6 +1120,9 @@ def cmd_hub_note(args):
         item = hub.resolve(args.ref, _hub_session(dict(os.environ), args.by))
         provider, sid, label = hub.note_target(item)
         entry["target"] = f"{provider}:{sid}"
+        gone = retired.entry(provider, sid)
+        if gone and gone.get("state") == "retired":  # hub-start-session R16
+            raise RelayError(f"{label} was retired; replaced by {gone.get('replaced_by_name')}")
         inbox = hub.deliverable(item, provider, sid)
         note, message = notes.send(provider, sid, args.text, inbox, prefix=hub.prefix(relayed_by))
         if message:
@@ -1135,6 +1140,31 @@ def cmd_hub_note(args):
         raise
     finally:
         _hub_logged(entry, result)
+
+
+def cmd_hub_clear(args):
+    """Retire the closed session behind a digest item and start a fresh one in its folder (hub-start-session D5,
+    R11 to R14)."""
+    from . import hub, hubstart
+    entry = {"command": "clear", "ref": args.ref, "target": None, "action": None, "relayed_by": None}
+    result = "failed"
+    try:
+        relayed_by, me = _dispatch_who(args)
+        entry["relayed_by"] = relayed_by
+        item = hub.resolve(args.ref, me)
+        entry["target"] = f"{item.get('provider')}:{item.get('session_id')}"
+        out = hubstart.clear(item, relayed_by)
+        result = "cleared" if out["launch"] == "ok" else "unconfirmed"
+    except RelayError as e:
+        result = f"refused: {e}"
+        raise
+    finally:
+        _hub_logged(entry, result)
+    what = "started" if out["launch"] == "ok" else "may be starting (claude --bg did not finish within 60 seconds)"
+    print(f'relay: {what}: "{out["name"]}" ({out["session_id"]}); {out["label"]} ({out["old"]}) is retired')
+    if out["released"]:
+        print(f"relay: it will take over {', '.join(out['released'])}")
+    return 0
 
 
 NOTE_PREFIX = "Note from the owner, sent with relay note:"
@@ -1912,7 +1942,10 @@ def build_parser():
     ha.add_argument("action", choices=["go", "extra-round", "reset-rounds", "release", "review", "review-spec",
                                        "review-plan", "merge"])
     ha.add_argument("--reviewer", help="review actions only: provider:model[@effort] from the preference table")
-    for sp in (hn, ha):
+    hc = hsub.add_parser("clear", help="retire a closed session from the digest and start a fresh one in its folder "
+                                       "(the hub, --relayed)")
+    hc.add_argument("ref", help="<digest id>.<item number> from the digest the owner saw")
+    for sp in (hn, ha, hc):
         sp.add_argument("--relayed", action="store_true",
                         help="required: pass on what the owner typed in the hub chat (recorded as relayed)")
         sp.add_argument("--by", help="claude or codex, when detection is ambiguous")

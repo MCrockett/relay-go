@@ -271,8 +271,10 @@ def resolve_asker(value, hub, target_path):
     else:
         repo_path = target_repo(value)
         roots = _repo_roots(repo_path)
+        from . import retired
         found = [r for r in sessions.read_records()
                  if isinstance(r.get("cwd"), str) and _inside(r["cwd"], roots)
+                 and not retired.is_retired(r["provider"], r["session_id"])  # hub-start-session R18
                  and events.session_live(r["provider"], r["session_id"])]
         named = ", ".join(f"{r['provider']}:{r['session_id']}" for r in found)
         if not found:

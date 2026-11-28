@@ -265,7 +265,9 @@ def capture(provider, stream, now=None):
         found = []
         if name in NOTICE[provider]:
             try:
-                from . import notices
+                from . import notices, retired
+                if retired.is_retired(provider, event["session_id"]):  # hub-start-session R15
+                    raise LookupError
                 found = notices.merged_features(event["session_id"], event.get("cwd"))
                 found = found + notices.waiting_requests(event["session_id"], event.get("cwd"))
             except Exception:
@@ -370,4 +372,6 @@ def prune(now=None, keep_days=7):
                     pass
     finally:
         os.close(lock)
+    from . import retired
+    retired.prune(now)  # hub-start-session R19: retired entries go with the session records
     return deleted

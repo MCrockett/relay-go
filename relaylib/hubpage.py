@@ -150,7 +150,11 @@ def _card(item, numbered, now, t):
         body.append(f'<p class="meta">{waited}</p>')
         if item.get("first_line"):
             body.append(f'<p>{t(item.get("first_line"))}</p>')
+        body.append(f'<p>start: relay dispatch --start {t(item.get("id"))} --relayed</p>')
         body.append(f'<p>cancel: relay dispatch --cancel {t(item.get("id"))} --relayed</p>')
+    elif kind == "session" and item.get("state") == "retired":  # hub-start-session R17
+        title = f'{t(item.get("label"))} · {t(item.get("provider"))} session'
+        body.append(f'<p class="meta">retired, replaced by {t(item.get("retired"))}</p>')
     elif kind == "session":
         title = f'{t(item.get("label"))} · {t(item.get("provider"))} session'
         state = "" if item.get("state") == "waiting" and waited else t(item.get("state"))  # "waiting 40m" says it

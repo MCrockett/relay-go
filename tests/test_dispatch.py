@@ -187,6 +187,16 @@ class InputsTest(unittest.TestCase):  # dispatch R1, R1a, R3, R4
         got = dispatch.resolve_asker("other", None, self.target)
         self.assertEqual((got["provider"], got["session_id"], got["repo"]), ("claude", "A1", "other"))
 
+    def test_resolve_asker_skips_retired(self):  # hub-start-session R18
+        from relaylib import retired
+        self.session("A1", self.other)
+        self.session("A2", self.other)
+        with retired.locked():
+            retired.save({"claude:A1": {"provider": "claude", "session_id": "A1", "state": "retired",
+                                        "replaced_by": "A2", "at": 1.0, "retired_at": 1.0}})
+        got = dispatch.resolve_asker("other", None, self.target)
+        self.assertEqual(got["session_id"], "A2")
+
     def test_a_worktree_session_counts_for_its_repo(self):
         wt = os.path.join(self.tmp, "wt")
         helpers.sh(self.other, "git", "worktree", "add", "-q", "-b", "feat/x", wt)
