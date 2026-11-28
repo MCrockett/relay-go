@@ -83,6 +83,10 @@
       "action": "override extra-round (spec)",
       "at": "2026-11-28T09:11:38-05:00",
       "relayed_by": "claude session b98b7951-453c-40f9-81ce-6e74b537d43e"
+    },
+    {
+      "action": "owner joined spec",
+      "at": "2026-11-28T10:13:14-05:00"
     }
   ],
   "pr": null,
@@ -106,13 +110,13 @@
     "spec": null
   },
   "rounds": {
-    "spec": 4
+    "spec": 5
   },
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "changes-requested",
-  "updated": "2026-11-28T09:11:38-05:00",
+  "status": "in-review",
+  "updated": "2026-11-28T10:13:14-05:00",
   "verdicts": {
     "spec": "NO-GO"
   }
