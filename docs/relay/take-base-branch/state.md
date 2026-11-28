@@ -6,7 +6,19 @@
   "branch": "fix/take-base-branch",
   "extra_rounds": {},
   "feature": "take-base-branch",
-  "history": {},
+  "history": {
+    "build": [
+      {
+        "blocking_ids": [
+          "R1-1"
+        ],
+        "head": "e4c53bd160ef3b80a62f16b6b8e9673406e46165",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ]
+  },
   "owner": {
     "provider": "claude",
     "session": "533a6442-fe90-46df-9213-a7a0e9b4b92f",
@@ -34,6 +46,7 @@
     }
   },
   "retried": false,
+  "review_notes": {},
   "reviewed": {
     "build": null,
     "plan": null,
@@ -48,9 +61,11 @@
   ],
   "small": true,
   "stage": "build",
-  "status": "in-review",
-  "updated": "2026-11-28T09:43:43-05:00",
-  "verdicts": {}
+  "status": "changes-requested",
+  "updated": "2026-11-28T09:44:38-05:00",
+  "verdicts": {
+    "build": "NO-GO"
+  }
 }
 ---
 
