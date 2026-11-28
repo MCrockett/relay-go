@@ -317,6 +317,30 @@ installed for every relay user. Keep them in a folder of your own, link them int
 through every review prompt; the release review checks that a release follows the runbook its rules name. Use
 `relay rule --global` for a skill that applies to every project.
 
+### Data paths: base commits that do not stale a GO
+
+A build GO goes stale when the merge result of the PR and its base changes. A repo whose base gets frequent
+data commits (notes, KPI snapshots, saved lists) can name those files so such commits leave its GOs fresh:
+
+    # docs/relay/config.toml, on the base branch
+    [freshness]
+    data_paths = ["kpi/snapshots.csv", "portfolio/asks.csv", "marketing/packs/"]
+
+- An entry is one file, or a folder ending in `/`, from the repository root, matched exactly (case counts). No
+  globs, no `.` or `..` parts, no leading `/` or `./`.
+- Only data files are ever left out: `.csv`, `.tsv`, `.json`, `.jsonl`, `.yaml`, `.yml`, `.md`, `.txt`. A file
+  entry with another extension makes the list unused. Under a folder entry, other files still count.
+- Never data, whatever the list says: `AGENTS.md`, `CLAUDE.md` and `WORKFLOW.md` anywhere, anything under
+  `.github/`, and anything under `docs/relay/`.
+- Some files with data extensions act like code: `package.json`, `requirements.txt`, `docker-compose.yml`,
+  `SKILL.md`, prompt files. List only files that are data.
+- relay reads the list from the PR's base branch, never from the PR, so a PR cannot widen its own exclusions.
+  `docs/relay/config.toml` is a protected file for delegated merges, so the owner merges any change to the list.
+- A PR whose own diff touches a listed data file (an edit, a delete or a rename) gets no exclusions.
+- A GO records the list it used. When the base's list changes, waiting GOs go stale once.
+- A list relay cannot use (a TOML error, a bad entry) is ignored, and a stale GO's reason ends with
+  `data paths on <base> not used: <why>`.
+
 Repo files: `prompts/` (review prompts), `skills/` (agent skills), `config.example.toml`. Run tests: `python3.11 -m unittest discover -s tests -t . -v`.
 
 ## Running in Docker
