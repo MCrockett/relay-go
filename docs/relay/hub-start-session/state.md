@@ -9,7 +9,6 @@
     "spec": 1
   },
   "feature": "hub-start-session",
-  "handed_over_from": "533a6442-fe90-46df-9213-a7a0e9b4b92f",
   "history": {
     "spec": [
       {
@@ -121,7 +120,7 @@
   "small": false,
   "stage": "plan",
   "status": "drafting",
-  "updated": "2026-11-28T10:32:16-05:00",
+  "updated": "2026-11-28T10:32:30-05:00",
   "verdicts": {
     "spec": "GO"
   }
