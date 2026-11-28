@@ -1,7 +1,8 @@
 """The branch on origin a new feature starts from (relay new, relay take).
 
-Order: `--base`, then `[relay] base_branch` in the repo's docs/relay/config.toml, then origin/develop unless it is
-stale against origin/HEAD, then origin/HEAD. Many repos keep main as the GitHub default but work on develop, so
+Order: `--base`, then `[relay] base_branch` in the repo's docs/relay/config.toml, then origin/develop when it is
+active (it has commits origin/HEAD lacks, and is not stale), then origin/HEAD. The owner chose this fallback over
+plain origin/HEAD on 2026-11-28. Many repos keep main as the GitHub default but work on develop, so
 origin/HEAD alone is not enough; a develop that origin/HEAD has left behind is the case this guards against."""
 import os
 import re
@@ -77,6 +78,17 @@ def stale(root, base, head):
     return bool(gap) and gap[0] > 0 and gap[1] >= STALE_DAYS
 
 
+def active_develop(root, head):
+    """True when origin/develop should be the base: origin/HEAD is unknown, or is develop, or develop has commits
+    origin/HEAD lacks and is not stale. A develop that is only behind origin/HEAD is never chosen."""
+    if not _exists(root, "origin/develop"):
+        return False
+    if not head or head == "develop":
+        return True
+    ahead = behind(root, head, "develop")
+    return bool(ahead) and ahead[0] > 0 and not stale(root, "develop", head)
+
+
 def choose(root, explicit=None):
     """(base branch name, how it was chosen, warning or None). Raises RelayError when no base can be found."""
     head = origin_head(root)
@@ -84,10 +96,10 @@ def choose(root, explicit=None):
         base, why = explicit, "--base"
     elif (cfg := configured(root)) is not None:
         base, why = cfg, "[relay] base_branch"
-    elif _exists(root, "origin/develop") and not (head and stale(root, "develop", head)):
+    elif active_develop(root, head):
         base, why = "develop", "origin/develop" + (f" (origin/HEAD is {head})" if head and head != "develop" else "")
     elif head:
-        base, why = head, "origin/HEAD" + (" (origin/develop is stale)" if _exists(root, "origin/develop") else "")
+        base, why = head, "origin/HEAD" + (" (origin/develop is stale or has no work of its own)" if _exists(root, "origin/develop") else "")
     else:
         raise RelayError("cannot tell which branch to start from: no origin/develop and origin/HEAD is not set. "
                          "Pass --base <branch>, or set [relay] base_branch in docs/relay/config.toml")

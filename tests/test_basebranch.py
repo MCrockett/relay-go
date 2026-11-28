@@ -49,6 +49,14 @@ class BaseBranchTest(unittest.TestCase):
         self.assertIn("origin/develop is stale", why)
         self.assertIsNone(warning)
 
+    def test_develop_only_behind_main_starts_from_main_even_when_recent(self):
+        work = self.make("main", develop_days_old=2, main_ahead=3, develop_ahead=0)
+        self.assertEqual(basebranch.choose(work)[0], "main")
+
+    def test_develop_with_own_work_but_stale_starts_from_main(self):
+        work = self.make("main", develop_days_old=60, main_ahead=3, develop_ahead=2)
+        self.assertEqual(basebranch.choose(work)[0], "main")
+
     def test_active_develop_with_main_default_keeps_develop(self):
         work = self.make("main", develop_days_old=2, main_ahead=1, develop_ahead=5)
         self.assertEqual(basebranch.choose(work)[0], "develop")

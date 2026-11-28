@@ -325,7 +325,7 @@ through every review prompt; the release review checks that a release follows th
 
 1. `--base <branch>` on `relay new`.
 2. `[relay] base_branch` in the repo's own `docs/relay/config.toml` (not the owner's `~/.relay/config.toml`).
-3. `origin/develop`, unless it is stale: `origin/HEAD` has commits it lacks and its tip is 14 or more days older.
+3. `origin/develop`, when it has work of its own (commits `origin/HEAD` lacks) and is not stale (`origin/HEAD` has commits it lacks and its tip is 14 or more days older). A `develop` that is only behind is skipped.
 4. `origin/HEAD`, the GitHub default branch.
 
 Many repos keep `main` as the GitHub default but work on `develop`, so step 3 keeps them on `develop`. A repo whose
