@@ -8,7 +8,19 @@
   "branch": "feat/config-path-case",
   "extra_rounds": {},
   "feature": "config-path-case",
-  "history": {},
+  "history": {
+    "plan": [
+      {
+        "blocking_ids": [
+          "R1-1"
+        ],
+        "head": "45fab752f8dc5c2d08be6bc67fcd6ebb2a3e6d96",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ]
+  },
   "owner": {
     "provider": "claude",
     "session": "226cfc26-5530-480c-a031-303845c13108",
@@ -53,9 +65,10 @@
   "skipped": [],
   "small": false,
   "stage": "plan",
-  "status": "in-review",
-  "updated": "2026-11-28T12:30:50-05:00",
+  "status": "changes-requested",
+  "updated": "2026-11-28T12:31:37-05:00",
   "verdicts": {
+    "plan": "NO-GO",
     "spec": "GO"
   }
 }
