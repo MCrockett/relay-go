@@ -17,6 +17,18 @@ def shipped_files():
 
 
 class PublicTest(unittest.TestCase):
+    def test_reference_documents_start_and_clear(self):  # hub-start-session R20, R21
+        with open(os.path.join(ROOT, "docs", "reference.md")) as f:
+            ref = f.read()
+        with open(os.path.join(ROOT, "skills", "relay-hub", "SKILL.md")) as f:
+            skill = f.read()
+        for text in ("relay dispatch --start", "relay hub clear", "claude --bg --remote-control", "retired"):
+            self.assertIn(text, ref)
+        for text in ("relay dispatch --start", "relay hub clear", "only when the owner typed", "Remote Control list"):
+            self.assertIn(text, skill)
+        for text in (ref, skill):
+            self.assertNotIn("\u2014", text)
+
     def test_license_is_mit(self):
         with open(os.path.join(ROOT, "LICENSE")) as f:
             self.assertTrue(f.read().startswith("MIT License"))

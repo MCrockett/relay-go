@@ -541,10 +541,10 @@ their last change; an unreadable file is skipped and named in a warning by `rela
 session may), and `--cancel <id> --relayed` cancels a waiting one.
 
 A waiting request shows on `relay hub` and its phone page as an item numbered with the others (cancel with
-`relay dispatch --cancel`, or start a session in that repo), and on `relay status` under "Requests waiting for a
+`relay dispatch --cancel`, start a session in that repo, or have the hub start one with `relay dispatch --start`), and on `relay status` under "Requests waiting for a
 session", counted among the items waiting on you. At the hooks that carry merge notices, a session whose folder
 is inside the target repo (its main checkout or a worktree) is told once about each waiting request. relay never
-starts or resumes a session to tell it.
+starts or resumes a session just to tell it; it starts one only for `relay dispatch --start`.
 
 The target session runs `relay take --request <id>` (the slug the hub suggested, or `--slug`) or
 `relay new <slug> --request <id>`. Both run the normal `relay new` with all its checks and write `idea.md` from
@@ -570,6 +570,49 @@ your request <id>.` added to the event note. A requester that is a hub gets that
 that caused the event is not told it. A request the owner dispatched from their terminal adds the line to every
 hub's note. The request's record becomes merged or released at the same moment; if the record is missing, the
 note still goes, from the feature's `state.md`. Notes are queued for the next prompt when the session is not open.
+
+### Starting and replacing sessions from the hub
+
+The hub can start a Claude session for a waiting request, and replace a closed session with a fresh one, so a
+request no longer waits for you to sit down at the Mac. It does either only on words you typed in the hub chat.
+Both commands need `--relayed` from a registered hub; from your own terminal you run them without it. Each run is
+written to the hub log with its result.
+
+`relay dispatch --start <id> [--slug <slug>] --relayed` starts a session for a waiting request. The slug is
+`--slug` or the one the request suggested. relay fetches origin, picks the base branch exactly as `relay take`
+does, and makes a worktree at `<main checkout>/.claude/worktrees/<slug>`, detached at `origin/<base>`. It refuses,
+changing nothing, when `claude` is not on PATH, when the fetch fails or the base cannot be found, or when that
+folder or the branch `feat/<slug>` already exists. Then it runs, with no shell, in that folder:
+
+    claude --bg --remote-control "<repo> <slug>" --session-id <new uuid> "<prompt>"
+
+The prompt tells the session to read the request and run `relay take --request <id> --slug <slug>`. relay passes
+no permission flag, so the session uses your normal settings and any permission prompt shows in your Remote
+Control list and on the hub. relay prints the session id, the worktree and the Remote Control name, and records
+them on the request as its launch. Every session in the repo is still told about the request until one takes it,
+so you can still take it by hand.
+
+If `claude --bg` fails, relay removes the worktree only if it made it in that run and it is still clean, then
+clears the launch and reports the first line of claude's error. If `claude --bg` has not finished after 60
+seconds, relay leaves it running, keeps the worktree and reports that the session may be starting. A start is
+blocked while another live session is taking the request, and while an earlier launch is under 10 minutes old or
+its session is live. After that, a new start reuses the earlier worktree as it is, and refuses with recovery steps
+if the earlier session already started the feature there.
+
+`relay hub clear <digest ref> --relayed` replaces the Claude session behind a digest item. Close that session in
+the Remote Control list first: clear refuses while it is live, so two sessions never share a folder. relay never
+stops, signals or types into a session. It also refuses a hub session, a session whose folder is gone, and a
+Codex session. relay reserves the clear in `~/.relay/sessions/retired.json`, so a second clear within 10 minutes
+is refused. It checks that every feature the old session holds is published on origin and refuses, naming the
+feature, if one is not. Then it releases them all (the owner release, recorded as relayed), marks the old session
+retired, and starts a fresh session the same way in the old session's folder, named `<repo> <label> (fresh)`. Its
+prompt names the features to take over. If the launch fails or is unconfirmed, the releases stand; run the same
+clear again once 10 minutes have passed without the fresh session showing up. That retry also releases anything
+the replacement took in the meantime and retires it too.
+
+A retired session gets no request or merge notices, `relay hub note` refuses it and names its replacement,
+`relay dispatch --for <repo>` skips it, and the digest shows it as `retired, replaced by <name>` with no actions.
+Its entry is removed with the session records once it is 7 days old and the session is not running.
 
 For SwiftBar, choose its plugin folder and run `./install.sh`. The installer links `menubar/relay.30s.py`.
 The menu shows how many features need you, links to the dashboard or GitHub, and can open the UI.

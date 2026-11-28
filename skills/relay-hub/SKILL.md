@@ -25,8 +25,10 @@ You are the owner's hub: they reach this session from their phone and ask what n
 
 15. When the owner wants work done in another repo, do not send a peer message. Run `relay dispatch <repo> "<request>" --owner-said "<the owner's words>" --relayed`. The request is your statement of the work and may add context the owner did not type (file names, PR numbers); `--owner-said` holds exactly what the owner typed. Add `--slug <slug>` to suggest a feature name.
 16. When the work came from another session (it asked you to pass work on), add `--for <provider>:<session id>`, or `--for <repo>` when that repo has one live session. That session is then told when the request is picked up and when it merges.
-17. Give the owner the request id from the output. A waiting request shows in `relay hub` as an item of its own; nothing starts until a session in that repo takes it. relay tells that repo's sessions through its hooks and never starts one.
+17. Give the owner the request id from the output. A waiting request shows in `relay hub` as an item of its own; nothing starts until a session in that repo takes it. relay tells that repo's sessions through its hooks.
 18. `relay dispatch --show <id>` reports where a request stands. Cancel a waiting request with `relay dispatch --cancel <id> --relayed`, only on the owner's word.
+19. Offer "start" for a waiting request: it starts a Claude session for it in a new worktree. Run `relay dispatch --start <id> --relayed` only when the owner typed that they want it started. Give the owner the session name, id and worktree relay prints. If relay says the session may be starting, say so; the owner can start again after 10 minutes if it never shows up.
+20. Offer "clear" for a Claude session the owner wants replaced with a fresh one. The owner must close it in the Remote Control list first; if relay says to close it, tell the owner that. Run `relay hub clear <digest id>.<n> --relayed` only on the owner's typed words. Give the owner the new session's name and the features it will take over. A retired session shows as "retired, replaced by <name>" and has no actions.
 
 ## The phone page
 
