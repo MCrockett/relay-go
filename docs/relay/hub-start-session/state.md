@@ -12,6 +12,18 @@
   },
   "feature": "hub-start-session",
   "history": {
+    "build": [
+      {
+        "blocking_ids": [
+          "R1-1",
+          "R1-2"
+        ],
+        "head": "97f977e49498fac6d66625ad0480ed2691ff7dbd",
+        "prior": {},
+        "round": 1,
+        "verdict": "NO-GO"
+      }
+    ],
     "plan": [
       {
         "blocking_ids": [
@@ -154,9 +166,10 @@
   "skipped": [],
   "small": false,
   "stage": "build",
-  "status": "in-review",
-  "updated": "2026-11-28T11:47:49-05:00",
+  "status": "changes-requested",
+  "updated": "2026-11-28T11:50:16-05:00",
   "verdicts": {
+    "build": "NO-GO",
     "plan": "GO",
     "spec": "GO"
   }
