@@ -1,7 +1,8 @@
 ---
 {
   "authors": {
-    "idea": "claude"
+    "idea": "claude",
+    "spec": "claude"
   },
   "branch": "feat/hub-start-session",
   "extra_rounds": {},
@@ -39,12 +40,14 @@
     "plan": null,
     "spec": null
   },
-  "rounds": {},
+  "rounds": {
+    "spec": 1
+  },
   "skipped": [],
   "small": false,
   "stage": "spec",
-  "status": "drafting",
-  "updated": "2026-11-28T09:00:57-05:00",
+  "status": "in-review",
+  "updated": "2026-11-28T09:02:26-05:00",
   "verdicts": {}
 }
 ---
